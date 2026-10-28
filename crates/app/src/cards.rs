@@ -22,6 +22,11 @@ pub fn image_key(path: &str, px: u32) -> String {
     format!("{px}|{path}")
 }
 
+/// Artwork path of an image key.
+pub fn key_path(key: &str) -> Option<&str> {
+    parse_key(key).map(|(_, path)| path)
+}
+
 fn parse_key(key: &str) -> Option<(u32, &str)> {
     let (px, path) = key.split_once('|')?;
     Some((px.parse().ok()?, path))
@@ -47,12 +52,9 @@ pub struct Card {
 
 impl From<AlbumItem> for Card {
     fn from(a: AlbumItem) -> Self {
-        let badge = match a.relation.as_str() {
-            "collaboration" => "合作",
-            "appearance" => "参与",
-            "credit" => "制作",
-            _ => "",
-        };
+        // The artist page groups releases by relation; elsewhere the
+        // badge stays empty.
+        let badge = "";
         Self {
             id: a.id,
             title: a.title,
@@ -103,7 +105,9 @@ impl From<PlaylistItem> for Card {
 
 struct Entry {
     item: Card,
-    cover: Option<Image>,
+    /// Cover and the size it was decoded at. A cover of an older size
+    /// stays on screen until the current size arrives.
+    cover: Option<(Image, u32)>,
     requested: Cell<bool>,
 }
 
@@ -114,6 +118,14 @@ pub struct CardGridModel {
     columns: Cell<usize>,
     /// Physical size covers are decoded at (card size x scale factor).
     cover_px: Cell<u32>,
+    /// Size waiting for the resize to settle.
+    pending_px: Cell<u32>,
+    /// Last cover size in logical px (0 before the first layout).
+    logical: Cell<f32>,
+    /// Cards shown at most (the home grids show a number that depends on
+    /// the width).
+    limit: Cell<usize>,
+    resize_timer: slint::Timer,
     /// Entry indices holding a cover, oldest first.
     loaded: RefCell<VecDeque<usize>>,
     notify: ModelNotify,
@@ -127,6 +139,10 @@ impl CardGridModel {
             by_path: RefCell::default(),
             columns: Cell::new(4),
             cover_px: Cell::new(256),
+            pending_px: Cell::new(0),
+            logical: Cell::new(0.0),
+            limit: Cell::new(usize::MAX),
+            resize_timer: slint::Timer::default(),
             loaded: RefCell::default(),
             notify: ModelNotify::default(),
             commander,
@@ -169,6 +185,10 @@ impl CardGridModel {
             }
             (old_len, entries.len())
         };
+        if self.limit.get() != usize::MAX {
+            self.notify.reset();
+            return;
+        }
         let old_rows = Self::rows_for(old_len, columns);
         let new_rows = Self::rows_for(new_len, columns);
         if old_len % columns != 0 && old_rows > 0 {
@@ -179,31 +199,72 @@ impl CardGridModel {
         }
     }
 
-    pub fn cover_px(&self) -> u32 {
-        self.cover_px.get()
-    }
-
-    /// New column count and cover size (physical px). Covers reload only
-    /// when the size grows past 125% (blurry) or drops under 60% (wasteful)
-    /// of the decoded size, not on every resize step.
-    pub fn set_layout(&self, columns: usize, px: u32) {
+    /// New column count and cover size (physical px). Covers are decoded
+    /// at exactly the displayed size so they are drawn 1:1 (a stretched or
+    /// shrunk texture looks soft); a new size applies once the resize has
+    /// settled for a moment, and the old covers stay until replaced.
+    ///
+    /// `logical` is the long side of a cover in logical px.
+    pub fn set_layout(self: &Rc<Self>, columns: usize, logical: f32, scale: f32) {
+        self.logical.set(logical);
         let columns = columns.max(1);
-        let px = px.clamp(64, 1536);
-        let current = self.cover_px.get();
-        let reload = px * 4 > current * 5 || px * 5 < current * 3;
-        if reload {
-            self.cover_px.set(px);
-            let mut entries = self.entries.borrow_mut();
-            for entry in entries.iter_mut() {
-                entry.cover = None;
-                entry.requested.set(false);
-            }
-            self.loaded.borrow_mut().clear();
-        }
-        if reload || columns != self.columns.get() {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let px = ((logical * scale).round().max(0.0) as u32).clamp(32, 2048);
+        if columns != self.columns.get() {
             self.columns.set(columns);
             self.notify.reset();
         }
+        if px == self.cover_px.get() {
+            self.resize_timer.stop();
+            return;
+        }
+        // Nothing shown yet: no need to wait.
+        if self.loaded.borrow().is_empty() {
+            self.apply_px(px);
+            return;
+        }
+        self.pending_px.set(px);
+        let weak = Rc::downgrade(self);
+        self.resize_timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(200),
+            move || {
+                if let Some(model) = weak.upgrade() {
+                    model.apply_px(model.pending_px.get());
+                }
+            },
+        );
+    }
+
+    /// Shows at most `limit` cards (0: all).
+    pub fn set_limit(&self, limit: usize) {
+        let limit = if limit == 0 { usize::MAX } else { limit };
+        if self.limit.replace(limit) != limit {
+            self.notify.reset();
+        }
+    }
+
+    fn shown(&self) -> usize {
+        self.entries.borrow().len().min(self.limit.get())
+    }
+
+    /// The window moved to a screen with another scale factor.
+    pub fn rescale(self: &Rc<Self>, scale: f32) {
+        let logical = self.logical.get();
+        if logical > 0.0 {
+            self.set_layout(self.columns.get(), logical, scale);
+        }
+    }
+
+    fn apply_px(&self, px: u32) {
+        if px == 0 || px == self.cover_px.get() {
+            return;
+        }
+        self.cover_px.set(px);
+        for entry in self.entries.borrow().iter() {
+            entry.requested.set(false);
+        }
+        self.notify.reset();
     }
 
     /// Stores a loaded cover; true when some album uses it. Covers decoded
@@ -228,7 +289,7 @@ impl CardGridModel {
                     if entry.cover.is_none() {
                         loaded.push_back(i);
                     }
-                    entry.cover = Some(image.clone());
+                    entry.cover = Some((image.clone(), px));
                     rows.push(i / columns);
                 }
             }
@@ -308,7 +369,12 @@ impl CardGridModel {
     pub fn cover(&self, path: &str) -> Option<Image> {
         let by_path = self.by_path.borrow();
         let i = *by_path.get(path)?.first()?;
-        self.entries.borrow().get(i)?.cover.clone()
+        self.entries
+            .borrow()
+            .get(i)?
+            .cover
+            .as_ref()
+            .map(|(image, _)| image.clone())
     }
 }
 
@@ -316,23 +382,25 @@ impl Model for CardGridModel {
     type Data = AlbumRow;
 
     fn row_count(&self) -> usize {
-        Self::rows_for(self.entries.borrow().len(), self.columns.get())
+        Self::rows_for(self.shown(), self.columns.get())
     }
 
     fn row_data(&self, row: usize) -> Option<AlbumRow> {
+        let shown = self.shown();
         let entries = self.entries.borrow();
         let columns = self.columns.get();
         let start = row * columns;
-        if start >= entries.len() {
+        if start >= shown {
             return None;
         }
-        let end = (start + columns).min(entries.len());
+        let end = (start + columns).min(shown);
         let px = self.cover_px.get();
         let cards: Vec<AlbumCard> = entries[start..end]
             .iter()
             .map(|entry| {
                 let path = &entry.item.artwork;
-                if entry.cover.is_none() && !path.is_empty() && !entry.requested.get() {
+                let current = entry.cover.as_ref().is_some_and(|(_, at)| *at == px);
+                if !current && !path.is_empty() && !entry.requested.get() {
                     entry.requested.set(true);
                     self.commander.send(Command::LoadImage {
                         key: image_key(path, px),
@@ -349,7 +417,11 @@ impl Model for CardGridModel {
                     } else {
                         SharedString::new()
                     },
-                    cover: entry.cover.clone().unwrap_or_default(),
+                    cover: entry
+                        .cover
+                        .as_ref()
+                        .map(|(image, _)| image.clone())
+                        .unwrap_or_default(),
                     artist_id: i32::try_from(entry.item.artist_id).unwrap_or(0),
                     favorite: entry.item.favorite,
                     badge: SharedString::from(entry.item.badge.as_str()),

@@ -59,7 +59,7 @@ export component ValueBar inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add }
 
 // Vector icons (no icon font dependency). Transport icons are filled,
 // the others are drawn with a stroke in the same color.
@@ -70,7 +70,8 @@ export component Icon inherits Path {
         || root.kind == IconKind.repeat-one || root.kind == IconKind.queue || root.kind == IconKind.close
         || root.kind == IconKind.sleep || root.kind == IconKind.heart-outline || root.kind == IconKind.back
         || root.kind == IconKind.search || root.kind == IconKind.plus || root.kind == IconKind.arrow-up
-        || root.kind == IconKind.arrow-down;
+        || root.kind == IconKind.arrow-down || root.kind == IconKind.locate || root.kind == IconKind.trash
+        || root.kind == IconKind.playlist-add;
     viewbox-width: 24;
     viewbox-height: 24;
     fill: root.stroked ? transparent : root.color;
@@ -93,6 +94,9 @@ export component Icon inherits Path {
         : root.kind == IconKind.arrow-up ? "M 12 19 L 12 5 M 6 11 L 12 5 L 18 11"
         : root.kind == IconKind.arrow-down ? "M 12 5 L 12 19 M 6 13 L 12 19 L 18 13"
         : root.kind == IconKind.more ? "M 4.5 10.5 L 7.5 10.5 L 7.5 13.5 L 4.5 13.5 Z M 10.5 10.5 L 13.5 10.5 L 13.5 13.5 L 10.5 13.5 Z M 16.5 10.5 L 19.5 10.5 L 19.5 13.5 L 16.5 13.5 Z"
+        : root.kind == IconKind.locate ? "M 5 12 A 7 7 0 1 0 19 12 A 7 7 0 1 0 5 12 Z M 12 2 L 12 6 M 12 18 L 12 22 M 2 12 L 6 12 M 18 12 L 22 12 M 10.5 12 A 1.5 1.5 0 1 0 13.5 12 A 1.5 1.5 0 1 0 10.5 12 Z"
+        : root.kind == IconKind.trash ? "M 4 7 L 20 7 M 9 7 L 9 4 L 15 4 L 15 7 M 6 7 L 7 20 L 17 20 L 18 7 M 10 11 L 10 16 M 14 11 L 14 16"
+        : root.kind == IconKind.playlist-add ? "M 4 6 L 16 6 M 4 11 L 16 11 M 4 16 L 11 16 M 18 13 L 18 21 M 14 17 L 22 17"
         : "M 4 6 L 20 6 L 20 8 L 4 8 Z M 4 11 L 16 11 L 16 13 L 4 13 Z M 4 16 L 18 16 L 18 18 L 4 18 Z";
 }
 

@@ -14,8 +14,9 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 use super::{Route, Ui, int, track_row};
 use crate::cards::{Card, image_key};
 use crate::{
-    AppWindow, Home, HomeRow, HomeStats, Lib032, LyricLine, LyricsResult, LyricsSearch, MixInfo,
-    MixTag, NamedItem, RubySegment, SeriesInfo, SeriesPane, WorkInfo, YearBar,
+    AlbumWorkRow, AppWindow, FactRow, Home, HomeRow, HomeStats, Lib032, LyricLine, LyricsResult,
+    LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, RubySegment, SeriesInfo, SeriesPane,
+    WorkInfo, WorkUseRow, YearBar,
 };
 
 /// Card grids of the 032 pages (see app.slint).
@@ -90,6 +91,8 @@ const LANGUAGES: [&str; 3] = ["zh-Hans", "zh-Hant", "en"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Bind {
     Home,
+    /// Spotlight art (re-bound when its size changes).
+    Hero,
     Detail,
 }
 
@@ -111,6 +114,8 @@ pub(super) struct M032State {
     series: Option<views::SeriesView>,
     mix: Option<views::MixView>,
     bindings: HashMap<String, Vec<(Bind, Setter)>>,
+    /// Open album: track id -> first linked work (the "◆ OP" marker).
+    tieup_works: HashMap<i64, i64>,
 }
 
 impl M032State {
@@ -172,8 +177,9 @@ fn work_card(w: &views::WorkItem, home: bool) -> Card {
         subtitle: artist,
         year: 0,
         artwork: w.artwork.clone(),
-        badge: if home && !w.series_title.is_empty() {
-            "系列".into()
+        // The home's horizontal card prints "系列：<badge>".
+        badge: if home {
+            w.series_title.clone()
         } else {
             String::new()
         },
@@ -202,7 +208,7 @@ impl Ui {
             return;
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (size * self.scale(w)).ceil().max(1.0) as u32;
+        let px = (size * self.scale(w)).round().max(1.0) as u32;
         let key = image_key(path, px);
         let first = {
             let mut state = self.m032.borrow_mut();
@@ -367,6 +373,9 @@ impl Ui {
 
     fn show_tab(&self, w: &AppWindow, tab: SpotlightTab) {
         let home = w.global::<Home>();
+        // Spotlight art follows the width (clamp(180px, 17vw, 244px)).
+        self.unbind(Bind::Hero);
+        let art = home.get_hero_art().max(1.0);
         self.m032.borrow_mut().tab = tab;
         home.set_tab(tab_id(tab));
         if tab == SpotlightTab::Series {
@@ -418,7 +427,7 @@ impl Ui {
             home.set_series_fan(ModelRc::from(fan.clone()));
             for (i, path) in pane.fan.iter().enumerate() {
                 let fan = fan.clone();
-                self.bind_image(w, Bind::Home, path, 170.0, move |image| {
+                self.bind_image(w, Bind::Hero, path, (art * 0.77).floor(), move |image| {
                     fan.set_row_data(i, image.clone());
                 });
             }
@@ -464,7 +473,7 @@ impl Ui {
         );
         let weak = self.window.clone();
         let album_id = pane.album.id;
-        self.bind_image(w, Bind::Home, &pane.album.artwork, 220.0, move |image| {
+        self.bind_image(w, Bind::Hero, &pane.album.artwork, art, move |image| {
             if let Some(w) = weak.upgrade() {
                 let home = w.global::<Home>();
                 let mut p = home.get_pane();
@@ -602,6 +611,10 @@ impl Ui {
                 }
             }
             "reroll" => self.send(Command::HomeReroll),
+            "hero-art" => {
+                let tab = self.m032.borrow().tab;
+                self.show_tab(w, tab);
+            }
             "open-album" => {
                 if arg > 0 {
                     self.navigate(w, Route::Album(arg));
@@ -769,6 +782,12 @@ impl Ui {
 
     pub(super) fn reset_m032_detail(&self, w: &AppWindow) {
         self.unbind(Bind::Detail);
+        self.m032.borrow_mut().tieup_works.clear();
+        w.set_album_works(rc(Vec::new()));
+        w.set_album_release(rc(Vec::new()));
+        w.set_album_people(rc(Vec::new()));
+        w.set_album_media(rc(Vec::new()));
+        w.set_album_review(SharedString::new());
         let lib = w.global::<Lib032>();
         lib.set_work(WorkInfo::default());
         lib.set_work_poster(Image::default());
@@ -785,6 +804,117 @@ impl Ui {
         state.work = None;
         state.series = None;
         state.mix = None;
+    }
+
+    /// Album inspector: release / media facts, people (with avatars), review.
+    pub(super) fn album_inspector(&self, w: &AppWindow, album: &client_core::AlbumView) {
+        let facts = |rows: &[(String, String)]| {
+            rc(rows
+                .iter()
+                .map(|(label, value)| FactRow {
+                    label: s(label),
+                    value: s(value),
+                })
+                .collect())
+        };
+        w.set_album_release(facts(&album.release_facts));
+        w.set_album_media(facts(&album.media_facts));
+        w.set_album_review(s(&album.review));
+        let people = std::rc::Rc::new(VecModel::from(
+            album
+                .people
+                .iter()
+                .map(|p| PersonRow {
+                    id: int(p.id),
+                    name: s(&p.name),
+                    roles: s(&format!("{} · {} 首", p.roles, p.track_count)),
+                    avatar: Image::default(),
+                })
+                .collect::<Vec<_>>(),
+        ));
+        w.set_album_people(ModelRc::from(people.clone()));
+        for (i, p) in album.people.iter().enumerate() {
+            let people = people.clone();
+            let path = format!("/api/v1/artists/{}/image", p.id);
+            self.bind_image(w, Bind::Detail, &path, 32.0, move |image| {
+                if let Some(mut row) = people.row_data(i) {
+                    row.avatar = image.clone();
+                    people.set_row_data(i, row);
+                }
+            });
+        }
+    }
+
+    /// Works linked to the open album: header capsules, inspector, and the
+    /// "◆ OP" marker of the tracks.
+    pub(super) fn album_works_loaded(
+        &self,
+        w: &AppWindow,
+        album_id: i64,
+        works: &[views::AlbumWorkEntry],
+        tieups: &[(i64, String, usize)],
+    ) {
+        if self.route.get() != Route::Album(album_id) {
+            return;
+        }
+        let model = std::rc::Rc::new(VecModel::from(
+            works
+                .iter()
+                .map(|wk| AlbumWorkRow {
+                    id: int(wk.id),
+                    title: s(&wk.title),
+                    translated: s(&wk.translated),
+                    meta: s(&wk.meta),
+                    relation: s(&wk.relation),
+                    usage: s(&wk.usage),
+                    ost: wk.ost,
+                    poster: Image::default(),
+                    uses: rc(wk
+                        .tracks
+                        .iter()
+                        .map(|u| WorkUseRow {
+                            label: s(&u.label),
+                            title: s(&u.title),
+                        })
+                        .collect()),
+                })
+                .collect::<Vec<_>>(),
+        ));
+        w.set_album_works(ModelRc::from(model.clone()));
+        for (i, wk) in works.iter().enumerate() {
+            let model = model.clone();
+            // Inspector posters are 56 x 84; the capsules reuse them.
+            self.bind_image(w, Bind::Detail, &wk.poster, 84.0, move |image| {
+                if let Some(mut row) = model.row_data(i) {
+                    row.poster = image.clone();
+                    model.set_row_data(i, row);
+                }
+            });
+        }
+        {
+            let mut state = self.m032.borrow_mut();
+            state.tieup_works.clear();
+            for wk in works {
+                for u in &wk.tracks {
+                    state.tieup_works.entry(u.track_id).or_insert(wk.id);
+                }
+            }
+        }
+        for i in 0..self.detail_tracks.row_count() {
+            let Some(mut row) = self.detail_tracks.row_data(i) else {
+                continue;
+            };
+            let id = i64::from(row.id);
+            if let Some((_, label, count)) = tieups.iter().find(|(t, ..)| *t == id) {
+                row.tieup = s(label);
+                row.tieup_count = i32::try_from(*count).unwrap_or(i32::MAX);
+                self.detail_tracks.set_row_data(i, row);
+            }
+        }
+    }
+
+    pub(super) fn tieup_work(&self, track_id: i64) -> Option<i64> {
+        self.m032.borrow().tieup_works.get(&track_id).copied()
     }
 
     fn bind_poster(&self, w: &AppWindow, path: &str, set: fn(&Lib032, Image)) {

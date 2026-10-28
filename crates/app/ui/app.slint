@@ -5,17 +5,17 @@ import {
 } from "views.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
-    ConfirmDialog,
+    ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
 } from "library.slint";
 import { SettingsView } from "settings.slint";
 import { GhostButton, IconButton, IconKind, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
-    HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog,
+    HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog, LinkText,
 } from "m032.slint";
 
-export { AlbumCard, AlbumRow, TrackRow, LyricLine, RubySegment, QueueRow, PlaylistChoice, ListQuery, DetailInfo }
+export { AlbumCard, AlbumRow, TrackRow, LyricLine, RubySegment, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult,
@@ -89,6 +89,8 @@ export component AppWindow inherits Window {
     // recent albums, 12 chronicle, 13 home playlists, 14 work albums,
     // 15 series members, 16 series albums.
     callback card-layout-changed(int, int, length);
+    // (grid, most cards shown; 0: all)
+    callback card-limit-changed(int, int);
     // (grid, action, id, argument)
     callback card-action(int, string, int, int);
     // Track lists (`list` ids): 0 tracks page, 1 favorites, 2 detail,
@@ -104,6 +106,7 @@ export component AppWindow inherits Window {
     in-out property <ListQuery> q-albums;
     in-out property <ListQuery> q-tracks;
     in-out property <ListQuery> q-artists;
+    in-out property <ListQuery> q-all-artists;
     in-out property <ListQuery> q-playlists;
     in-out property <ListQuery> q-fav-albums;
     in-out property <ListQuery> q-fav-tracks;
@@ -167,7 +170,15 @@ export component AppWindow inherits Window {
     in property <image> detail-cover;
     in property <bool> detail-loading;
     in property <[TrackRow]> detail-tracks;
-    in property <[AlbumRow]> detail-releases;
+    // Album page: linked works, release / media facts, people, review.
+    in property <[AlbumWorkRow]> album-works;
+    in property <[FactRow]> album-release;
+    in property <[PersonRow]> album-people;
+    in property <[FactRow]> album-media;
+    in property <string> album-review;
+    // Artist page: releases grouped like the 032 server, the biography.
+    in property <[ReleaseGroupRow]> artist-groups;
+    in property <string> artist-about;
     in property <bool> playlist-artwork;
     callback detail-action(string, int);
 
@@ -182,7 +193,11 @@ export component AppWindow inherits Window {
     // Queue (play order).
     in property <[QueueRow]> queue;
     in property <int> queue-current: -1;
-    in-out property <bool> show-queue: false;
+    // Entries in the whole queue (`queue` holds the search matches).
+    in property <int> queue-total;
+    in-out property <string> queue-search;
+    callback queue-search-changed(string);
+    callback save-queue();
     in property <bool> shuffle;
     // 0 off, 1 all, 2 one.
     in property <int> repeat;
@@ -234,8 +249,16 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-translation-shown;
     in property <bool> lyrics-translating;
     in property <int> lyrics-offset;
-    in-out property <bool> show-lyrics: true;
-    callback show-lyrics-changed(bool);
+    // Right panel: queue and lyrics stacked (settings `rightPanel`).
+    in-out property <bool> panel-open: true;
+    in-out property <bool> panel-queue: true;
+    in-out property <bool> panel-lyrics: true;
+    in-out property <bool> panel-lyrics-first: false;
+    // Share of the upper pane when both show.
+    in-out property <float> panel-split: 0.5;
+    in-out property <length> panel-width: 360px;
+    // Any of the panel-* properties changed (saved by Rust).
+    callback panel-changed();
     // search, clear, translate
     callback lyrics-tool(string);
     callback lyrics-offset-changed(int);
@@ -321,7 +344,8 @@ export component AppWindow inherits Window {
                         { text: "主页", page: 20 },
                         { text: "专辑", page: 0 },
                         { text: "曲目", page: 1 },
-                        { text: "艺人", page: 3 },
+                        { text: "专辑艺术家", page: 3 },
+                        { text: "艺术家", page: 24 },
                         { text: "作品", page: 21 },
                         { text: "系列", page: 22 },
                         { text: "播放记录", page: 23 },
@@ -362,7 +386,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle {
+            pages := Rectangle {
                 horizontal-stretch: 1;
 
                 if root.page == 0: VerticalLayout {
@@ -442,18 +466,27 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.page == 3: VerticalLayout {
+                // 3: album artists, 24: everyone credited (role=all).
+                if root.page == 3 || root.page == 24: artists-page := VerticalLayout {
+                    property <int> target: root.page == 24 ? 7 : 2;
+                    changed target => {
+                        root.query-changed(self.target, root.page == 24 ? root.q-all-artists : root.q-artists);
+                    }
                     PageHeader {
-                        title: "艺人";
+                        title: root.page == 24 ? "艺术家" : "专辑艺术家";
                         count: root.count(root.artist-total, "位");
                         ListToolbar {
                             sort-labels: root.artist-sorts;
                             sort-desc: root.artist-sort-desc;
-                            query: root.q-artists;
+                            query: root.page == 24 ? root.q-all-artists : root.q-artists;
                             show-order: root.browse;
                             changed(q) => {
-                                root.q-artists = q;
-                                root.query-changed(2, q);
+                                if root.page == 24 {
+                                    root.q-all-artists = q;
+                                } else {
+                                    root.q-artists = q;
+                                }
+                                root.query-changed(artists-page.target, q);
                             }
                         }
                     }
@@ -465,7 +498,7 @@ export component AppWindow inherits Window {
                         empty-text: "没有艺人";
                         playlists: root.playlist-choices;
                         init => {
-                            root.query-changed(2, root.q-artists);
+                            root.query-changed(artists-page.target, root.page == 24 ? root.q-all-artists : root.q-artists);
                         }
                         layout-changed(n, size) => {
                             root.card-layout-changed(1, n, size);
@@ -711,27 +744,78 @@ export component AppWindow inherits Window {
                 }
 
                 // Album, playlist, similar: header and a virtualized list.
-                if root.page == 10 && root.detail.kind != 1 && root.detail.kind < 4: VerticalLayout {
+                if root.page == 10 && root.detail.kind != 1 && root.detail.kind < 4: detail-page := VerticalLayout {
+                    // Album info column (Electron: beside the tracks from
+                    // the lg breakpoint); narrower pages switch with tabs.
+                    property <bool> album: root.detail.kind == 0;
+                    property <bool> has-info: self.album && (root.album-works.length > 0 || root.album-release.length > 0 || root.album-people.length > 0);
+                    property <bool> side: pages.width >= 960px;
+                    property <bool> info-tab;
                     DetailHeader {
                         info: root.detail;
                         cover: root.detail-cover;
                         loading: root.detail-loading;
                         artwork-upload: root.playlist-artwork;
                         playlists: root.playlist-choices;
+                        works: detail-page.album ? root.album-works : [];
                         action(what, arg) => {
                             root.detail-action(what, arg);
                         }
                     }
-                    TrackList {
+                    if detail-page.has-info && !detail-page.side: HorizontalLayout {
+                        padding-left: 32px;
+                        padding-bottom: 6px;
+                        spacing: 4px;
+                        alignment: start;
+                        Tab {
+                            text: "曲目";
+                            selected: !detail-page.info-tab;
+                            clicked => {
+                                detail-page.info-tab = false;
+                            }
+                        }
+                        Tab {
+                            text: "信息";
+                            selected: detail-page.info-tab;
+                            clicked => {
+                                detail-page.info-tab = true;
+                            }
+                        }
+                    }
+                    // Tracks and the info column (explicit geometry: a
+                    // layout would make the track columns' widths loop).
+                    body := Rectangle {
                         vertical-stretch: 1;
-                        rows: root.detail-tracks;
-                        mode: root.detail.kind == 0 ? 1 : root.detail.kind == 2 ? 2 : 0;
-                        loading: root.detail-loading;
-                        empty-text: root.detail.kind == 2 ? "歌单是空的" : "没有曲目";
-                        playing-id: root.playing-id;
-                        playlists: root.playlist-choices;
-                        action(what, i, arg) => {
-                            root.track-action(2, what, i, arg);
+                        property <bool> show-info: detail-page.has-info && (detail-page.side || detail-page.info-tab);
+                        property <length> info-w: detail-page.side ? 300px : self.width;
+                        if !(detail-page.has-info && !detail-page.side && detail-page.info-tab): TrackList {
+                            x: 0;
+                            y: 0;
+                            width: body.width - (body.show-info ? body.info-w : 0px);
+                            height: body.height;
+                            rows: root.detail-tracks;
+                            mode: root.detail.kind == 0 ? 1 : root.detail.kind == 2 ? 2 : 0;
+                            loading: root.detail-loading;
+                            empty-text: root.detail.kind == 2 ? "歌单是空的" : "没有曲目";
+                            playing-id: root.playing-id;
+                            playlists: root.playlist-choices;
+                            action(what, i, arg) => {
+                                root.track-action(2, what, i, arg);
+                            }
+                        }
+                        if body.show-info: AlbumInspector {
+                            x: body.width - body.info-w + (detail-page.side ? 0px : 32px);
+                            y: 0;
+                            width: body.info-w - (detail-page.side ? 0px : 32px);
+                            height: body.height;
+                            works: root.album-works;
+                            release: root.album-release;
+                            people: root.album-people;
+                            media: root.album-media;
+                            review: root.album-review;
+                            action(what, id) => {
+                                root.navigate(what == "work" ? 13 : 11, id);
+                            }
                         }
                     }
                 }
@@ -753,14 +837,98 @@ export component AppWindow inherits Window {
                                 root.detail-action(what, arg);
                             }
                         }
-                        if root.detail-tracks.length > 0: Text {
-                            x: 32px;
-                            height: 40px;
-                            text: "热门歌曲";
-                            color: Theme.text;
-                            font-size: 18px;
-                            font-weight: 700;
-                            vertical-alignment: center;
+                        // Electron order: 关于, the release groups, 热门歌曲.
+                        if root.artist-about != "": about := VerticalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-bottom: 8px;
+                            spacing: 6px;
+                            property <bool> expanded;
+                            Text {
+                                height: 40px;
+                                text: "关于 " + root.detail.title;
+                                color: Theme.text;
+                                font-size: 18px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            // Three lines unless expanded.
+                            Rectangle {
+                                height: about.expanded ? about-measure.preferred-height : min(about-measure.preferred-height, 54px);
+                                clip: true;
+                                about-measure := Text {
+                                    y: 0;
+                                    width: parent.width;
+                                    height: self.preferred-height;
+                                    text: root.artist-about;
+                                    color: Theme.text-dim;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            if about-measure.preferred-height > 56px: HorizontalLayout {
+                                alignment: start;
+                                LinkText {
+                                    text: about.expanded ? "收起" : "展开";
+                                    clicked => {
+                                        about.expanded = !about.expanded;
+                                    }
+                                }
+                            }
+                        }
+                        for g in root.artist-groups: VerticalLayout {
+                            HorizontalLayout {
+                                padding-left: 32px;
+                                padding-right: 32px;
+                                height: 52px;
+                                spacing: 10px;
+                                Text {
+                                    text: g.title;
+                                    color: Theme.text;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: g.count;
+                                    color: Theme.text-faint;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            CardRows {
+                                width: artist-flick.width;
+                                rows: g.rows;
+                                kind: 0;
+                                playlists: root.playlist-choices;
+                                layout-changed(n, size) => {
+                                    root.card-layout-changed(g.grid, n, size);
+                                }
+                                action(what, id, arg) => {
+                                    root.card-action(g.grid, what, id, arg);
+                                }
+                            }
+                        }
+                        if root.detail-tracks.length > 0: HorizontalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-top: 12px;
+                            height: 52px;
+                            Text {
+                                text: "热门歌曲";
+                                color: Theme.text;
+                                font-size: 18px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            LinkText {
+                                text: "查看全部 ›";
+                                clicked => {
+                                    root.detail-action("artist-tracks", 0);
+                                }
+                            }
                         }
                         for track in root.detail-tracks: TrackRowView {
                             track: track;
@@ -772,27 +940,6 @@ export component AppWindow inherits Window {
                             album-w: artist-flick.flex * 0.34;
                             action(what, arg) => {
                                 root.track-action(2, what, track.index, arg);
-                            }
-                        }
-                        if root.detail-releases.length > 0: Text {
-                            x: 32px;
-                            height: 56px;
-                            text: "作品";
-                            color: Theme.text;
-                            font-size: 18px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                        CardRows {
-                            width: artist-flick.width;
-                            rows: root.detail-releases;
-                            kind: 0;
-                            playlists: root.playlist-choices;
-                            layout-changed(n, size) => {
-                                root.card-layout-changed(6, n, size);
-                            }
-                            action(what, id, arg) => {
-                                root.card-action(6, what, id, arg);
                             }
                         }
                     }
@@ -807,6 +954,9 @@ export component AppWindow inherits Window {
                     }
                     card-layout(grid, n, size) => {
                         root.card-layout-changed(grid, n, size);
+                    }
+                    card-limit(grid, n) => {
+                        root.card-limit-changed(grid, n);
                     }
                     track-action(list, what, i, arg) => {
                         root.track-action(list, what, i, arg);
@@ -946,50 +1096,136 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.show-queue: QueuePanel {
-                width: 320px;
-                rows: root.queue;
-                current: root.queue-current;
-                play(uid) => {
-                    root.play-queue-item(uid);
-                }
-                remove(uid) => {
-                    root.remove-queue-item(uid);
-                }
-                move(uid, to) => {
-                    root.move-queue-item(uid, to);
-                }
-                clear => {
-                    root.clear-queue();
-                }
-            }
+            // Right panel (Electron `sidebar-play-queue`): queue and
+            // lyrics stacked, a draggable split, a draggable left edge.
+            if root.panel-open && (root.panel-queue || root.panel-lyrics): right := Rectangle {
+                property <bool> both: root.panel-queue && root.panel-lyrics;
+                property <length> gap: 6px;
+                property <length> upper-h: self.both ? round((self.height - self.gap) * root.panel-split / 1px) * 1px : self.height;
+                property <length> lower-h: self.both ? self.height - self.gap - self.upper-h : self.height;
+                property <length> press-x;
+                property <length> press-y;
+                width: clamp(root.panel-width, 260px, max(260px, root.width * 0.5));
+                background: Theme.border;
 
-            if root.show-lyrics && !root.show-queue: LyricsPanel {
-                width: 320px;
-                lines: root.lyrics;
-                active: root.lyrics-active;
-                synced: root.lyrics-synced;
-                source: root.lyrics-source;
-                has-track: root.has-track;
-                lines-have-translation: root.lyrics-translated-lines;
-                lines-have-ruby: root.lyrics-ruby-lines;
-                lines-have-romaji: root.lyrics-romaji-lines;
-                can-search: root.lyrics-can-search;
-                can-translate: root.lyrics-can-translate;
-                translation-shown: root.lyrics-translation-shown;
-                translating: root.lyrics-translating;
-                offset-ms: root.lyrics-offset;
-                seek-line(i) => {
-                    root.lyrics-seek(i);
-                }
-                tool(what) => {
-                    if what == "search" {
-                        root.dialog = 5;
+                if root.panel-queue: QueuePanel {
+                    x: 1px;
+                    width: parent.width - 1px;
+                    y: right.both && root.panel-lyrics-first ? right.upper-h + right.gap : 0;
+                    height: right.both ? (root.panel-lyrics-first ? right.lower-h : right.upper-h) : right.height;
+                    rows: root.queue;
+                    total: root.queue-total;
+                    current: root.queue-current;
+                    search <=> root.queue-search;
+                    search-changed(text) => {
+                        root.queue-search-changed(text);
                     }
-                    root.lyrics-tool(what);
+                    save => {
+                        root.save-queue();
+                    }
+                    play(uid) => {
+                        root.play-queue-item(uid);
+                    }
+                    remove(uid) => {
+                        root.remove-queue-item(uid);
+                    }
+                    move(uid, to) => {
+                        root.move-queue-item(uid, to);
+                    }
+                    clear => {
+                        root.clear-queue();
+                    }
                 }
-                offset(ms) => {
-                    root.lyrics-offset-changed(ms);
+
+                if root.panel-lyrics: LyricsPanel {
+                    x: 1px;
+                    width: parent.width - 1px;
+                    y: right.both && !root.panel-lyrics-first ? right.upper-h + right.gap : 0;
+                    height: right.both ? (root.panel-lyrics-first ? right.upper-h : right.lower-h) : right.height;
+                    can-move-up: right.both && !root.panel-lyrics-first;
+                    can-move-down: right.both && root.panel-lyrics-first;
+                    move-panel(dir) => {
+                        root.panel-lyrics-first = dir < 0;
+                        root.panel-changed();
+                    }
+                    close-panel => {
+                        root.panel-lyrics = false;
+                        root.panel-changed();
+                    }
+                    lines: root.lyrics;
+                    active: root.lyrics-active;
+                    synced: root.lyrics-synced;
+                    source: root.lyrics-source;
+                    has-track: root.has-track;
+                    lines-have-translation: root.lyrics-translated-lines;
+                    lines-have-ruby: root.lyrics-ruby-lines;
+                    lines-have-romaji: root.lyrics-romaji-lines;
+                    can-search: root.lyrics-can-search;
+                    can-translate: root.lyrics-can-translate;
+                    translation-shown: root.lyrics-translation-shown;
+                    translating: root.lyrics-translating;
+                    offset-ms: root.lyrics-offset;
+                    seek-line(i) => {
+                        root.lyrics-seek(i);
+                    }
+                    tool(what) => {
+                        if what == "search" {
+                            root.dialog = 5;
+                        }
+                        root.lyrics-tool(what);
+                    }
+                    offset(ms) => {
+                        root.lyrics-offset-changed(ms);
+                    }
+                }
+
+                // Split handle between the panes.
+                if right.both: Rectangle {
+                    x: 1px;
+                    y: right.upper-h;
+                    width: parent.width - 1px;
+                    height: right.gap;
+                    background: split-area.has-hover || split-area.pressed ? Theme.accent-dim : Theme.bg;
+                    split-area := TouchArea {
+                        mouse-cursor: row-resize;
+                        pointer-event(e) => {
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                right.press-y = self.mouse-y;
+                            }
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.up {
+                                root.panel-changed();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.panel-split = clamp((right.upper-h + self.mouse-y - right.press-y) / max(1px, right.height - right.gap), 0.15, 0.85);
+                            }
+                        }
+                    }
+                }
+
+                // Resize from the left edge.
+                Rectangle {
+                    x: 0;
+                    width: 5px;
+                    background: edge-area.has-hover || edge-area.pressed ? Theme.accent-dim : transparent;
+                    edge-area := TouchArea {
+                        mouse-cursor: col-resize;
+                        pointer-event(e) => {
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                right.press-x = self.mouse-x;
+                            }
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.up {
+                                root.panel-width = right.width;
+                                root.panel-changed();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.panel-width = clamp(right.width - (self.mouse-x - right.press-x), 260px, min(720px, max(260px, root.width * 0.5)));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1009,8 +1245,8 @@ export component AppWindow inherits Window {
             paused: root.paused;
             buffering: root.buffering;
             volume: root.volume;
-            lyrics-open: root.show-lyrics && !root.show-queue;
-            queue-open: root.show-queue;
+            lyrics-open: root.panel-open && root.panel-lyrics;
+            queue-open: root.panel-open;
             shuffle: root.shuffle;
             repeat: root.repeat;
             sleep-active: root.sleep-active;
@@ -1028,7 +1264,12 @@ export component AppWindow inherits Window {
                 root.open-now-artist();
             }
             toggle-queue => {
-                root.show-queue = !root.show-queue;
+                // The queue button opens / closes the whole panel.
+                root.panel-open = !root.panel-open;
+                if root.panel-open && !root.panel-queue && !root.panel-lyrics {
+                    root.panel-queue = true;
+                }
+                root.panel-changed();
             }
             toggle-shuffle => {
                 root.toggle-shuffle();
@@ -1053,17 +1294,15 @@ export component AppWindow inherits Window {
                 root.volume-changed(v);
             }
             toggle-lyrics => {
-                if root.show-queue {
-                    // The queue covers the lyrics: switch to them.
-                    root.show-queue = false;
-                    if !root.show-lyrics {
-                        root.show-lyrics = true;
-                        root.show-lyrics-changed(true);
-                    }
+                // Until the full-screen player exists: show / hide the
+                // lyrics pane of the right panel.
+                if root.panel-open && root.panel-lyrics {
+                    root.panel-lyrics = false;
                 } else {
-                    root.show-lyrics = !root.show-lyrics;
-                    root.show-lyrics-changed(root.show-lyrics);
+                    root.panel-open = true;
+                    root.panel-lyrics = true;
                 }
+                root.panel-changed();
             }
         }
     }

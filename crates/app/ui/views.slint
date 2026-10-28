@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon } from "controls.slint";
+import { Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
 
 // `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
 // extra line (track uses on a work page); `playing`: the current track
@@ -42,6 +42,11 @@ export struct TrackRow {
     note: string,
     disabled: bool,
     blocked: bool,
+    // Album pages: "作词 A · 作曲 B" under the title, and the work use
+    // ("OP") with the number of linked works.
+    credits: string,
+    tieup: string,
+    tieup-count: int,
 }
 
 // A piece of a lyrics line with its kana reading (empty: none).
@@ -357,7 +362,8 @@ export component CardGrid inherits Rectangle {
     // Cards at least 160px with 24px gaps and 32px side padding; the
     // columns then share the width.
     out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
-    out property <length> card-size: (self.width - 64px - (root.columns - 1) * 24px) / root.columns;
+    // Whole physical pixels, so covers decoded at this size draw 1:1.
+    out property <length> card-size: floor(((self.width - 64px - (root.columns - 1) * 24px) / root.columns) / 1phx) * 1phx;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }
@@ -417,7 +423,8 @@ export component TrackRowView inherits Rectangle {
     callback drop();
     property <length> press-y;
     property <bool> dragging;
-    height: 36px;
+    property <bool> two-line: root.mode == 1 && root.track.credits != "";
+    height: root.two-line ? 50px : 36px;
     background: root.dragging ? Theme.accent-dim : row-area.has-hover ? Theme.surface-hover : transparent;
 
     HorizontalLayout {
@@ -433,12 +440,54 @@ export component TrackRowView inherits Rectangle {
         HorizontalLayout {
             width: root.title-w;
             spacing: 6px;
-            Text {
-                text: root.track.title;
-                color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
-                overflow: elide;
-                vertical-alignment: center;
+            VerticalLayout {
+                alignment: center;
                 horizontal-stretch: 1;
+                Text {
+                    text: root.track.title;
+                    color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
+                    overflow: elide;
+                }
+                if root.two-line: Text {
+                    text: root.track.credits;
+                    color: Theme.text-faint;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+            // "◆ OP": the track is used in a work (click: the work).
+            if root.track.tieup != "": Rectangle {
+                width: tieup-row.preferred-width + 12px;
+                height: 20px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 10px;
+                background: tieup-area.has-hover ? Theme.accent-dim : transparent;
+                border-width: 1px;
+                border-color: Theme.accent-dim;
+                tieup-row := HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    spacing: 4px;
+                    Text {
+                        text: "◆ " + root.track.tieup;
+                        color: Theme.accent;
+                        font-size: 11px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    if root.track.tieup-count > 1: Text {
+                        text: root.track.tieup-count;
+                        color: Theme.text-dim;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+                tieup-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("tieup", 0);
+                    }
+                }
             }
             if root.track.tag != "": Rectangle {
                 width: tag-text.preferred-width + 10px;
@@ -686,55 +735,109 @@ export component TrackList inherits Rectangle {
 
 export component QueuePanel inherits Rectangle {
     in property <[QueueRow]> rows;
+    // Entries in the whole queue (`rows` may be filtered).
+    in property <int> total;
     in property <int> current: -1;
+    // The search text (rows are filtered in Rust; no dragging then).
+    in-out property <string> search;
+    callback search-changed(string);
     callback play(int);
     callback remove(int);
     callback clear();
+    // Save the queue as a new playlist.
+    callback save();
     // (uid, new play-order position)
     callback move(int, int);
     property <int> drag-from: -1;
     property <int> drop-at: -1;
     background: Theme.surface;
 
+    function locate() {
+        if root.current >= 0 {
+            list.content-y = -min(max(0px, root.current * 48px - (list.visible-height - 48px) / 2), max(0px, list.content-height - list.visible-height));
+        }
+    }
+
+    if root.rows.length == 0: Text {
+        y: 120px;
+        width: root.width;
+        horizontal-alignment: center;
+        text: root.search != "" ? "没有匹配的曲目" : "队列为空";
+        color: Theme.text-faint;
+    }
+
     VerticalLayout {
+        // Toolbar (Electron `play-queue-list-controls`).
         HorizontalLayout {
-            padding: 16px;
-            spacing: 8px;
+            padding-left: 16px;
+            padding-right: 8px;
+            padding-top: 10px;
+            padding-bottom: 4px;
+            spacing: 2px;
             Text {
                 text: "播放队列";
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 700;
+                vertical-alignment: center;
             }
             Text {
-                text: root.rows.length == 0 ? "" : root.rows.length + " 首";
+                text: root.total == 0 ? "" : "  " + root.total + " 首";
                 color: Theme.text-faint;
                 font-size: 12px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
-            if root.rows.length > 0: Text {
-                text: "清空";
-                color: clear-area.has-hover ? Theme.text : Theme.text-dim;
-                font-size: 12px;
-                vertical-alignment: center;
-                clear-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.clear();
-                    }
+            IconButton {
+                kind: IconKind.locate;
+                size: 30px;
+                icon-size: 16px;
+                enabled: root.current >= 0;
+                clicked => {
+                    root.locate();
+                }
+            }
+            IconButton {
+                kind: IconKind.playlist-add;
+                size: 30px;
+                icon-size: 16px;
+                enabled: root.total > 0;
+                clicked => {
+                    root.save();
+                }
+            }
+            IconButton {
+                kind: IconKind.trash;
+                size: 30px;
+                icon-size: 16px;
+                enabled: root.total > 0;
+                clicked => {
+                    root.clear();
                 }
             }
         }
-
-        if root.rows.length == 0: Rectangle {
-            Text {
-                text: "队列为空";
-                color: Theme.text-faint;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 8px;
+            SearchField {
+                height: 30px;
+                placeholder: "搜索队列";
+                text <=> root.search;
+                edited => {
+                    root.search-changed(self.text);
+                }
+                accepted => {
+                    root.search-changed(self.text);
+                }
             }
         }
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
 
-        if root.rows.length > 0: ListView {
+        list := ListView {
             for row[i] in root.rows: Rectangle {
                 property <length> press-y;
                 property <bool> dragging: root.drag-from == i;
@@ -760,7 +863,7 @@ export component QueuePanel inherits Rectangle {
                         }
                     }
                     moved => {
-                        if self.pressed && (root.drag-from == i || abs(self.mouse-y - parent.press-y) > 6px) {
+                        if self.pressed && root.search == "" && (root.drag-from == i || abs(self.mouse-y - parent.press-y) > 6px) {
                             root.drag-from = i;
                             root.drop-at = max(0, min(root.rows.length - 1, i + round((self.mouse-y - parent.press-y) / parent.height)));
                         }
@@ -859,6 +962,12 @@ export component LyricsPanel inherits Rectangle {
     // search, clear, translate; offset (ms)
     callback tool(string);
     callback offset(int);
+    // Panel controls in the right panel (Electron `PanelReorderControls`):
+    // move up (-1) / down (1), close.
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    callback move-panel(int);
+    callback close-panel();
     property <length> line-height: 40px + (root.lines-have-translation ? 18px : 0px) + (root.lines-have-ruby ? 14px : 0px) + (root.lines-have-romaji ? 16px : 0px);
     in property <bool> lines-have-translation;
     in property <bool> lines-have-ruby;
@@ -867,12 +976,17 @@ export component LyricsPanel inherits Rectangle {
 
     VerticalLayout {
         HorizontalLayout {
-            padding: 16px;
+            padding-left: 16px;
+            padding-right: 8px;
+            padding-top: 10px;
+            padding-bottom: 6px;
+            spacing: 2px;
             Text {
                 text: "歌词";
                 color: Theme.text;
                 font-size: 16px;
                 font-weight: 700;
+                vertical-alignment: center;
             }
             Text {
                 text: root.source;
@@ -880,6 +994,37 @@ export component LyricsPanel inherits Rectangle {
                 font-size: 11px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Rectangle {
+                width: 6px;
+            }
+            IconButton {
+                kind: IconKind.arrow-up;
+                size: 26px;
+                icon-size: 14px;
+                enabled: root.can-move-up;
+                clicked => {
+                    root.move-panel(-1);
+                }
+            }
+            IconButton {
+                kind: IconKind.arrow-down;
+                size: 26px;
+                icon-size: 14px;
+                enabled: root.can-move-down;
+                clicked => {
+                    root.move-panel(1);
+                }
+            }
+            IconButton {
+                kind: IconKind.close;
+                size: 26px;
+                icon-size: 14px;
+                clicked => {
+                    root.close-panel();
+                }
             }
         }
 

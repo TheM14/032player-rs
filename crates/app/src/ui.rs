@@ -10,18 +10,18 @@ use std::time::Duration;
 use client_core::{
     AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, AudioDevice, Command, Commander, DetailView,
     Event, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort, QueuePosition,
-    Repeat, Rgba, ServerFeatures, Settings, SignOutReason, SleepTimer, SortOrder, TrackFilter,
-    TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
+    Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason, SleepTimer, SortOrder,
+    TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
     VecModel,
 };
 
-use crate::cards::{Card, CardGridModel, image_key};
+use crate::cards::{Card, CardGridModel, image_key, key_path};
 use crate::{
     AppWindow, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult, LyricsSearch,
-    PlaylistChoice, QueueRow, TrackRow,
+    PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
 };
 use m032::{
     Bind, GRID_CHRONICLE, GRID_HOME_ALBUMS, GRID_HOME_PLAYLISTS, GRID_HOME_WORKS, GRID_MEMBERS,
@@ -38,7 +38,10 @@ const GRID_SEARCH_ARTISTS: usize = 4;
 const GRID_SEARCH_ALBUMS: usize = 5;
 const GRID_RELEASES: usize = 6;
 const GRID_PLAYLISTS: usize = 7;
-const GRIDS: usize = 17;
+/// Release groups of the artist page (专辑, 单曲与 EP, 合辑与现场, 其他发行,
+/// 合作发行, 参与作品, 幕后参与), one grid each.
+const RELEASE_GRIDS: [usize; 7] = [GRID_RELEASES, 17, 18, 19, 20, 21, 22];
+const GRIDS: usize = 23;
 
 /// Pages of app.slint.
 const PAGE_ALBUMS: i32 = 0;
@@ -48,6 +51,8 @@ const PAGE_DETAIL: i32 = 10;
 
 /// Detail header cover size (logical px).
 const DETAIL_COVER: f32 = 200.0;
+/// Player bar cover (logical px).
+const NP_COVER: f32 = 56.0;
 /// Playlist artwork upload limit of the server.
 const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_HISTORY: usize = 50;
@@ -249,6 +254,14 @@ struct Ui {
     transcode: Cell<Option<Transcode>>,
     transcode_choices: RefCell<Vec<Option<Transcode>>>,
     notice_timer: Timer,
+    /// Polls the scale factor (no change event in Slint) so artwork is
+    /// re-decoded when the window moves to a screen with another scale.
+    scale_timer: Timer,
+    last_scale: Cell<f32>,
+    /// The whole queue (play order) and the current position; the queue
+    /// model holds the entries matching the queue search.
+    queue_all: RefCell<(Vec<client_core::QueueEntry>, Option<usize>)>,
+    queue_search: RefCell<String>,
     /// Engine names behind the device combo box; index 0 (`None`) is the
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
@@ -376,7 +389,11 @@ impl Ui {
         w.set_detail_cover(Image::default());
         w.set_detail_loading(true);
         self.detail_tracks.set_vec(Vec::new());
-        self.grids[GRID_RELEASES].clear();
+        for grid in RELEASE_GRIDS {
+            self.grids[grid].clear();
+        }
+        w.set_artist_groups(ModelRc::default());
+        w.set_artist_about(SharedString::new());
         self.reset_m032_detail(w);
         w.set_page(PAGE_DETAIL);
         self.send(match route {
@@ -404,7 +421,16 @@ impl Ui {
         if self.sent.borrow().get(&target) == Some(&key) {
             return;
         }
-        self.sent.borrow_mut().insert(target, key);
+        {
+            let mut sent = self.sent.borrow_mut();
+            sent.insert(target, key);
+            // Album artists (2) and all artists (7) share one result list.
+            match target {
+                2 => sent.remove(&7),
+                7 => sent.remove(&2),
+                _ => None,
+            };
+        }
         let browse = self.browse.get();
         let (year_from, year_to) = years(&q);
         let search = q.search.trim().to_owned();
@@ -443,11 +469,12 @@ impl Ui {
                     filter,
                 });
             }
-            2 | 6 => {
+            2 | 6 | 7 => {
                 let filter = ArtistFilter {
                     sort: artist_sorts(browse).get(q.sort).unwrap_or(ArtistSort::Name),
                     order: order(q.desc),
                     search,
+                    all_roles: target == 7,
                 };
                 if target == 6 {
                     w.set_fav_loading(true);
@@ -603,6 +630,13 @@ impl Ui {
                 }
             }
             "similar" => self.navigate(w, Route::Similar(list, index)),
+            "tieup" => {
+                if let Some((id, _, _)) = row
+                    && let Some(work) = self.tieup_work(id)
+                {
+                    self.navigate(w, Route::Work(work));
+                }
+            }
             "album" => self.navigate(w, Route::Album(arg)),
             "artist" => self.navigate(w, Route::Artist(arg)),
             "new-playlist" => {
@@ -670,6 +704,7 @@ impl Ui {
                 favorite: arg != 0,
             }),
             ("artist", _) => self.navigate(w, Route::Artist(arg)),
+            ("work", _) => self.navigate(w, Route::Work(arg)),
             ("add", _) => self.source_action("add", add_source, arg),
             ("new-playlist", view) => {
                 let name = match view {
@@ -799,6 +834,7 @@ impl Ui {
         w.set_q_fav_albums(q_albums.clone());
         w.set_q_fav_tracks(query(tracks.index(TrackSort::Title), false));
         w.set_q_artists(query(artists.index(ArtistSort::Name), false));
+        w.set_q_all_artists(query(artists.index(ArtistSort::Name), false));
         w.set_q_fav_artists(query(artists.index(ArtistSort::Name), false));
         w.set_q_playlists(query(playlists.index(PlaylistSort::Name), false));
         *self.album_artist.borrow_mut() = None;
@@ -897,8 +933,10 @@ impl Ui {
                 if !a.label.is_empty() {
                     meta.push(a.label.clone());
                 }
+                self.album_inspector(w, a);
                 (
                     DetailInfo {
+                        kicker: a.kind.as_str().into(),
                         kind: 0,
                         id: int(a.id),
                         title: a.title.as_str().into(),
@@ -913,21 +951,51 @@ impl Ui {
                 )
             }
             DetailView::Artist(a) => {
-                self.grids[GRID_RELEASES].set(a.releases.iter().cloned().map(Card::from).collect());
+                let groups: Vec<ReleaseGroupRow> = client_core::release_groups(&a.releases)
+                    .into_iter()
+                    .zip(RELEASE_GRIDS)
+                    .map(|(group, grid)| {
+                        let count = group.items.len();
+                        self.grids[grid].set(group.items.into_iter().map(Card::from).collect());
+                        ReleaseGroupRow {
+                            title: group.title.into(),
+                            count: i32::try_from(count).unwrap_or(i32::MAX),
+                            grid: i32::try_from(grid).unwrap_or(0),
+                            rows: ModelRc::from(self.grids[grid].clone()),
+                        }
+                    })
+                    .collect();
+                w.set_artist_groups(ModelRc::new(VecModel::from(groups)));
+                let mut about = a.biography.trim().to_owned();
+                if !about.is_empty() && !a.biography_source.is_empty() {
+                    about.push_str(&format!("\n\n来源：{}", a.biography_source));
+                }
+                w.set_artist_about(about.into());
                 let mut meta = Vec::new();
+                if !a.artist_type.is_empty() {
+                    meta.push(a.artist_type.clone());
+                }
+                if !a.country.is_empty() {
+                    meta.push(a.country.clone());
+                }
                 if a.album_count > 0 {
                     meta.push(format!("{} 张专辑", a.album_count));
                 }
                 if a.track_count > 0 {
                     meta.push(format!("{} 首", a.track_count));
                 }
+                let aliases = if a.aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!("别名：{}", a.aliases.join(" / "))
+                };
                 (
                     DetailInfo {
                         kind: 1,
                         id: int(a.id),
                         title: a.name.as_str().into(),
                         meta: meta.join(" · ").into(),
-                        description: a.biography.lines().next().unwrap_or_default().into(),
+                        description: aliases.into(),
                         favorite: a.favorite,
                         ..DetailInfo::default()
                     },
@@ -969,9 +1037,68 @@ impl Ui {
         *self.detail.borrow_mut() = Some(view);
     }
 
+    /// Fills the queue panel: entries matching the search (title or
+    /// artist, case-insensitive), the current one marked.
+    fn show_queue(&self, w: &AppWindow) {
+        let search = self.queue_search.borrow().to_lowercase();
+        let all = self.queue_all.borrow();
+        let (items, current) = &*all;
+        let current_uid = current.and_then(|i| items.get(i)).map(|e| e.uid);
+        let mut rows = Vec::new();
+        let mut current_row = None;
+        for e in items {
+            if !search.is_empty()
+                && !e.title.to_lowercase().contains(&search)
+                && !e.artist.to_lowercase().contains(&search)
+            {
+                continue;
+            }
+            if Some(e.uid) == current_uid {
+                current_row = Some(rows.len());
+            }
+            rows.push(QueueRow {
+                uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
+                title: e.title.as_str().into(),
+                artist: e.artist.as_str().into(),
+                duration: e.duration.as_str().into(),
+            });
+        }
+        self.queue.set_vec(rows);
+        w.set_queue_total(i32::try_from(items.len()).unwrap_or(i32::MAX));
+        w.set_queue_current(row_index(current_row));
+    }
+
+    fn check_scale(&self, w: &AppWindow) {
+        let scale = self.scale(w);
+        if (scale - self.last_scale.replace(scale)).abs() < f32::EPSILON {
+            return;
+        }
+        tracing::info!(scale, "scale factor changed, reloading artwork");
+        for grid in &self.grids {
+            grid.rescale(scale);
+        }
+        if let Some(path) = self.detail_cover_key.borrow().as_deref().and_then(key_path) {
+            let path = path.to_owned();
+            *self.detail_cover_key.borrow_mut() = None;
+            self.load_detail_cover(w, &path);
+        }
+        let artwork = self.now.borrow().as_ref().map(|n| n.artwork.clone());
+        if let Some(artwork) = artwork.filter(|a| !a.is_empty()) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let px = (NP_COVER * scale).round().max(1.0) as u32;
+            let key = image_key(&artwork, px);
+            self.send(Command::LoadImage {
+                key: key.clone(),
+                path: artwork,
+                px,
+            });
+            *self.now_cover_key.borrow_mut() = Some(key);
+        }
+    }
+
     fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (DETAIL_COVER * self.scale(w)).ceil() as u32;
+        let px = (DETAIL_COVER * self.scale(w)).round() as u32;
         let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
         let same = *self.detail_cover_key.borrow() == key;
         if same {
@@ -1068,7 +1195,13 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
 pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     #[allow(clippy::cast_possible_truncation)]
     window.set_volume(settings.volume as f32);
-    window.set_show_lyrics(settings.show_lyrics);
+    let panel = settings.right_panel;
+    window.set_panel_open(panel.open);
+    window.set_panel_queue(panel.queue);
+    window.set_panel_lyrics(panel.lyrics);
+    window.set_panel_lyrics_first(panel.lyrics_first);
+    window.set_panel_split(panel.split);
+    window.set_panel_width(panel.width);
     window.set_exclusive(settings.exclusive);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_repeat(repeat_index(settings.repeat));
@@ -1111,6 +1244,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         transcode: Cell::new(settings.transcode),
         transcode_choices: RefCell::new(vec![None]),
         notice_timer: Timer::default(),
+        scale_timer: Timer::default(),
+        queue_all: RefCell::default(),
+        queue_search: RefCell::default(),
+        last_scale: Cell::new(window.window().scale_factor()),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
     });
@@ -1120,7 +1257,6 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_fav_artist_rows(ModelRc::from(ui.grids[GRID_FAV_ARTISTS].clone()));
     window.set_search_artist_rows(ModelRc::from(ui.grids[GRID_SEARCH_ARTISTS].clone()));
     window.set_search_album_rows(ModelRc::from(ui.grids[GRID_SEARCH_ALBUMS].clone()));
-    window.set_detail_releases(ModelRc::from(ui.grids[GRID_RELEASES].clone()));
     window.set_playlist_rows(ModelRc::from(ui.grids[GRID_PLAYLISTS].clone()));
     window.set_tracks(ModelRc::from(ui.tracks.clone()));
     window.set_fav_tracks(ModelRc::from(ui.fav_tracks.clone()));
@@ -1153,6 +1289,11 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     Ui::show_lyrics_settings(window, &settings.lyrics);
     window.set_lyrics(ModelRc::from(ui.lyrics.clone()));
     window.set_playlist_choices(ModelRc::from(ui.playlist_choices.clone()));
+    ui.scale_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(1),
+        || with_ui(Ui::check_scale),
+    );
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
 
     let c = commander.clone();
@@ -1205,11 +1346,16 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
                 usize::try_from(grid).unwrap_or(0),
                 GRID_WORKS | GRID_SERIES | GRID_HOME_WORKS | GRID_MEMBERS
             );
-            let scale = ui.scale(w) * if poster { 1.5 } else { 1.0 };
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let px = (card_size * scale).ceil().max(0.0) as u32;
+            let logical = card_size * if poster { 1.5 } else { 1.0 };
             if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
-                model.set_layout(usize::try_from(columns).unwrap_or(1), px);
+                model.set_layout(usize::try_from(columns).unwrap_or(1), logical, ui.scale(w));
+            }
+        });
+    });
+    window.on_card_limit_changed(|grid, limit| {
+        with_ui(|ui, _| {
+            if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
+                model.set_limit(usize::try_from(limit).unwrap_or(0));
             }
         });
     });
@@ -1344,7 +1490,28 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
 
     // Settings.
     let c = commander.clone();
-    window.on_show_lyrics_changed(move |show| c.send(Command::SetShowLyrics(show)));
+    let weak = window.as_weak();
+    window.on_panel_changed(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetRightPanel(RightPanel {
+                open: w.get_panel_open(),
+                queue: w.get_panel_queue(),
+                lyrics: w.get_panel_lyrics(),
+                lyrics_first: w.get_panel_lyrics_first(),
+                split: w.get_panel_split(),
+                width: w.get_panel_width(),
+            }));
+        }
+    });
+    window.on_queue_search_changed(|text| {
+        with_ui(|ui, w| {
+            *ui.queue_search.borrow_mut() = text.trim().to_owned();
+            ui.show_queue(w);
+        });
+    });
+    window.on_save_queue(|| {
+        with_ui(|ui, w| ui.open_dialog(w, Dialog::New(Some(TrackSource::Queue)), "播放队列", ""));
+    });
     let c = commander.clone();
     window.on_close_to_tray_toggled(move |on| c.send(Command::SetCloseToTray(on)));
     let c = commander.clone();
@@ -1503,6 +1670,7 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
         artist: t.artist.into(),
         album: t.album.into(),
         duration: t.duration.into(),
+        credits: t.credits.into(),
         album_id: int(t.album_id),
         artist_id: int(t.artist_id),
         favorite: t.favorite,
@@ -1649,6 +1817,11 @@ pub fn apply(event: Event) {
             }
         }
         Event::Detail { view, tracks } => ui.detail_loaded(w, view, tracks),
+        Event::AlbumWorks {
+            album_id,
+            works,
+            tieups,
+        } => ui.album_works_loaded(w, album_id, &works, &tieups),
         Event::SearchResults {
             query: _,
             artists,
@@ -1690,13 +1863,15 @@ pub fn apply(event: Event) {
             w.set_np_album(now.album.as_str().into());
             w.set_np_quality(now.quality.clone().unwrap_or_default().into());
             w.set_np_favorite(now.favorite);
-            // Same size as the album grid so both share the cached artwork.
-            let grid = &ui.grids[GRID_ALBUMS];
-            let px = grid.cover_px();
+            // Decoded at the player bar size: a large grid cover shrunk
+            // by the renderer (no mipmaps) looks jagged.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let px = (NP_COVER * ui.scale(w)).round().max(1.0) as u32;
             let key = (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px));
             match &key {
                 Some(key) => {
-                    w.set_np_cover(grid.cover(&now.artwork).unwrap_or_default());
+                    let placeholder = ui.grids.iter().find_map(|g| g.cover(&now.artwork));
+                    w.set_np_cover(placeholder.unwrap_or_default());
                     ui.send(Command::LoadImage {
                         key: key.clone(),
                         path: now.artwork.clone(),
@@ -1732,20 +1907,13 @@ pub fn apply(event: Event) {
             w.set_lyrics_source(source.unwrap_or_default().into());
         }
         Event::Queue { items, current } => {
-            ui.queue.set_vec(
-                items
-                    .into_iter()
-                    .map(|e| QueueRow {
-                        uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
-                        title: e.title.into(),
-                        artist: e.artist.into(),
-                        duration: e.duration.into(),
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            w.set_queue_current(row_index(current));
+            *ui.queue_all.borrow_mut() = (items, current);
+            ui.show_queue(w);
         }
-        Event::QueuePosition(current) => w.set_queue_current(row_index(current)),
+        Event::QueuePosition(current) => {
+            ui.queue_all.borrow_mut().1 = current;
+            ui.show_queue(w);
+        }
         Event::Repeat(repeat) => w.set_repeat(repeat_index(repeat)),
         Event::Shuffle(shuffle) => w.set_shuffle(shuffle),
         Event::SleepTimer(status) => {

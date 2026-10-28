@@ -8,7 +8,7 @@ import { Theme } from "theme.slint";
 import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab,
 } from "controls.slint";
-import { AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
+import { AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
 import { CardRows } from "library.slint";
 
 // A small row with a cover on the home page (接着听, 最近播放, 主题曲,
@@ -148,6 +148,9 @@ export global Home {
     in property <[TrackRow]> pane-tracks;
     in property <SeriesPane> series;
     in property <[image]> series-fan;
+    // Spotlight cover size (logical), set by the page; `action("hero-art")`
+    // reloads the art at a new size.
+    in-out property <length> hero-art: 220px;
     in property <[NamedItem]> series-works;
     in property <[NamedItem]> series-albums;
     in property <[HomeRow]> mixes;
@@ -222,7 +225,7 @@ export global LyricsSearch {
     callback apply(int);
 }
 
-component LinkText inherits Text {
+export component LinkText inherits Text {
     callback clicked();
     in property <bool> enabled: true;
     color: link-area.has-hover && root.enabled ? Theme.accent : Theme.text-dim;
@@ -276,8 +279,145 @@ component SectionHead inherits HorizontalLayout {
     @children
 }
 
+// Home "按作品漫游" card: a small 2:3 poster beside type, title, uses and
+// series (Electron `work-card`). `card.artist` is "动画 · 2023",
+// `card.note` the uses, `card.badge` the series.
+component WorkCardH inherits Rectangle {
+    in property <AlbumCard> card;
+    // Poster width.
+    in property <length> art: 76px;
+    callback action(string, int);
+    width: 288px;
+    height: root.art * 1.5 + 24px;
+    border-radius: 14px;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: area.has-hover ? Theme.accent-dim : Theme.border;
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.action("open", 0);
+        }
+    }
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 14px;
+        Rectangle {
+            width: root.art;
+            height: root.art * 1.5;
+            border-radius: 8px;
+            background: Theme.raised;
+            clip: true;
+            if root.card.cover.width == 0: Text {
+                text: "作";
+                color: Theme.text-faint;
+                font-size: 22px;
+            }
+            Image {
+                source: root.card.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: ImageFit.cover;
+            }
+            if root.card.playing: Rectangle {
+                x: parent.width - 26px;
+                y: 6px;
+                width: 20px;
+                height: 20px;
+                border-radius: 10px;
+                background: Theme.accent;
+                Icon {
+                    kind: IconKind.lyrics;
+                    width: 11px;
+                    height: 11px;
+                    color: #ffffff;
+                }
+            }
+            if area.has-hover: Rectangle {
+                x: parent.width - 38px;
+                y: parent.height - 38px;
+                width: 32px;
+                height: 32px;
+                border-radius: 16px;
+                background: play-area.has-hover ? Theme.accent.brighter(15%) : Theme.accent;
+                Icon {
+                    kind: IconKind.play;
+                    width: 13px;
+                    height: 13px;
+                    color: #ffffff;
+                }
+                play-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("play", 0);
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.card.artist;
+                color: Theme.accent;
+                font-size: 11px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.card.title;
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 700;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 40px;
+            }
+            if root.card.note != "": Text {
+                text: root.card.note;
+                color: Theme.text-dim;
+                font-size: 11px;
+                overflow: elide;
+            }
+            if root.card.badge != "": Text {
+                text: "系列：" + root.card.badge;
+                color: Theme.text-faint;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "播放";
+                activated => {
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                activated => {
+                    root.action("next", 0);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                activated => {
+                    root.action("last", 0);
+                }
+            }
+        }
+    }
+}
+
 // One row of cards that pages sideways with arrow buttons (no nested
-// scrolling inside the page).
+// scrolling inside the page). `kind` 5: horizontal work cards (`size` is
+// the poster width).
 export component CardShelf inherits Rectangle {
     in property <[AlbumRow]> rows;
     in property <int> kind;
@@ -288,10 +428,17 @@ export component CardShelf inherits Rectangle {
     property <length> offset: 0px;
     property <length> content: row.preferred-width;
     property <length> max-offset: max(0px, root.content - root.width);
-    height: (root.kind == 3 || root.kind == 4 ? root.size * 1.5 : root.size) + 70px;
+    property <length> art-h: root.kind == 5 ? root.size * 1.5 + 24px : root.kind == 3 || root.kind == 4 ? root.size * 1.5 : root.size;
+    height: root.art-h + (root.kind == 5 ? 12px : 70px);
     clip: true;
     init => {
         root.layout-changed(root.size);
+    }
+    changed size => {
+        root.layout-changed(root.size);
+    }
+    changed width => {
+        root.offset = min(root.offset, root.max-offset);
     }
 
     row := HorizontalLayout {
@@ -299,18 +446,27 @@ export component CardShelf inherits Rectangle {
         width: max(root.width, self.preferred-width);
         padding-left: 32px;
         padding-right: 32px;
-        spacing: 16px;
+        spacing: root.kind == 5 ? 14px : 18px;
         alignment: start;
         animate x { duration: 250ms; easing: ease-out; }
         for r in root.rows: HorizontalLayout {
-            spacing: 16px;
-            for card in r.items: CardView {
-                card: card;
-                kind: root.kind;
-                size: root.size;
-                playlists: root.playlists;
-                action(what, arg) => {
-                    root.action(what, card.id, arg);
+            spacing: root.kind == 5 ? 14px : 18px;
+            for card in r.items: HorizontalLayout {
+                if root.kind == 5: WorkCardH {
+                    card: card;
+                    art: root.size;
+                    action(what, arg) => {
+                        root.action(what, card.id, arg);
+                    }
+                }
+                if root.kind != 5: CardView {
+                    card: card;
+                    kind: root.kind;
+                    size: root.size;
+                    playlists: root.playlists;
+                    action(what, arg) => {
+                        root.action(what, card.id, arg);
+                    }
                 }
             }
         }
@@ -318,7 +474,7 @@ export component CardShelf inherits Rectangle {
 
     if root.offset > 0: IconButton {
         x: 4px;
-        y: (root.size - self.height) / 2;
+        y: (root.art-h - self.height) / 2;
         kind: IconKind.back;
         filled: true;
         size: 32px;
@@ -329,7 +485,7 @@ export component CardShelf inherits Rectangle {
     }
     if root.offset < root.max-offset: Rectangle {
         x: root.width - 36px;
-        y: (root.size - 32px) / 2;
+        y: (root.art-h - 32px) / 2;
         width: 32px;
         height: 32px;
         border-radius: 16px;
@@ -375,6 +531,9 @@ export component HomeRowView inherits Rectangle {
     in property <bool> playing;
     in property <bool> mix;
     in property <bool> show-add;
+    // Narrow layouts drop the work link and the time column.
+    in property <bool> hide-link;
+    in property <bool> hide-note;
     in property <[PlaylistChoice]> playlists;
     callback action(string, int);
     height: 60px;
@@ -472,7 +631,7 @@ export component HomeRowView inherits Rectangle {
                 accent: root.item.tag-accent;
             }
         }
-        if root.item.link != "": LinkText {
+        if root.item.link != "" && !root.hide-link: LinkText {
             text: root.item.link;
             max-width: 160px;
             overflow: elide;
@@ -480,7 +639,7 @@ export component HomeRowView inherits Rectangle {
                 root.action("link", root.item.link-id);
             }
         }
-        if root.item.note != "": Text {
+        if root.item.note != "" && !root.hide-note: Text {
             text: root.item.note;
             color: Theme.text-faint;
             font-size: 11px;
@@ -582,41 +741,51 @@ export component HomeRowView inherits Rectangle {
 component Spotlight inherits Rectangle {
     in property <int> playing-id;
     in property <[int]> playing-works;
+    // Wide layout (container >= 1440px): the preview list shows on the
+    // right and the "专辑详情" link hides (Electron `.hero-side`).
+    in property <bool> wide;
+    // Cover size and padding scale with the width.
+    in property <length> art: 220px;
+    in property <length> pad: 24px;
+    // Width of the preview list (wide layout only).
+    in property <length> side-w: 320px;
     callback track-action(int, string, int, int);
     callback navigate(int, int);
-    height: 340px;
+    height: max(root.art, info.preferred-height) + 2 * root.pad;
     border-radius: 16px;
     background: Theme.surface;
     clip: true;
 
     HorizontalLayout {
-        padding: 24px;
-        spacing: 24px;
+        padding: root.pad;
+        spacing: root.pad;
 
         // Art: the album cover, or up to three covers fanned out.
         if Home.tab != 2: Cover {
-            width: 220px;
-            height: 220px;
+            width: root.art;
+            height: root.art;
             y: (parent.height - self.height) / 2;
             source: Home.pane.cover;
         }
         if Home.tab == 2: Rectangle {
-            width: 220px;
+            width: root.art;
+            // Three covers fanned out inside the art box.
+            property <length> fan: floor(root.art * 0.77 / 1px) * 1px;
             for img[i] in Home.series-fan: Cover {
-                x: i * 30px;
-                y: (parent.height - 170px) / 2 + i * 16px;
-                width: 170px;
-                height: 170px;
+                x: i * (root.art - parent.fan) / 2;
+                y: (parent.height - root.art) / 2 + i * (root.art - parent.fan) / 2;
+                width: parent.fan;
+                height: parent.fan;
                 source: img;
                 drop-shadow-blur: 12px;
                 drop-shadow-color: #00000080;
             }
         }
 
-        VerticalLayout {
+        info := VerticalLayout {
             horizontal-stretch: 1;
             spacing: 8px;
-            alignment: start;
+            alignment: center;
             HorizontalLayout {
                 spacing: 4px;
                 alignment: start;
@@ -704,7 +873,7 @@ component Spotlight inherits Rectangle {
                             Home.action("reroll", 0);
                         }
                     }
-                    LinkText {
+                    if !root.wide: LinkText {
                         text: "专辑详情 ›";
                         clicked => {
                             Home.action("open-album", Home.pane.album-id);
@@ -795,8 +964,8 @@ component Spotlight inherits Rectangle {
         }
 
         // Preview tracks / related albums.
-        if Home.tab != 2 && Home.pane-tracks.length > 0: VerticalLayout {
-            width: 300px;
+        if root.wide && Home.tab != 2 && Home.pane-tracks.length > 0: VerticalLayout {
+            width: root.side-w;
             spacing: 6px;
             HorizontalLayout {
                 height: 24px;
@@ -867,8 +1036,8 @@ component Spotlight inherits Rectangle {
                 }
             }
         }
-        if Home.tab == 2 && Home.series-albums.length > 0: VerticalLayout {
-            width: 300px;
+        if root.wide && Home.tab == 2 && Home.series-albums.length > 0: VerticalLayout {
+            width: root.side-w;
             spacing: 6px;
             HorizontalLayout {
                 height: 24px;
@@ -953,10 +1122,52 @@ export component HomePage inherits Flickable {
     in property <int> playing-mix: -1;
     callback card-action(int, string, int, int);
     callback card-layout(int, int, length);
+    callback card-limit(int, int);
     callback track-action(int, string, int, int);
     callback navigate(int, int);
     callback open-web(string);
     content-height: page.preferred-height;
+
+    // Breakpoints of the Electron home (container widths, see
+    // `music032-home.module.css`).
+    property <bool> wide: root.width >= 1440px;
+    property <bool> narrow: root.width <= 1040px;
+    property <bool> compact: root.width <= 760px;
+    property <bool> tiny: root.width <= 700px;
+    property <length> content-w: root.width - 64px;
+    property <length> hero-art: floor(clamp(root.width * 0.17, 180px, 244px) / 1px) * 1px;
+    changed hero-art => {
+        hero-timer.restart();
+    }
+    // Reload the art once the resize settles.
+    hero-timer := Timer {
+        interval: 200ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if Home.hero-art != root.hero-art {
+                Home.hero-art = root.hero-art;
+                Home.action("hero-art", 0);
+            }
+        }
+    }
+    init => {
+        if Home.hero-art != root.hero-art {
+            Home.hero-art = root.hero-art;
+            Home.action("hero-art", 0);
+        }
+    }
+    property <length> hero-pad: clamp(root.width * 0.03, 24px, 40px);
+    property <length> duo-gap: clamp(root.width * 0.034, 28px, 52px);
+    // 7fr / 5fr; the left column is 520-720px when wide.
+    property <length> duo-main-w: root.narrow ? root.content-w : root.wide ? clamp(root.content-w - root.duo-gap - 320px, 520px, 720px) : (root.content-w - root.duo-gap) * 7 / 12;
+    property <length> duo-side-w: root.narrow ? root.content-w : root.content-w - root.duo-gap - root.duo-main-w;
+    // 最近添加: 3 columns x 2 rows; 4 / 5 / 6 columns when wider; one
+    // row of 6 when the columns stack; 3 columns again when tiny.
+    property <int> recent-cols: root.tiny ? 3 : root.narrow ? 6 : root.width >= 2240px ? 6 : root.width >= 1880px ? 5 : root.wide ? 4 : 3;
+    property <int> recent-max: root.narrow && !root.tiny ? 6 : root.recent-cols * 2;
+    // Shelf cards: clamp(150px, 10.5cqi, 232px), whole physical pixels.
+    property <length> shelf-card: floor(clamp(root.width * 0.105, 150px, 232px) / 1phx) * 1phx;
 
     page := VerticalLayout {
         width: root.width;
@@ -1067,6 +1278,10 @@ export component HomePage inherits Flickable {
                 padding-right: 32px;
                 Spotlight {
                     playing-id: root.playing-id;
+                    wide: root.wide;
+                    art: root.hero-art;
+                    pad: root.hero-pad;
+                    side-w: clamp((root.content-w - root.hero-art - 4 * root.hero-pad) * 0.4, 320px, 420px);
                     track-action(list, what, i, arg) => {
                         root.track-action(list, what, i, arg);
                     }
@@ -1076,104 +1291,120 @@ export component HomePage inherits Flickable {
                 }
             }
 
-            // Daily mixes or 接着听 next to 最近添加.
+            // Daily mixes or 接着听 next to 最近添加; one column when narrow.
             HorizontalLayout {
                 padding-left: 32px;
                 padding-right: 32px;
-                spacing: 32px;
-                VerticalLayout {
-                    width: (root.width - 96px) / 2;
-                    spacing: 8px;
-                    alignment: start;
-                    if Home.mixes.length > 0 || Home.mixes-generating: SectionHead {
-                        title: "今日推荐";
-                    }
-                    if Home.mixes.length == 0 && Home.mixes-generating: VerticalLayout {
-                        Text {
-                            text: "正在生成今天的推荐";
-                            color: Theme.text;
+                duo := Rectangle {
+                    height: root.narrow ? main.preferred-height + (Home.recent-albums.length > 0 ? root.duo-gap + side.preferred-height : 0px) : max(main.preferred-height, side.preferred-height);
+                    main := VerticalLayout {
+                        x: 0;
+                        y: 0;
+                        width: root.duo-main-w;
+                        height: self.preferred-height;
+                        spacing: 8px;
+                        alignment: start;
+                        if Home.mixes.length > 0 || Home.mixes-generating: SectionHead {
+                            title: "今日推荐";
                         }
-                        Text {
-                            text: "稍等片刻，生成好后会自动出现。";
-                            color: Theme.text-faint;
-                            font-size: 12px;
-                        }
-                    }
-                    for m in Home.mixes: HomeRowView {
-                        item: m;
-                        mix: true;
-                        playing: m.id == root.playing-mix;
-                        action(what, arg) => {
-                            Home.action(what == "play" ? "mix-play" : "mix-open", m.id);
-                        }
-                    }
-                    SectionHead {
-                        title: "最近播放";
-                        LinkText {
-                            text: "播放记录 ›";
-                            clicked => {
-                                root.navigate(23, 0);
+                        if Home.mixes.length == 0 && Home.mixes-generating: VerticalLayout {
+                            Text {
+                                text: "正在生成今天的推荐";
+                                color: Theme.text;
+                            }
+                            Text {
+                                text: "稍等片刻，生成好后会自动出现。";
+                                color: Theme.text-faint;
+                                font-size: 12px;
                             }
                         }
-                    }
-                    if Home.recent.length == 0: VerticalLayout {
-                        Text {
-                            text: "还没有播放记录";
-                            color: Theme.text;
+                        for m in Home.mixes: HomeRowView {
+                            item: m;
+                            mix: true;
+                            playing: m.id == root.playing-mix;
+                            action(what, arg) => {
+                                Home.action(what == "play" ? "mix-play" : "mix-open", m.id);
+                            }
                         }
-                        Text {
-                            text: "播放过的歌曲会出现在这里。";
-                            color: Theme.text-faint;
-                            font-size: 12px;
+                        SectionHead {
+                            title: "最近播放";
+                            LinkText {
+                                text: "播放记录 ›";
+                                clicked => {
+                                    root.navigate(23, 0);
+                                }
+                            }
                         }
-                    }
-                    for r in Home.recent: HomeRowView {
-                        item: r;
-                        playing: r.id == root.playing-id;
-                        playlists: root.playlists;
-                        action(what, arg) => {
-                            root.track-action(8, what, r.index, arg);
+                        if Home.recent.length == 0: VerticalLayout {
+                            Text {
+                                text: "还没有播放记录";
+                                color: Theme.text;
+                            }
+                            Text {
+                                text: "播放过的歌曲会出现在这里。";
+                                color: Theme.text-faint;
+                                font-size: 12px;
+                            }
                         }
-                    }
-                    if Home.mixes.length == 0 && !Home.mixes-generating && Home.resume.length > 0: SectionHead {
-                        title: "接着听";
-                    }
-                    if Home.mixes.length == 0 && !Home.mixes-generating: VerticalLayout {
-                        for r in Home.resume: HomeRowView {
+                        for r in Home.recent: HomeRowView {
                             item: r;
                             playing: r.id == root.playing-id;
+                            hide-note: root.compact;
                             playlists: root.playlists;
                             action(what, arg) => {
-                                root.track-action(7, what, r.index, arg);
+                                root.track-action(8, what, r.index, arg);
+                            }
+                        }
+                        if Home.mixes.length == 0 && !Home.mixes-generating && Home.resume.length > 0: SectionHead {
+                            title: "接着听";
+                        }
+                        if Home.mixes.length == 0 && !Home.mixes-generating: VerticalLayout {
+                            for r in Home.resume: HomeRowView {
+                                item: r;
+                                playing: r.id == root.playing-id;
+                                hide-note: root.compact;
+                                playlists: root.playlists;
+                                action(what, arg) => {
+                                    root.track-action(7, what, r.index, arg);
+                                }
                             }
                         }
                     }
-                }
-                if Home.recent-albums.length > 0: VerticalLayout {
-                    width: (root.width - 96px) / 2;
-                    spacing: 8px;
-                    alignment: start;
-                    SectionHead {
-                        title: "最近添加";
-                        LinkText {
-                            text: "查看全部 ›";
-                            clicked => {
-                                root.navigate(0, 0);
+                    side := VerticalLayout {
+                        x: root.narrow ? 0 : root.duo-main-w + root.duo-gap;
+                        y: root.narrow ? main.preferred-height + root.duo-gap : 0;
+                        width: root.duo-side-w;
+                        height: self.preferred-height;
+                        visible: Home.recent-albums.length > 0;
+                        spacing: 8px;
+                        alignment: start;
+                        SectionHead {
+                            title: "最近添加";
+                            LinkText {
+                                text: "查看全部 ›";
+                                clicked => {
+                                    root.navigate(0, 0);
+                                }
                             }
                         }
-                    }
-                    CardRows {
-                        width: (root.width - 96px) / 2;
-                        rows: Home.recent-albums;
-                        kind: 0;
-                        min-size: 120px;
-                        side: 0px;
-                        playlists: root.playlists;
-                        layout-changed(n, size) => {
-                            root.card-layout(HomeGrids.recent-albums, n, size);
-                        }
-                        action(what, id, arg) => {
-                            root.card-action(HomeGrids.recent-albums, what, id, arg);
+                        CardRows {
+                            width: root.duo-side-w;
+                            rows: Home.recent-albums;
+                            kind: 0;
+                            side: 0px;
+                            gap: 14px;
+                            fixed-columns: root.recent-cols;
+                            max-items: root.recent-max;
+                            playlists: root.playlists;
+                            layout-changed(n, size) => {
+                                root.card-layout(HomeGrids.recent-albums, n, size);
+                            }
+                            limit-changed(n) => {
+                                root.card-limit(HomeGrids.recent-albums, n);
+                            }
+                            action(what, id, arg) => {
+                                root.card-action(HomeGrids.recent-albums, what, id, arg);
+                            }
                         }
                     }
                 }
@@ -1209,8 +1440,8 @@ export component HomePage inherits Flickable {
                 }
                 CardShelf {
                     rows: Home.works;
-                    kind: 3;
-                    size: 140px;
+                    kind: 5;
+                    size: 76px;
                     playlists: root.playlists;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.works, 1000, size);
@@ -1241,16 +1472,26 @@ export component HomePage inherits Flickable {
                         }
                     }
                 }
-                for r in Home.songs: HomeRowView {
-                    item: r;
-                    playing: r.id == root.playing-id;
-                    show-add: true;
-                    playlists: root.playlists;
-                    action(what, arg) => {
-                        if what == "link" {
-                            root.navigate(13, arg);
-                        } else {
-                            root.track-action(9, what, r.index, arg);
+                // Two columns (row-major) when wide.
+                songs := Rectangle {
+                    property <int> cols: root.wide ? 2 : 1;
+                    property <length> col-w: (self.width - (self.cols - 1) * 28px) / self.cols;
+                    height: ceil(Home.songs.length / self.cols) * 60px;
+                    for r[i] in Home.songs: HomeRowView {
+                        x: mod(i, songs.cols) * (songs.col-w + 28px);
+                        y: floor(i / songs.cols) * 60px;
+                        width: songs.col-w;
+                        item: r;
+                        playing: r.id == root.playing-id;
+                        show-add: true;
+                        hide-link: root.tiny;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            if what == "link" {
+                                root.navigate(13, arg);
+                            } else {
+                                root.track-action(9, what, r.index, arg);
+                            }
                         }
                     }
                 }
@@ -1326,7 +1567,7 @@ export component HomePage inherits Flickable {
                 CardShelf {
                     rows: Home.chronicle;
                     kind: 0;
-                    size: 140px;
+                    size: root.shelf-card;
                     playlists: root.playlists;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.chronicle, 1000, size);
@@ -1355,7 +1596,7 @@ export component HomePage inherits Flickable {
                 CardShelf {
                     rows: Home.playlists;
                     kind: 2;
-                    size: 140px;
+                    size: root.shelf-card;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.playlists, 1000, size);
                     }
@@ -1403,7 +1644,8 @@ component CardGridPoster inherits Rectangle {
     callback layout-changed(int, length);
     callback action(string, int, int);
     out property <int> columns: max(1, floor((self.width - 64px + 24px) / 164px));
-    out property <length> card-size: (self.width - 64px - (root.columns - 1) * 24px) / root.columns;
+    // Whole physical pixels, so covers decoded at this size draw 1:1.
+    out property <length> card-size: floor(((self.width - 64px - (root.columns - 1) * 24px) / root.columns) / 1phx) * 1phx;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }

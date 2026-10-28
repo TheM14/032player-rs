@@ -17,7 +17,49 @@ export struct ListQuery {
 
 // What the detail page shows. `kind`: 0 album, 1 artist, 2 playlist,
 // 3 similar tracks. `subtitle-id`: artist to open from the subtitle.
+// A titled group of the artist page's releases with its own card grid.
+export struct ReleaseGroupRow {
+    title: string,
+    count: int,
+    grid: int,
+    rows: [AlbumRow],
+}
+
+// A use of a work on the album: "OP · ED" and the track title.
+export struct WorkUseRow {
+    label: string,
+    title: string,
+}
+
+// A work linked to the open album (header capsules, inspector).
+export struct AlbumWorkRow {
+    id: int,
+    title: string,
+    translated: string,
+    meta: string,
+    relation: string,
+    usage: string,
+    ost: bool,
+    poster: image,
+    uses: [WorkUseRow],
+}
+
+// Someone performing on / credited on the album's tracks.
+export struct PersonRow {
+    id: int,
+    name: string,
+    roles: string,
+    avatar: image,
+}
+
+export struct FactRow {
+    label: string,
+    value: string,
+}
+
 export struct DetailInfo {
+    // Small text above the title ("专辑", "单曲", ...); empty: by kind.
+    kicker: string,
     kind: int,
     id: int,
     title: string,
@@ -169,22 +211,37 @@ export component CardRows inherits VerticalLayout {
     // Smallest card and the side padding.
     in property <length> min-size: 160px;
     in property <length> side: 32px;
+    // Fixed column count (0: as many as fit `min-size`).
+    in property <int> fixed-columns: 0;
+    // Gap between cards in a row.
+    in property <length> gap: 24px;
+    // Cards shown at most (0: all); reported through `limit-changed`.
+    in property <int> max-items: 0;
     callback layout-changed(int, length);
+    callback limit-changed(int);
     callback action(string, int, int);
-    out property <int> columns: max(1, floor((self.width - 2 * root.side + 24px) / (root.min-size + 24px)));
-    out property <length> card-size: (self.width - 2 * root.side - (root.columns - 1) * 24px) / root.columns;
+    out property <int> columns: root.fixed-columns > 0 ? root.fixed-columns : max(1, floor((self.width - 2 * root.side + root.gap) / (root.min-size + root.gap)));
+    // Whole physical pixels, so covers decoded at this size draw 1:1.
+    out property <length> card-size: floor(((self.width - 2 * root.side - (root.columns - 1) * root.gap) / root.columns) / 1phx) * 1phx;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }
-    init => {
+    changed columns => {
         root.layout-changed(root.columns, root.card-size);
     }
-    spacing: 24px;
+    changed max-items => {
+        root.limit-changed(root.max-items);
+    }
+    init => {
+        root.limit-changed(root.max-items);
+        root.layout-changed(root.columns, root.card-size);
+    }
+    spacing: 20px;
 
     for row in root.rows: HorizontalLayout {
         padding-left: root.side;
         padding-right: root.side;
-        spacing: 24px;
+        spacing: root.gap;
         alignment: start;
         for card in row.items: CardView {
             card: card;
@@ -230,11 +287,13 @@ export component DetailHeader inherits Rectangle {
     // The server takes custom playlist artwork.
     in property <bool> artwork-upload;
     in property <[PlaylistChoice]> playlists;
+    // Works linked to the album (capsules under the title).
+    in property <[AlbumWorkRow]> works;
     // (action, argument): play, shuffle, next, last, favorite, add,
     // new-playlist, artist, edit, delete, artwork, artwork-reset,
-    // artist-tracks, artist-albums.
+    // artist-tracks, artist-albums, work (id).
     callback action(string, int);
-    height: 260px;
+    height: root.works.length > 0 ? 296px : 260px;
 
     HorizontalLayout {
         padding-left: 32px;
@@ -263,7 +322,7 @@ export component DetailHeader inherits Rectangle {
             horizontal-stretch: 1;
 
             Text {
-                text: root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
+                text: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
                 color: Theme.text-dim;
                 font-size: 12px;
             }
@@ -305,6 +364,58 @@ export component DetailHeader inherits Rectangle {
                 wrap: word-wrap;
                 overflow: elide;
                 max-height: 34px;
+            }
+            // Work capsules (web album hero): poster, title, use.
+            if root.works.length > 0: HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                height: 30px;
+                for w in root.works: Rectangle {
+                    height: 30px;
+                    width: min(320px, capsule.preferred-width + 12px);
+                    border-radius: 15px;
+                    background: capsule-area.has-hover ? Theme.surface-hover : Theme.raised;
+                    capsule := HorizontalLayout {
+                        padding-left: 4px;
+                        padding-right: 6px;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 16px;
+                            height: 24px;
+                            y: 3px;
+                            border-radius: 3px;
+                            background: Theme.surface;
+                            clip: true;
+                            Image {
+                                source: w.poster;
+                                width: 100%;
+                                height: 100%;
+                                image-fit: ImageFit.cover;
+                            }
+                        }
+                        Text {
+                            text: w.title;
+                            color: Theme.text;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            max-width: 160px;
+                        }
+                        if w.usage != "": Text {
+                            text: w.usage;
+                            color: w.ost ? Theme.text-dim : Theme.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    capsule-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.action("work", w.id);
+                        }
+                    }
+                }
             }
 
             HorizontalLayout {
@@ -578,6 +689,301 @@ export component ConfirmDialog inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+component InspectorKicker inherits Text {
+    color: Theme.text-faint;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+}
+
+component InspectorMore inherits Text {
+    callback clicked();
+    color: more-area.has-hover ? Theme.accent : Theme.text-dim;
+    font-size: 12px;
+    more-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Facts inherits VerticalLayout {
+    in property <[FactRow]> rows;
+    spacing: 6px;
+    for f in root.rows: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: f.label;
+            width: 72px;
+            color: Theme.text-faint;
+            font-size: 12px;
+        }
+        Text {
+            text: f.value;
+            color: Theme.text;
+            font-size: 12px;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+// Right-hand column of the 032 album page (`Music032AlbumInspector`):
+// linked works with their track uses, release facts, people, media.
+export component AlbumInspector inherits Flickable {
+    in property <[AlbumWorkRow]> works;
+    in property <[FactRow]> release;
+    in property <[PersonRow]> people;
+    in property <[FactRow]> media;
+    in property <string> review;
+    // (action, id): work, artist.
+    callback action(string, int);
+    property <bool> all-works;
+    property <bool> all-people;
+    property <int> expanded-work: -1;
+    content-height: col.preferred-height;
+
+    col := VerticalLayout {
+        width: root.width;
+        padding-right: 24px;
+        padding-top: 8px;
+        padding-bottom: 24px;
+        spacing: 24px;
+        alignment: start;
+
+        if root.works.length > 0: VerticalLayout {
+            spacing: 10px;
+            InspectorKicker {
+                text: "关联作品 (" + root.works.length + ")";
+            }
+            // Hidden entries take no height; spacing 0 so they leave no gap.
+            VerticalLayout {
+                spacing: 0;
+            for w[i] in root.works: Rectangle {
+                visible: root.all-works || i < 3;
+                height: self.visible ? work-col.preferred-height + 10px : 0px;
+                Rectangle {
+                    y: 0;
+                    height: work-col.preferred-height;
+                    border-radius: 10px;
+                    background: Theme.surface;
+                }
+                work-col := VerticalLayout {
+                    y: 0;
+                    height: self.preferred-height;
+                    padding: 10px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 56px;
+                            height: 84px;
+                            border-radius: 6px;
+                            background: Theme.raised;
+                            clip: true;
+                            if w.poster.width == 0: Text {
+                                text: "作";
+                                color: Theme.text-faint;
+                            }
+                            Image {
+                                source: w.poster;
+                                width: 100%;
+                                height: 100%;
+                                image-fit: ImageFit.cover;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 3px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: w.title;
+                                color: head-area.has-hover ? Theme.accent : Theme.text;
+                                font-size: 13px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                                head-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.action("work", w.id);
+                                    }
+                                }
+                            }
+                            if w.translated != "": Text {
+                                text: w.translated;
+                                color: Theme.text-dim;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: w.meta;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                Rectangle {
+                                    height: 18px;
+                                    width: rel.preferred-width + 10px;
+                                    border-radius: 9px;
+                                    background: w.ost ? Theme.raised : Theme.accent-dim;
+                                    rel := Text {
+                                        text: w.relation;
+                                        color: w.ost ? Theme.text-dim : Theme.accent;
+                                        font-size: 11px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if w.uses.length > 0: VerticalLayout {
+                        spacing: 0;
+                    for u[j] in w.uses: Rectangle {
+                        visible: root.expanded-work == i || j < 3;
+                        height: self.visible ? 22px : 0px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: u.label;
+                                width: 56px;
+                                color: Theme.accent;
+                                font-size: 11px;
+                                font-weight: 600;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: u.title;
+                                color: Theme.text-dim;
+                                font-size: 12px;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    }
+                    if w.uses.length > 3 && root.expanded-work != i: InspectorMore {
+                        text: "显示全部 " + w.uses.length + " 首";
+                        clicked => {
+                            root.expanded-work = i;
+                        }
+                    }
+                }
+            }
+            }
+            if root.works.length > 3 && !root.all-works: InspectorMore {
+                text: "显示全部 " + root.works.length + " 部";
+                clicked => {
+                    root.all-works = true;
+                }
+            }
+        }
+
+        if root.release.length > 0: VerticalLayout {
+            spacing: 10px;
+            InspectorKicker {
+                text: "发行信息";
+            }
+            Facts {
+                rows: root.release;
+            }
+        }
+
+        if root.people.length > 0: VerticalLayout {
+            spacing: 8px;
+            InspectorKicker {
+                text: "参与者 (" + root.people.length + ")";
+            }
+            VerticalLayout {
+                spacing: 0;
+            for p[i] in root.people: Rectangle {
+                visible: root.all-people || i < 8;
+                height: self.visible ? 40px : 0px;
+                border-radius: 6px;
+                background: person-area.has-hover ? Theme.surface-hover : transparent;
+                person-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("artist", p.id);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 2px;
+                    spacing: 10px;
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        y: 4px;
+                        border-radius: 16px;
+                        background: Theme.raised;
+                        clip: true;
+                        if p.avatar.width == 0: Text {
+                            text: p.name == "" ? "?" : "♪";
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                        }
+                        Image {
+                            source: p.avatar;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: ImageFit.cover;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: p.name;
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: p.roles;
+                            color: Theme.text-faint;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+            }
+            if root.people.length > 8 && !root.all-people: InspectorMore {
+                text: "显示全部 " + root.people.length + " 位";
+                clicked => {
+                    root.all-people = true;
+                }
+            }
+        }
+
+        if root.media.length > 0: VerticalLayout {
+            spacing: 10px;
+            InspectorKicker {
+                text: "媒体信息";
+            }
+            Facts {
+                rows: root.media;
+            }
+        }
+
+        if root.review != "": VerticalLayout {
+            spacing: 10px;
+            InspectorKicker {
+                text: "简介";
+            }
+            Text {
+                text: root.review;
+                color: Theme.text-dim;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
     }

@@ -188,6 +188,7 @@ fn detail(
     description: &str,
 ) -> Value {
     let mut d = Struct::default();
+    d.set_field("kicker".into(), s(""));
     d.set_field("kind".into(), Value::Number(kind));
     d.set_field("id".into(), Value::Number(1.0));
     d.set_field("title".into(), s(title));
@@ -469,6 +470,7 @@ fn main() {
     set(&inst, "lyrics-synced", Value::Bool(true));
     set(&inst, "lyrics-active", Value::Number(2.0));
     set(&inst, "lyrics-source", s("LRCLIB"));
+    set(&inst, "panel-queue", Value::Bool(false));
     render(&window, size, &format!("{out}/albums.png"));
 
     set(&inst, "page", Value::Number(1.0));
@@ -477,17 +479,24 @@ fn main() {
 
     set(&inst, "notice", s(""));
     set(&inst, "queue", queue());
+    set(&inst, "queue-total", Value::Number(12.0));
     set(&inst, "queue-current", Value::Number(1.0));
-    set(&inst, "show-queue", Value::Bool(true));
+    // Queue and lyrics stacked in the right panel.
+    set(&inst, "panel-queue", Value::Bool(true));
     set(&inst, "shuffle", Value::Bool(true));
     set(&inst, "repeat", Value::Number(2.0));
     set(&inst, "sleep-active", Value::Bool(true));
     set(&inst, "sleep-label", s("29:41"));
     render(&window, size, &format!("{out}/queue.png"));
-    set(&inst, "show-queue", Value::Bool(false));
+    set(&inst, "panel-lyrics-first", Value::Bool(true));
+    set(&inst, "panel-split", Value::Number(0.35));
+    render(&window, size, &format!("{out}/queue-lyrics-first.png"));
+    set(&inst, "panel-lyrics-first", Value::Bool(false));
+    set(&inst, "panel-split", Value::Number(0.5));
+    set(&inst, "panel-queue", Value::Bool(false));
 
     // Library pages.
-    set(&inst, "show-lyrics", Value::Bool(false));
+    set(&inst, "panel-open", Value::Bool(false));
     set(&inst, "artist-rows", album_rows(5));
     set(&inst, "artist-total", Value::Number(321.0));
     set(&inst, "page", Value::Number(3.0));
@@ -523,7 +532,133 @@ fn main() {
     );
     set(&inst, "page", Value::Number(10.0));
     render(&window, size, &format!("{out}/album.png"));
-    set(&inst, "detail-releases", album_rows(5));
+
+    // Album with linked works, credits and the inspector.
+    let album_tracks = tracks();
+    if let Value::Model(m) = &album_tracks {
+        for i in 0..m.row_count() {
+            if let Some(Value::Struct(mut row)) = m.row_data(i) {
+                row.set_field("credits".into(), s(if i % 3 == 2 { "" } else { "作词 Ayase · 作曲 Ayase · 编曲 Ayase" }));
+                row.set_field("tieup".into(), s(match i % 4 { 0 => "OP", 1 => "ED", _ => "" }));
+                row.set_field("tieup-count".into(), n(if i == 0 { 2.0 } else { 1.0 }));
+                m.set_row_data(i, Value::Struct(row));
+            }
+        }
+    }
+    set(&inst, "detail-tracks", album_tracks);
+    let uses = |items: &[(&str, &str)]| {
+        model(items.iter().map(|(l, t)| st(&[("label", s(l)), ("title", s(t))])).collect())
+    };
+    set(
+        &inst,
+        "album-works",
+        model(vec![
+            st(&[
+                ("id", n(1.0)),
+                ("title", s("CLANNAD")),
+                ("translated", s("团子大家族")),
+                ("meta", s("动画 · 2007")),
+                ("relation", s("OST · OP · ED")),
+                ("usage", s("OST · OP · ED")),
+                ("ost", Value::Bool(false)),
+                ("poster", Value::Image(cover(11))),
+                ("uses", uses(&[("OP", "メグメル"), ("ED", "だんご大家族"), ("插曲", "小さなてのひら"), ("ED", "TORCH")])),
+            ]),
+            st(&[
+                ("id", n(2.0)),
+                ("title", s("CLANNAD ～AFTER STORY～")),
+                ("translated", s("")),
+                ("meta", s("动画 · 2008")),
+                ("relation", s("原声集 OST")),
+                ("usage", s("OST")),
+                ("ost", Value::Bool(true)),
+                ("poster", Value::Image(cover(12))),
+                ("uses", uses(&[])),
+            ]),
+        ]),
+    );
+    let facts = |items: &[(&str, &str)]| {
+        model(items.iter().map(|(l, v)| st(&[("label", s(l)), ("value", s(v))])).collect())
+    };
+    set(
+        &inst,
+        "album-release",
+        facts(&[
+            ("类型", "原声"),
+            ("演出者", "麻枝准、戸越まごめ"),
+            ("发行日期", "2004-08-13"),
+            ("厂牌", "Key Sounds Label"),
+            ("目录号", "KSLA-0009~11"),
+            ("流派", "Soundtrack"),
+        ]),
+    );
+    set(
+        &inst,
+        "album-media",
+        facts(&[("格式", "FLAC / 16–24bit / 44.1–96kHz"), ("容量", "1.2 GB")]),
+    );
+    set(
+        &inst,
+        "album-people",
+        model(
+            [("麻枝准", "作曲 · 作词 · 64 首"), ("戸越まごめ", "作曲 · 32 首"), ("茶太", "演唱 · 2 首"), ("Lia", "演唱 · 1 首")]
+                .iter()
+                .enumerate()
+                .map(|(i, (name, roles))| {
+                    st(&[
+                        ("id", n(i as f64 + 1.0)),
+                        ("name", s(name)),
+                        ("roles", s(roles)),
+                        ("avatar", Value::Image(if i == 2 { Image::default() } else { cover(20 + i as u32) })),
+                    ])
+                })
+                .collect(),
+        ),
+    );
+    set(
+        &inst,
+        "detail",
+        detail(
+            0.0,
+            "CLANNAD ORIGINAL SOUNDTRACK",
+            "麻枝准 / 戸越まごめ",
+            "2004 · 64 首 · 3 小时 2 分钟 · Soundtrack",
+            "最高 FLAC / 24bit / 96kHz",
+            "",
+        ),
+    );
+    render(&window, PhysicalSize::new(1600, 900), &format!("{out}/album-works.png"));
+    set(&inst, "panel-open", Value::Bool(true));
+    render(&window, size, &format!("{out}/album-works-narrow.png"));
+    set(&inst, "panel-open", Value::Bool(false));
+    set(&inst, "album-works", model(Vec::new()));
+    set(&inst, "album-release", model(Vec::new()));
+    set(&inst, "album-people", model(Vec::new()));
+    set(&inst, "album-media", model(Vec::new()));
+    set(&inst, "detail-tracks", tracks());
+    set(
+        &inst,
+        "artist-groups",
+        model(
+            [("专辑", 6usize), ("单曲与 EP", 3), ("参与作品", 2), ("幕后参与", 4)]
+                .iter()
+                .enumerate()
+                .map(|(i, (title, count))| {
+                    st(&[
+                        ("title", s(title)),
+                        ("count", n(*count as f64)),
+                        ("grid", n(i as f64)),
+                        ("rows", album_rows_n(5, *count)),
+                    ])
+                })
+                .collect(),
+        ),
+    );
+    set(
+        &inst,
+        "artist-about",
+        s("YOASOBI 是日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成，以\u{201c}将小说化为音乐\u{201d}为概念，2019 年以《夜に駆ける》出道。\n\n来源：Last.fm"),
+    );
     set(
         &inst,
         "detail",
@@ -531,12 +666,12 @@ fn main() {
             1.0,
             "YOASOBI",
             "",
-            "12 张专辑 · 140 首",
+            "组合 · 日本 · 12 张专辑 · 140 首",
             "",
-            "日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成。",
+            "别名：ヨアソビ",
         ),
     );
-    render(&window, size, &format!("{out}/artist.png"));
+    render(&window, PhysicalSize::new(1280, 2200), &format!("{out}/artist.png"));
     set(
         &inst,
         "detail",
@@ -581,7 +716,7 @@ fn main() {
 
     // 032 home.
     set(&inst, "has-home", Value::Bool(true));
-    set(&inst, "show-lyrics", Value::Bool(false));
+    set(&inst, "panel-open", Value::Bool(false));
     set(&inst, "playing-id", n(201.0));
     set_g(&inst, "Home", "loading", Value::Bool(false));
     set_g(
@@ -624,7 +759,7 @@ fn main() {
     set_g(&inst, "Home", "songs", home_rows("songs"));
     set_g(&inst, "Home", "songs-count", n(112.0));
     set_g(&inst, "Home", "songs-pages", n(6.0));
-    set_g(&inst, "Home", "recent-albums", album_rows_n(3, 12));
+    set_g(&inst, "Home", "recent-albums", album_rows_n(3, 6));
     set_g(&inst, "Home", "works", album_rows(24));
     set_g(&inst, "Home", "works-count", n(87.0));
     set_g(&inst, "Home", "works-pages", n(4.0));
@@ -662,6 +797,32 @@ fn main() {
     );
     set(&inst, "page", n(20.0));
     render(&window, PhysicalSize::new(1280, 2500), &format!("{out}/home.png"));
+    // Breakpoints (page width = window - 200px sidebar). The app's model
+    // re-chunks 最近添加 by the reported columns; here it is done by hand.
+    for (window_w, height) in [(900, 2800), (1180, 2700), (1700, 2000), (2300, 1900)] {
+        let page_w = window_w - 200;
+        let cols = if page_w <= 700 {
+            3
+        } else if page_w <= 1040 {
+            6
+        } else if page_w >= 2240 {
+            6
+        } else if page_w >= 1880 {
+            5
+        } else if page_w >= 1440 {
+            4
+        } else {
+            3
+        };
+        let max = if page_w <= 1040 && page_w > 700 { 6 } else { cols * 2 };
+        set_g(&inst, "Home", "recent-albums", album_rows_n(cols, max));
+        render(
+            &window,
+            PhysicalSize::new(window_w, height),
+            &format!("{out}/home-{window_w}.png"),
+        );
+    }
+    set_g(&inst, "Home", "recent-albums", album_rows_n(3, 6));
 
     // Works spotlight tab and daily mixes.
     set_g(&inst, "Home", "tab", n(2.0));
@@ -854,7 +1015,7 @@ fn main() {
 
     // Lyrics with translation and the search dialog.
     set(&inst, "page", n(0.0));
-    set(&inst, "show-lyrics", Value::Bool(true));
+    set(&inst, "panel-open", Value::Bool(true));
     let translated = lyrics();
     if let Value::Model(m) = &translated {
         for i in 0..m.row_count() {
