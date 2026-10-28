@@ -27,6 +27,13 @@ export struct LyricLine {
     text: string,
 }
 
+export struct QueueRow {
+    uid: int,
+    title: string,
+    artist: string,
+    duration: string,
+}
+
 export component LoginView inherits Rectangle {
     in-out property <string> server;
     in-out property <string> api-token;
@@ -114,6 +121,8 @@ component AlbumCardView inherits Rectangle {
     in property <AlbumCard> card;
     in property <length> size: 168px;
     callback clicked();
+    // true: play next, false: add to the end of the queue.
+    callback enqueue(bool);
     width: root.size;
     height: root.size + 62px;
 
@@ -151,7 +160,7 @@ component AlbumCardView inherits Rectangle {
                     kind: IconKind.play;
                     width: 16px;
                     height: 16px;
-                    fill: #ffffff;
+                    color: #ffffff;
                 }
             }
         }
@@ -173,10 +182,33 @@ component AlbumCardView inherits Rectangle {
         }
     }
 
-    area := TouchArea {
-        mouse-cursor: pointer;
-        clicked => {
-            root.clicked();
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "播放";
+                activated => {
+                    root.clicked();
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                activated => {
+                    root.enqueue(true);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                activated => {
+                    root.enqueue(false);
+                }
+            }
+        }
+
+        area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.clicked();
+            }
         }
     }
 }
@@ -188,6 +220,7 @@ export component AlbumGrid inherits Rectangle {
     // Columns and the card size (logical) whenever the layout changes.
     callback layout-changed(int, length);
     callback play-album(int);
+    callback enqueue-album(int, bool);
     // Cards at least 160px with 24px gaps and 32px side padding; the
     // columns then share the width.
     out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
@@ -232,6 +265,9 @@ export component AlbumGrid inherits Rectangle {
                     clicked => {
                         root.play-album(card.id);
                     }
+                    enqueue(next) => {
+                        root.enqueue-album(card.id, next);
+                    }
                 }
             }
         }
@@ -243,6 +279,7 @@ export component TrackList inherits Rectangle {
     in property <int> total;
     in property <int> playing-id: -1;
     callback play-track(int);
+    callback enqueue-track(int, bool);
     // 32px side padding, # 48px, duration 56px, 4 gaps of 16px.
     property <length> flex: max(0px, self.width - 64px - 48px - 56px - 64px);
     property <length> title-w: root.flex * 0.42;
@@ -332,9 +369,136 @@ export component TrackList inherits Rectangle {
                     }
                 }
 
-                row-area := TouchArea {
+                ContextMenuArea {
+                    Menu {
+                        MenuItem {
+                            title: "播放";
+                            activated => {
+                                root.play-track(track.index);
+                            }
+                        }
+                        MenuItem {
+                            title: "下一首播放";
+                            activated => {
+                                root.enqueue-track(track.index, true);
+                            }
+                        }
+                        MenuItem {
+                            title: "添加到队列末尾";
+                            activated => {
+                                root.enqueue-track(track.index, false);
+                            }
+                        }
+                    }
+
+                    row-area := TouchArea {
+                        double-clicked => {
+                            root.play-track(track.index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component QueuePanel inherits Rectangle {
+    in property <[QueueRow]> rows;
+    in property <int> current: -1;
+    callback play(int);
+    callback remove(int);
+    callback clear();
+    background: Theme.surface;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 16px;
+            spacing: 8px;
+            Text {
+                text: "播放队列";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+            }
+            Text {
+                text: root.rows.length == 0 ? "" : root.rows.length + " 首";
+                color: Theme.text-faint;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.rows.length > 0: Text {
+                text: "清空";
+                color: clear-area.has-hover ? Theme.text : Theme.text-dim;
+                font-size: 12px;
+                vertical-alignment: center;
+                clear-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.clear();
+                    }
+                }
+            }
+        }
+
+        if root.rows.length == 0: Rectangle {
+            Text {
+                text: "队列为空";
+                color: Theme.text-faint;
+            }
+        }
+
+        if root.rows.length > 0: ListView {
+            for row[i] in root.rows: Rectangle {
+                height: 48px;
+                background: i == root.current ? Theme.accent-dim : area.has-hover ? Theme.surface-hover : transparent;
+
+                area := TouchArea {
                     double-clicked => {
-                        root.play-track(track.index);
+                        root.play(row.uid);
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: row.title;
+                            color: i == root.current ? Theme.accent : Theme.text;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.artist;
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                    Text {
+                        text: row.duration;
+                        color: Theme.text-faint;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 28px;
+                        remove-icon := Icon {
+                            visible: area.has-hover || remove-area.has-hover;
+                            kind: IconKind.close;
+                            width: 14px;
+                            height: 14px;
+                            color: remove-area.has-hover ? Theme.text : Theme.text-faint;
+                        }
+                        remove-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.remove(row.uid);
+                            }
+                        }
                     }
                 }
             }
@@ -433,7 +597,14 @@ export component PlayerBar inherits Rectangle {
     in property <bool> buffering;
     in property <float> volume: 100;
     in property <bool> lyrics-open;
+    in property <bool> queue-open;
+    in property <bool> shuffle;
+    // 0 off, 1 all, 2 one.
+    in property <int> repeat;
     callback toggle-pause();
+    callback toggle-queue();
+    callback toggle-shuffle();
+    callback cycle-repeat();
     callback next();
     callback previous();
     callback seek(int);
@@ -507,6 +678,15 @@ export component PlayerBar inherits Rectangle {
                 alignment: center;
                 spacing: 12px;
                 IconButton {
+                    kind: IconKind.shuffle;
+                    active: root.shuffle;
+                    icon-size: 20px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        root.toggle-shuffle();
+                    }
+                }
+                IconButton {
                     kind: IconKind.previous;
                     enabled: root.has-track;
                     clicked => {
@@ -527,6 +707,16 @@ export component PlayerBar inherits Rectangle {
                     enabled: root.has-track;
                     clicked => {
                         root.next();
+                    }
+                }
+                IconButton {
+                    kind: IconKind.repeat;
+                    badge: root.repeat == 2 ? "1" : "";
+                    active: root.repeat != 0;
+                    icon-size: 20px;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        root.cycle-repeat();
                     }
                 }
             }
@@ -566,6 +756,14 @@ export component PlayerBar inherits Rectangle {
             width: 30%;
             alignment: end;
             spacing: 12px;
+            IconButton {
+                kind: IconKind.queue;
+                active: root.queue-open;
+                y: (parent.height - self.height) / 2;
+                clicked => {
+                    root.toggle-queue();
+                }
+            }
             IconButton {
                 kind: IconKind.lyrics;
                 active: root.lyrics-open;

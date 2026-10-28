@@ -29,10 +29,10 @@
 | 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [x] 设置页 |
 | 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
 | 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [ ] |
-| 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [ ] |
+| 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [x] mpv `append` |
 | 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |
-| 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [ ] |
-| 随机、单曲 / 列表循环 | 同上 | M1 | [ ] |
+| 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序未做 |
+| 随机、单曲 / 列表循环 | 同上 | M1 | [x] |
 | 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [ ] |
 | 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [ ] |
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [ ] |

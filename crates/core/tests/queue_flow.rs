@@ -1,0 +1,313 @@
+//! Queue editing, repeat modes and gapless preloading against a fake engine.
+
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use client_core::{
+    AudioDevice, Command, CoreConfig, CoreHandle, Engine, EngineEnd, EngineEvent, Event,
+    MemorySecrets, QueuePosition, Repeat, Settings, TrackSource,
+};
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+#[derive(Default)]
+struct FakeEngine {
+    calls: Mutex<Vec<String>>,
+}
+
+impl FakeEngine {
+    /// Calls since the last `take`, with the server URL stripped.
+    fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+
+    fn push(&self, call: String) -> Result<(), String> {
+        self.calls.lock().unwrap().push(call);
+        Ok(())
+    }
+}
+
+/// `http://127.0.0.1:1234/api/v1/tracks/2/stream?mediaToken=media` -> `2`.
+fn short(url: &str) -> String {
+    url.split("/tracks/")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(url)
+        .to_owned()
+}
+
+impl Engine for FakeEngine {
+    fn load(&self, url: &str) -> Result<(), String> {
+        self.push(format!("load {}", short(url)))
+    }
+    fn append(&self, url: &str) -> Result<(), String> {
+        self.push(format!("append {}", short(url)))
+    }
+    fn clear_upcoming(&self) -> Result<(), String> {
+        self.push("clear".into())
+    }
+    fn stop(&self) -> Result<(), String> {
+        self.push("stop".into())
+    }
+    fn set_paused(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+    fn seek(&self, seconds: f64) -> Result<(), String> {
+        self.push(format!("seek {seconds}"))
+    }
+    fn set_volume(&self, _: f64) -> Result<(), String> {
+        Ok(())
+    }
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        Ok(Vec::new())
+    }
+    fn set_audio_device(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_exclusive(&self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn track(id: i64) -> Value {
+    json!({
+        "id": id, "title": format!("曲{id}"), "artist": "歌手", "album": "专辑",
+        "durationMillis": 240000, "streamUrl": format!("/api/v1/tracks/{id}/stream"),
+    })
+}
+
+async fn server() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(path("/api/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "v1", "apiRevision": 3, "features": { "browse": true },
+        })))
+        .mount(&server)
+        .await;
+    // Empty for the media token probe; the library comes from /browse.
+    Mock::given(path("/api/v1/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [], "limit": 1, "offset": 0, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/albums"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [], "limit": 500, "offset": 0, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [track(1), track(2), track(3)], "limit": 500, "offset": 0, "total": 3
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/playback/events"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "applied": true, "state": "playing" })),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+struct Harness {
+    core: Option<CoreHandle>,
+    events: mpsc::Receiver<Event>,
+    engine: Arc<FakeEngine>,
+    base: String,
+}
+
+impl Harness {
+    async fn start(server: &MockServer) -> Self {
+        let engine = Arc::new(FakeEngine::default());
+        let data_dir = std::env::temp_dir().join(format!("032player-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let config = CoreConfig {
+            data_dir,
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
+        };
+        let core = client_core::start(engine.clone(), config, move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        });
+        let h = Self {
+            core: Some(core),
+            events: rx,
+            engine,
+            base: server.uri(),
+        };
+        h.send(Command::Login {
+            server_url: server.uri(),
+            api_token: "api".into(),
+            media_token: "media".into(),
+        });
+        h.wait("tracks", |e| {
+            matches!(e, Event::TracksAppended { total: 3, .. })
+        });
+        h
+    }
+
+    fn send(&self, command: Command) {
+        self.core.as_ref().unwrap().send(command);
+    }
+
+    fn engine(&self, event: EngineEvent) {
+        self.core.as_ref().unwrap().engine_event(event);
+    }
+
+    fn wait(&self, what: &str, pred: impl Fn(&Event) -> bool) -> Event {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.events.recv_timeout(left) {
+                Ok(e) if pred(&e) => return e,
+                Ok(_) => {}
+                Err(_) => panic!("timed out waiting for {what}"),
+            }
+        }
+    }
+
+    fn wait_playing(&self, id: i64) {
+        self.wait(
+            &format!("now playing {id}"),
+            |e| matches!(e, Event::NowPlaying(Some(n)) if n.track_id == id),
+        );
+    }
+
+    /// The queue as track titles, from the next `Event::Queue`.
+    fn wait_queue(&self) -> (Vec<String>, Option<usize>) {
+        match self.wait("queue", |e| matches!(e, Event::Queue { .. })) {
+            Event::Queue { items, current } => {
+                (items.into_iter().map(|i| i.title).collect(), current)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn loaded(&self, id: i64) {
+        self.engine(EngineEvent::FileLoaded {
+            path: Some(format!(
+                "{}/api/v1/tracks/{id}/stream?mediaToken=media",
+                self.base
+            )),
+        });
+    }
+
+    fn eof(&self) {
+        self.engine(EngineEvent::EndFile {
+            reason: EngineEnd::Eof,
+            error: None,
+        });
+    }
+
+    /// Lets the core drain its inbox, then returns the engine calls.
+    async fn calls(&self) -> Vec<String> {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.engine.take()
+    }
+
+    async fn shutdown(mut self) {
+        let core = self.core.take().unwrap();
+        tokio::task::spawn_blocking(move || core.shutdown())
+            .await
+            .unwrap();
+    }
+}
+
+fn titles(ids: &[i64]) -> Vec<String> {
+    ids.iter().map(|id| format!("曲{id}")).collect()
+}
+
+async fn playback_events(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/playback/events")
+        .map(|r| {
+            let e: Value = serde_json::from_slice(&r.body).unwrap();
+            format!("{}:{}", e["type"].as_str().unwrap(), e["trackId"])
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gapless_queue_editing_and_repeat() {
+    let server = server().await;
+    let h = Harness::start(&server).await;
+
+    h.send(Command::PlayTracks { index: 0 });
+    h.wait_playing(1);
+    assert_eq!(h.wait_queue(), (titles(&[1, 2, 3]), Some(0)));
+    // The next file is preloaded once the current one has loaded.
+    assert_eq!(h.calls().await, ["load 1"]);
+    h.loaded(1);
+    assert_eq!(h.calls().await, ["clear", "append 2"]);
+
+    // Gapless: the engine moved on by itself, nothing is loaded.
+    h.eof();
+    h.wait_playing(2);
+    h.loaded(2);
+    assert_eq!(h.calls().await, ["clear", "append 3"]);
+
+    // "Play next" changes what comes next: the preload follows.
+    h.send(Command::Enqueue {
+        source: TrackSource::Library(0),
+        at: QueuePosition::Next,
+    });
+    assert_eq!(h.wait_queue(), (titles(&[1, 2, 1, 3]), Some(1)));
+    assert_eq!(h.calls().await, ["clear", "append 1"]);
+
+    // Repeat-one preloads the same entry and counts each pass.
+    h.send(Command::SetRepeat(Repeat::One));
+    h.wait("repeat", |e| *e == Event::Repeat(Repeat::One));
+    assert_eq!(h.calls().await, ["clear", "append 2"]);
+    h.engine(EngineEvent::TimePos(239.0));
+    h.eof();
+    h.wait_playing(2);
+    // The engine reports a stale preload: the right file is loaded instead.
+    h.send(Command::SetRepeat(Repeat::Off));
+    h.loaded(3);
+    assert_eq!(h.calls().await, ["load 2"]);
+    h.loaded(2);
+    assert_eq!(h.calls().await, ["clear", "append 1"]);
+
+    // Removing the playing entry plays the one that took its place
+    // (uids: 1-3 for tracks 1-3, 4 for the queued copy of track 1).
+    h.send(Command::RemoveFromQueue(2));
+    h.wait_playing(1);
+    assert_eq!(h.wait_queue(), (titles(&[1, 1, 3]), Some(1)));
+    assert_eq!(h.calls().await, ["stop", "load 1"]);
+
+    // Past the end without repeat: back to the first entry, stopped.
+    h.send(Command::PlayQueueItem(3));
+    h.wait_playing(3);
+    h.loaded(3);
+    // Nothing after the last entry; `load` already dropped the old preload.
+    assert_eq!(h.calls().await, ["load 3"]);
+    h.eof();
+    h.wait("stopped", |e| *e == Event::Paused(true));
+    h.wait_playing(1);
+    assert_eq!(h.calls().await, ["stop"]);
+
+    h.send(Command::ClearQueue);
+    h.wait("cleared", |e| *e == Event::NowPlaying(None));
+    assert_eq!(h.wait_queue(), (Vec::new(), None));
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let sent = playback_events(&server).await;
+    // start 1, end 1 (completed), start 2, end 2 (repeat pass), start 2, ...
+    assert_eq!(
+        &sent[..5],
+        ["start:1", "end:1", "start:2", "end:2", "start:2"]
+    );
+    h.shutdown().await;
+}

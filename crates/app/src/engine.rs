@@ -10,6 +10,14 @@ impl Engine for MpvEngine {
         self.0.load(url).map_err(|e| e.to_string())
     }
 
+    fn append(&self, url: &str) -> Result<(), String> {
+        self.0.append(url).map_err(|e| e.to_string())
+    }
+
+    fn clear_upcoming(&self) -> Result<(), String> {
+        self.0.clear_upcoming().map_err(|e| e.to_string())
+    }
+
     fn stop(&self) -> Result<(), String> {
         self.0.stop().map_err(|e| e.to_string())
     }
@@ -54,6 +62,14 @@ impl Engine for NullEngine {
         Err(self.0.clone())
     }
 
+    fn append(&self, _: &str) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+
+    fn clear_upcoming(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn stop(&self) -> Result<(), String> {
         Ok(())
     }
@@ -90,7 +106,7 @@ pub fn map_event(event: PlayerEvent) -> Option<EngineEvent> {
         PlayerEvent::Paused(p) => EngineEvent::Paused(p),
         PlayerEvent::Buffering(b) => EngineEvent::Buffering(b),
         PlayerEvent::Volume(v) => EngineEvent::Volume(v),
-        PlayerEvent::FileLoaded => EngineEvent::FileLoaded,
+        PlayerEvent::FileLoaded { path } => EngineEvent::FileLoaded { path },
         PlayerEvent::EndFile { reason, error } => EngineEvent::EndFile {
             reason: match reason {
                 EndReason::Eof => EngineEnd::Eof,

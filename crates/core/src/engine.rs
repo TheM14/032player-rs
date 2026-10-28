@@ -3,8 +3,13 @@
 
 /// Commands core sends to the engine. Errors are human-readable strings.
 pub trait Engine: Send + Sync + 'static {
-    /// Replaces whatever plays with `url` and starts it.
+    /// Replaces whatever plays (and anything queued) with `url` and starts it.
     fn load(&self, url: &str) -> Result<(), String>;
+    /// Queues `url` after the current file; the engine prefetches it and
+    /// continues into it without a gap.
+    fn append(&self, url: &str) -> Result<(), String>;
+    /// Drops everything queued after the current file.
+    fn clear_upcoming(&self) -> Result<(), String>;
     fn stop(&self) -> Result<(), String>;
     fn set_paused(&self, paused: bool) -> Result<(), String>;
     /// Absolute seek in seconds.
@@ -46,7 +51,10 @@ pub enum EngineEvent {
     Paused(bool),
     Buffering(bool),
     Volume(f64),
-    FileLoaded,
+    /// A file started; `path` is its URL when the engine knows it.
+    FileLoaded {
+        path: Option<String>,
+    },
     EndFile {
         reason: EngineEnd,
         error: Option<String>,

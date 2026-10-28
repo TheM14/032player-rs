@@ -13,11 +13,11 @@ mod storage;
 
 pub use controller::{
     AlbumItem, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, NowPlaying,
-    SavedLogin, SignOutReason, TrackItem, start,
+    QueueEntry, QueuePosition, SavedLogin, SignOutReason, TrackItem, TrackSource, start,
 };
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, decode, server_size};
-pub use queue::{Queue, QueueItem};
+pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::Settings;
 pub use storage::FileStorage;

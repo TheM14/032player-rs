@@ -59,19 +59,29 @@ export component ValueBar inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close }
 
-// Vector transport icons (no icon font dependency).
+// Vector icons (no icon font dependency). Transport icons are filled,
+// the others are drawn with a stroke in the same color.
 export component Icon inherits Path {
     in property <IconKind> kind;
+    in property <color> color: Theme.text;
+    property <bool> stroked: root.kind == IconKind.shuffle || root.kind == IconKind.repeat
+        || root.kind == IconKind.repeat-one || root.kind == IconKind.queue || root.kind == IconKind.close;
     viewbox-width: 24;
     viewbox-height: 24;
-    fill: Theme.text;
-    stroke-width: 0;
+    fill: root.stroked ? transparent : root.color;
+    stroke: root.stroked ? root.color : transparent;
+    stroke-width: root.stroked ? 1.8px : 0;
     commands: root.kind == IconKind.play ? "M 7 4 L 20 12 L 7 20 Z"
         : root.kind == IconKind.pause ? "M 6 4 L 10 4 L 10 20 L 6 20 Z M 14 4 L 18 4 L 18 20 L 14 20 Z"
         : root.kind == IconKind.next ? "M 5 5 L 15 12 L 5 19 Z M 16 5 L 19 5 L 19 19 L 16 19 Z"
         : root.kind == IconKind.previous ? "M 19 5 L 9 12 L 19 19 Z M 5 5 L 8 5 L 8 19 L 5 19 Z"
+        : root.kind == IconKind.shuffle ? "M 3 7 L 7 7 C 12 7 12 17 17 17 L 21 17 M 3 17 L 7 17 C 12 17 12 7 17 7 L 21 7 M 18 4 L 21 7 L 18 10 M 18 14 L 21 17 L 18 20"
+        : root.kind == IconKind.repeat ? "M 4 12 L 4 10 C 4 8 5 7 7 7 L 20 7 M 17 4 L 20 7 L 17 10 M 20 12 L 20 14 C 20 16 19 17 17 17 L 4 17 M 7 14 L 4 17 L 7 20"
+        : root.kind == IconKind.repeat-one ? "M 4 12 L 4 10 C 4 8 5 7 7 7 L 20 7 M 17 4 L 20 7 L 17 10 M 20 12 L 20 14 C 20 16 19 17 17 17 L 4 17 M 7 14 L 4 17 L 7 20"
+        : root.kind == IconKind.queue ? "M 4 6 L 17 6 M 4 11 L 17 11 M 4 16 L 11 16 M 15 14 L 15 20 L 20 17 Z"
+        : root.kind == IconKind.close ? "M 6 6 L 18 18 M 18 6 L 6 18"
         : "M 4 6 L 20 6 L 20 8 L 4 8 Z M 4 11 L 16 11 L 16 13 L 4 13 Z M 4 16 L 18 16 L 18 18 L 4 18 Z";
 }
 
@@ -82,6 +92,8 @@ export component IconButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> active: false;
     in property <bool> filled: false;
+    // Small text at the top right (repeat-one "1").
+    in property <string> badge;
     callback clicked();
     width: root.size;
     height: root.size;
@@ -94,7 +106,16 @@ export component IconButton inherits Rectangle {
         kind: root.kind;
         width: root.icon-size;
         height: root.icon-size;
-        fill: root.filled ? #ffffff : root.active ? Theme.accent : Theme.text;
+        color: root.filled ? #ffffff : root.active ? Theme.accent : Theme.text;
+    }
+
+    if root.badge != "": Text {
+        x: parent.width / 2 + root.icon-size / 2 - 4px;
+        y: parent.height / 2 - root.icon-size / 2 - 4px;
+        text: root.badge;
+        font-size: 9px;
+        font-weight: 700;
+        color: root.active ? Theme.accent : Theme.text;
     }
 
     area := TouchArea {

@@ -61,7 +61,10 @@ pub enum PlayerEvent {
     Idle(bool),
     Volume(f64),
     Muted(bool),
-    FileLoaded,
+    /// A file started; `path` is its URL (mpv `path`).
+    FileLoaded {
+        path: Option<String>,
+    },
     EndFile {
         reason: EndReason,
         /// mpv error text for [`EndReason::Error`].
@@ -327,7 +330,9 @@ fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEven
                 return;
             }
             Ok(Event::PropertyChange { name, change, .. }) => property_event(name, &change),
-            Ok(Event::FileLoaded) => Some(PlayerEvent::FileLoaded),
+            Ok(Event::FileLoaded) => Some(PlayerEvent::FileLoaded {
+                path: mpv.get_property::<String>("path").ok(),
+            }),
             Ok(Event::PlaybackRestart) => Some(PlayerEvent::PlaybackRestart),
             Ok(Event::EndFile(reason)) => Some(PlayerEvent::EndFile {
                 reason: end_reason(reason),

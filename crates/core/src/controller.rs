@@ -16,7 +16,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
-use crate::queue::Queue;
+use crate::queue::{Queue, Repeat, Step};
 use crate::reporter::{Reporter, ReporterMsg};
 use crate::secrets::{SecretStore, TokenKind, token_key};
 use crate::settings::Settings;
@@ -67,6 +67,17 @@ pub enum Command {
     PlayAlbum {
         album_id: i64,
     },
+    /// Insert tracks after the current entry or at the end of the queue.
+    Enqueue {
+        source: TrackSource,
+        at: QueuePosition,
+    },
+    PlayQueueItem(u64),
+    RemoveFromQueue(u64),
+    /// Stops playback and empties the queue.
+    ClearQueue,
+    SetRepeat(Repeat),
+    SetShuffle(bool),
     TogglePause,
     Next,
     Previous,
@@ -88,6 +99,43 @@ pub enum Command {
         path: String,
         px: u32,
     },
+}
+
+/// Tracks to add to the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackSource {
+    /// One row of the loaded track list.
+    Library(usize),
+    Album(i64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueuePosition {
+    /// Right after the current entry ("play next").
+    Next,
+    Last,
+}
+
+/// What to do with fetched album tracks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Enqueue {
+    Play,
+    At(QueuePosition),
+}
+
+impl From<QueuePosition> for Enqueue {
+    fn from(at: QueuePosition) -> Self {
+        Self::At(at)
+    }
+}
+
+/// A queue row for the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueEntry {
+    pub uid: u64,
+    pub title: String,
+    pub artist: String,
+    pub duration: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +237,15 @@ pub enum Event {
         image: Rgba,
     },
     NowPlaying(Option<NowPlaying>),
+    /// The whole queue in play order, and the current row.
+    Queue {
+        items: Vec<QueueEntry>,
+        current: Option<usize>,
+    },
+    /// Only the current row moved.
+    QueuePosition(Option<usize>),
+    Repeat(Repeat),
+    Shuffle(bool),
     Position {
         position_ms: i64,
         duration_ms: i64,
@@ -230,7 +287,7 @@ enum Internal {
         tracks: Vec<Track>,
         total: usize,
     },
-    AlbumTracks(Result<Vec<Track>, api::ApiError>),
+    AlbumTracks(Result<Vec<Track>, api::ApiError>, Enqueue),
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
     SaveSettings(u64),
@@ -485,6 +542,12 @@ struct Core {
     saved_revision: u64,
     /// An output device or exclusive mode change is running.
     output_busy: bool,
+    /// Queue entry appended to the engine for gapless playback.
+    preloaded: Option<u64>,
+    /// URL of the file being loaded; a different `FileLoaded` is a stale preload.
+    expected_path: Option<String>,
+    /// Entry of the last started play (repeat-one passes start it again).
+    started_uid: Option<u64>,
 }
 
 impl Core {
@@ -496,6 +559,8 @@ impl Core {
     ) -> Self {
         let session_file = FileStorage::open(config.data_dir.join("session.json"));
         let settings = config.settings.clone();
+        let mut queue = Queue::default();
+        queue.set_shuffle(settings.shuffle);
         Self {
             engine,
             config,
@@ -505,7 +570,7 @@ impl Core {
             library: None,
             reporter: None,
             list_generation: 0,
-            queue: Queue::default(),
+            queue,
             idle: true,
             loading: false,
             paused: false,
@@ -518,6 +583,9 @@ impl Core {
             settings_revision: 0,
             saved_revision: 0,
             output_busy: false,
+            preloaded: None,
+            expected_path: None,
+            started_uid: None,
         }
     }
 
@@ -644,20 +712,43 @@ impl Core {
                 if self.queue.replace(tracks, index).is_some() {
                     self.play_current(true);
                 }
+                self.queue_changed();
             }
-            Command::PlayAlbum { album_id } => {
-                let Some(library) = &self.library else { return };
-                let client = library.client.clone();
-                let browse = library.capabilities.has(Feature::Browse);
-                let tx = self.internal.clone();
-                tokio::spawn(async move {
-                    let query = TrackListQuery {
-                        album_id: Some(album_id),
-                        ..TrackListQuery::default()
+            Command::PlayAlbum { album_id } => self.fetch_album(album_id, Enqueue::Play),
+            Command::Enqueue { source, at } => match source {
+                TrackSource::Library(index) => {
+                    let Some(track) = self.library.as_ref().and_then(|l| l.tracks.get(index))
+                    else {
+                        return;
                     };
-                    let result = fetch_all_tracks(&client, browse, &query).await;
-                    let _ = tx.send(Internal::AlbumTracks(result));
-                });
+                    let track = track.clone();
+                    self.enqueue(vec![track], at);
+                }
+                TrackSource::Album(album_id) => self.fetch_album(album_id, at.into()),
+            },
+            Command::PlayQueueItem(uid) => {
+                if self.queue.go_to_uid(uid).is_some() {
+                    self.play_current(true);
+                    self.emit_queue_position();
+                }
+            }
+            Command::RemoveFromQueue(uid) => self.remove_from_queue(uid),
+            Command::ClearQueue => {
+                self.stop_playback();
+                self.queue.clear();
+                self.emit(Event::NowPlaying(None));
+                self.queue_changed();
+            }
+            Command::SetRepeat(repeat) => {
+                self.update_settings(|s| s.repeat = repeat);
+                self.emit(Event::Repeat(repeat));
+                self.sync_preload();
+            }
+            Command::SetShuffle(shuffle) => {
+                self.queue.set_shuffle(shuffle);
+                self.update_settings(|s| s.shuffle = shuffle);
+                self.emit(Event::Shuffle(shuffle));
+                self.queue_changed();
             }
             Command::TogglePause => {
                 if self.queue.current().is_none() {
@@ -670,24 +761,19 @@ impl Core {
                 }
             }
             Command::Next => {
-                if self.queue.has_next() {
-                    self.queue.advance();
-                    self.play_current(true);
-                }
+                let step = self.queue.manual_next(self.settings.repeat);
+                self.step(step, true);
             }
             Command::Previous => {
                 if self.queue.current().is_none() {
                     return;
                 }
-                let restart = self.position_ms > RESTART_THRESHOLD_MS;
-                if !restart && self.queue.has_previous() {
-                    self.queue.back();
-                    self.play_current(true);
-                } else if self.idle {
-                    self.play_current(true);
-                } else {
+                if self.position_ms > RESTART_THRESHOLD_MS && !self.idle {
                     // Like mediaPrevious: a seek in the same session, not a new play.
                     self.seek(0);
+                } else {
+                    let step = self.queue.manual_previous(self.settings.repeat);
+                    self.step(step, true);
                 }
             }
             Command::Seek { position_ms } => self.seek(position_ms),
@@ -777,18 +863,188 @@ impl Core {
         })
     }
 
+    /// Applies a queue move: play the target, restart it when it is the
+    /// entry already playing, or stop at the start of the queue.
+    fn step(&mut self, step: Option<Step>, user_navigated: bool) {
+        match step {
+            None => {}
+            Some(Step::Play(pos)) if Some(pos) == self.queue.position() && !self.idle => {
+                self.seek(0);
+            }
+            Some(Step::Play(pos)) => {
+                self.queue.go(pos);
+                self.play_current(user_navigated);
+                self.emit_queue_position();
+            }
+            Some(Step::Stop(pos)) => {
+                self.stop_playback();
+                self.queue.go(pos);
+                self.show_current_stopped();
+                self.emit_queue_position();
+            }
+        }
+    }
+
+    /// Stops the engine and ends the reported play; the queue is untouched.
+    fn stop_playback(&mut self) {
+        if !self.idle {
+            let _ = self.engine.stop();
+            if let Some(r) = self.reporter.as_mut() {
+                r.act(|a| a.on_status(AdapterStatus::Stopped));
+            }
+        }
+        self.idle = true;
+        self.loading = false;
+        self.paused = true;
+        self.preloaded = None;
+        self.expected_path = None;
+        self.position_ms = 0;
+        self.emit(Event::Paused(true));
+        self.emit_position();
+    }
+
+    /// Shows the current entry (if any) without playing it.
+    fn show_current_stopped(&mut self) {
+        let adapter_track = self.adapter_track();
+        if let Some(r) = self.reporter.as_mut() {
+            r.act(|a| a.on_track_change(adapter_track));
+        }
+        self.started_uid = None;
+        let now = self.queue.current().map(|item| now_playing(&item.track));
+        self.emit(Event::NowPlaying(now));
+        self.emit_position();
+        self.lyrics = None;
+        self.active_line = None;
+        self.emit(Event::Lyrics {
+            lines: Vec::new(),
+            synced: false,
+            source: None,
+        });
+    }
+
+    fn fetch_album(&mut self, album_id: i64, intent: Enqueue) {
+        let Some(library) = &self.library else { return };
+        let client = library.client.clone();
+        let browse = library.capabilities.has(Feature::Browse);
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            let query = TrackListQuery {
+                album_id: Some(album_id),
+                ..TrackListQuery::default()
+            };
+            let result = fetch_all_tracks(&client, browse, &query).await;
+            let _ = tx.send(Internal::AlbumTracks(result, intent));
+        });
+    }
+
+    fn enqueue(&mut self, tracks: Vec<Track>, at: QueuePosition) {
+        if tracks.is_empty() {
+            return;
+        }
+        let n = tracks.len();
+        match at {
+            QueuePosition::Next => self.queue.play_next(tracks),
+            QueuePosition::Last => self.queue.add_last(tracks),
+        }
+        self.queue_changed();
+        let what = if n == 1 {
+            "1 首".to_owned()
+        } else {
+            format!("{n} 首")
+        };
+        self.emit(Event::Notice(match at {
+            QueuePosition::Next => format!("已添加 {what}到下一首播放"),
+            QueuePosition::Last => format!("已添加 {what}到队列末尾"),
+        }));
+    }
+
+    fn remove_from_queue(&mut self, uid: u64) {
+        let Some(was_current) = self.queue.remove(uid) else {
+            return;
+        };
+        if was_current {
+            let playing = !self.idle && !self.paused;
+            self.stop_playback();
+            if playing && self.queue.current().is_some() {
+                self.play_current(true);
+            } else {
+                self.show_current_stopped();
+            }
+        }
+        self.queue_changed();
+    }
+
+    /// The queue's entries or order changed: tell the UI, refresh the preload.
+    fn queue_changed(&mut self) {
+        let items = self
+            .queue
+            .in_play_order()
+            .map(|item| QueueEntry {
+                uid: item.uid,
+                title: item.track.title.clone(),
+                artist: item.track.artist.clone(),
+                duration: format::duration(item.track.duration_millis),
+            })
+            .collect();
+        self.emit(Event::Queue {
+            items,
+            current: self.queue.position(),
+        });
+        self.sync_preload();
+    }
+
+    fn emit_queue_position(&self) {
+        self.emit(Event::QueuePosition(self.queue.position()));
+    }
+
+    /// Keeps the engine's next file equal to the queue's automatic next
+    /// entry, so the engine continues into it without a gap.
+    fn sync_preload(&mut self) {
+        if self.idle || self.loading {
+            // Done once the current file has loaded.
+            return;
+        }
+        let Some(library) = &self.library else { return };
+        let next = match self.queue.auto_next(self.settings.repeat) {
+            Some(Step::Play(pos)) => self.queue.at(pos),
+            _ => None,
+        };
+        let want = next.map(|item| (item.uid, library.client.stream_url(item.track.id)));
+        if want.as_ref().map(|(uid, _)| *uid) == self.preloaded {
+            return;
+        }
+        self.preloaded = None;
+        if let Err(e) = self.engine.clear_upcoming() {
+            tracing::warn!("clearing the preloaded file: {e}");
+            return;
+        }
+        if let Some((uid, url)) = want {
+            match self.engine.append(url.as_str()) {
+                Ok(()) => self.preloaded = Some(uid),
+                Err(e) => tracing::warn!("preloading the next file: {e}"),
+            }
+        }
+    }
+
     /// Loads and starts the current queue entry.
     fn play_current(&mut self, user_navigated: bool) {
+        self.start_current(user_navigated, true);
+    }
+
+    /// Starts the current queue entry: `load` it, or (gapless) it is the
+    /// preloaded file the engine has just moved on to.
+    fn start_current(&mut self, user_navigated: bool, load: bool) {
         let Some(item) = self.queue.current().cloned() else {
             return;
         };
         let Some(library) = &self.library else { return };
         let url = library.client.stream_url(item.track.id);
         let client = library.client.clone();
-        if let Err(e) = self
-            .engine
-            .load(url.as_str())
-            .and_then(|()| self.engine.set_paused(false))
+        if load
+            && let Err(e) = self
+                .engine
+                .load(url.as_str())
+                .and_then(|()| self.engine.set_paused(false))
         {
             self.emit(Event::Notice(e));
             return;
@@ -796,13 +1052,21 @@ impl Core {
         self.idle = false;
         self.loading = true;
         self.paused = false;
+        self.preloaded = None;
+        self.expected_path = Some(url.to_string());
         self.position_ms = 0;
         self.reported_step = 0;
         self.engine_duration_ms = 0;
 
+        // The same entry again without a user action: a repeat-one pass.
+        let repeated = !user_navigated && self.started_uid == Some(item.uid);
+        self.started_uid = Some(item.uid);
         let adapter_track = self.adapter_track();
         if let Some(r) = self.reporter.as_mut() {
             r.act(|a| {
+                if repeated {
+                    a.on_repeated();
+                }
                 a.on_progress(0.0);
                 a.on_track_change(adapter_track);
                 if user_navigated {
@@ -813,15 +1077,7 @@ impl Core {
         }
 
         let track = &item.track;
-        self.emit(Event::NowPlaying(Some(NowPlaying {
-            track_id: track.id,
-            title: track.title.clone(),
-            artist: track.artist.clone(),
-            album: track.album.clone(),
-            artwork: track.artwork_url.clone(),
-            duration_ms: track.duration_millis,
-            quality: format::audio_quality(track),
-        })));
+        self.emit(Event::NowPlaying(Some(now_playing(track))));
         self.emit(Event::Paused(false));
         self.emit_position();
 
@@ -928,32 +1184,50 @@ impl Core {
                 self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
                 self.emit(Event::Volume(volume));
             }
-            EngineEvent::FileLoaded => self.loading = false,
+            EngineEvent::FileLoaded { path } => {
+                if !self.loading {
+                    return;
+                }
+                if let (Some(path), Some(expected)) = (&path, &self.expected_path)
+                    && path != expected
+                {
+                    // The engine moved on to a stale preload (the queue
+                    // changed right at the track boundary): load the right one.
+                    tracing::debug!(%path, %expected, "unexpected file, reloading");
+                    if let Err(e) = self.engine.load(expected) {
+                        self.emit(Event::Notice(e));
+                    }
+                    return;
+                }
+                self.loading = false;
+                self.sync_preload();
+            }
             EngineEvent::EndFile { reason, error } => match reason {
                 EngineEnd::Stop => {}
                 EngineEnd::Eof => {
                     if self.idle || self.loading {
                         return;
                     }
-                    if self.queue.has_next() {
-                        self.queue.advance();
-                        self.play_current(false);
-                    } else {
-                        // End of the queue: keep the last track shown, stopped.
-                        self.idle = true;
-                        self.paused = true;
-                        if let Some(r) = self.reporter.as_mut() {
-                            r.act(|a| a.on_status(AdapterStatus::Stopped));
+                    match self.queue.auto_next(self.settings.repeat) {
+                        Some(Step::Play(pos)) => {
+                            let gapless = self.preloaded.is_some()
+                                && self.queue.at(pos).map(|i| i.uid) == self.preloaded;
+                            self.queue.go(pos);
+                            // Gapless: the engine already moved on to the preload.
+                            self.start_current(false, !gapless);
+                            self.emit_queue_position();
                         }
-                        self.position_ms = 0;
-                        self.emit(Event::Paused(true));
-                        self.emit_position();
+                        step @ Some(Step::Stop(_)) => self.step(step, false),
+                        None => {}
                     }
                 }
                 EngineEnd::Error => {
                     if self.idle {
                         return;
                     }
+                    // Keeps the engine from moving on into the preload.
+                    let _ = self.engine.stop();
+                    self.preloaded = None;
                     self.idle = true;
                     self.loading = false;
                     self.paused = true;
@@ -1027,12 +1301,14 @@ impl Core {
                 library.tracks.extend(tracks);
                 self.emit(Event::TracksAppended { items, total });
             }
-            Internal::AlbumTracks(Ok(tracks)) => {
+            Internal::AlbumTracks(Ok(tracks), Enqueue::Play) => {
                 if self.queue.replace(tracks, 0).is_some() {
                     self.play_current(true);
                 }
+                self.queue_changed();
             }
-            Internal::AlbumTracks(Err(e)) => {
+            Internal::AlbumTracks(Ok(tracks), Enqueue::At(at)) => self.enqueue(tracks, at),
+            Internal::AlbumTracks(Err(e), _) => {
                 if e.is_unauthorized() {
                     self.sign_out(SignOutReason::Expired);
                 } else {
@@ -1108,10 +1384,13 @@ impl Core {
             reporter.act(|a| a.on_status(AdapterStatus::Stopped));
         }
         let _ = self.engine.stop();
-        self.queue = Queue::default();
+        self.queue.clear();
         self.idle = true;
         self.loading = false;
         self.paused = true;
+        self.preloaded = None;
+        self.expected_path = None;
+        self.started_uid = None;
         self.position_ms = 0;
         self.engine_duration_ms = 0;
         self.lyrics = None;
@@ -1140,6 +1419,10 @@ impl Core {
         });
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
+        self.emit(Event::Queue {
+            items: Vec::new(),
+            current: None,
+        });
         self.emit(Event::SignedOut(reason));
         self.emit(Event::SavedLogin(SavedLogin {
             server_url: server,
@@ -1260,6 +1543,18 @@ async fn fetch_all_tracks(
         if n == 0 || i64::try_from(out.len()).unwrap_or(i64::MAX) >= page.total {
             return Ok(out);
         }
+    }
+}
+
+fn now_playing(track: &Track) -> NowPlaying {
+    NowPlaying {
+        track_id: track.id,
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+        album: track.album.clone(),
+        artwork: track.artwork_url.clone(),
+        duration_ms: track.duration_millis,
+        quality: format::audio_quality(track),
     }
 }
 

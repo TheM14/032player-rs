@@ -56,6 +56,9 @@
 - 播放进度：`player` 观察 mpv 的 `time-pos`，`core` 按 250 ms 步长节流后只更新进度相关的少数属性，
   不触发整页重建（这正是 Electron 版的痛点之一）。
 - 切歌时序：`loadfile replace` 之后、新文件 `FileLoaded` 之前，上一首遗留的进度 / 时长 / EOF 一律丢弃。
+- 无缝播放：当前文件 `FileLoaded` 后，把队列的"自动下一首"`append` 到 mpv 播放列表（`prefetch-playlist`），
+  队列或循环模式变化时先 `clear_upcoming` 再重新 `append`。EOF 时若下一首就是预加载的那首，mpv 已经自己切过去，
+  `core` 只更新状态不再 `load`。`FileLoaded` 带回 mpv `path`，与预期不符就重新 `load`（队列恰好在曲目边界被改的竞态）。
 - 列表：登录后后台分页（500 / 页）全量拉取专辑和曲目，逐页追加到模型；ListView 只实例化可见行。
 - 封面：专辑网格是自定义 Model，`row_data` 只对可见行调用，在那里才发封面请求；
   请求尺寸 = 卡片逻辑尺寸 x 缩放比例，向上取最接近的服务端尺寸（256 / 512 / 768 / ...）；

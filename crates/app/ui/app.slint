@@ -1,11 +1,11 @@
 import { Theme } from "theme.slint";
 import {
-    AlbumCard, AlbumRow, TrackRow, LyricLine,
-    LoginView, AlbumGrid, TrackList, LyricsPanel, PlayerBar,
+    AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow,
+    LoginView, AlbumGrid, TrackList, LyricsPanel, QueuePanel, PlayerBar,
 } from "views.slint";
 import { SettingsView } from "settings.slint";
 
-export { AlbumCard, AlbumRow, TrackRow, LyricLine }
+export { AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow }
 
 component NavItem inherits Rectangle {
     in property <string> text;
@@ -63,11 +63,28 @@ export component AppWindow inherits Window {
     in property <int> album-total;
     callback album-layout-changed(int, length);
     callback play-album(int);
+    // (album id, true: play next / false: add to the end)
+    callback enqueue-album(int, bool);
 
     // Tracks.
     in property <[TrackRow]> tracks;
     in property <int> track-total;
     callback play-track(int);
+    // (track list index, true: play next / false: add to the end)
+    callback enqueue-track(int, bool);
+
+    // Queue (play order).
+    in property <[QueueRow]> queue;
+    in property <int> queue-current: -1;
+    in-out property <bool> show-queue: false;
+    in property <bool> shuffle;
+    // 0 off, 1 all, 2 one.
+    in property <int> repeat;
+    callback play-queue-item(int);
+    callback remove-queue-item(int);
+    callback clear-queue();
+    callback toggle-shuffle();
+    callback cycle-repeat();
 
     // Now playing.
     in property <bool> has-track;
@@ -200,6 +217,9 @@ export component AppWindow inherits Window {
                     play-album(id) => {
                         root.play-album(id);
                     }
+                    enqueue-album(id, next) => {
+                        root.enqueue-album(id, next);
+                    }
                 }
                 if root.page == 1: TrackList {
                     tracks: root.tracks;
@@ -207,6 +227,9 @@ export component AppWindow inherits Window {
                     playing-id: root.playing-id;
                     play-track(i) => {
                         root.play-track(i);
+                    }
+                    enqueue-track(i, next) => {
+                        root.enqueue-track(i, next);
                     }
                 }
                 if root.page == 2: SettingsView {
@@ -228,7 +251,22 @@ export component AppWindow inherits Window {
                 }
             }
 
-            if root.show-lyrics: LyricsPanel {
+            if root.show-queue: QueuePanel {
+                width: 320px;
+                rows: root.queue;
+                current: root.queue-current;
+                play(uid) => {
+                    root.play-queue-item(uid);
+                }
+                remove(uid) => {
+                    root.remove-queue-item(uid);
+                }
+                clear => {
+                    root.clear-queue();
+                }
+            }
+
+            if root.show-lyrics && !root.show-queue: LyricsPanel {
                 width: 320px;
                 lines: root.lyrics;
                 active: root.lyrics-active;
@@ -251,7 +289,19 @@ export component AppWindow inherits Window {
             paused: root.paused;
             buffering: root.buffering;
             volume: root.volume;
-            lyrics-open: root.show-lyrics;
+            lyrics-open: root.show-lyrics && !root.show-queue;
+            queue-open: root.show-queue;
+            shuffle: root.shuffle;
+            repeat: root.repeat;
+            toggle-queue => {
+                root.show-queue = !root.show-queue;
+            }
+            toggle-shuffle => {
+                root.toggle-shuffle();
+            }
+            cycle-repeat => {
+                root.cycle-repeat();
+            }
             toggle-pause => {
                 root.toggle-pause();
             }
@@ -269,8 +319,17 @@ export component AppWindow inherits Window {
                 root.volume-changed(v);
             }
             toggle-lyrics => {
-                root.show-lyrics = !root.show-lyrics;
-                root.show-lyrics-changed(root.show-lyrics);
+                if root.show-queue {
+                    // The queue covers the lyrics: switch to them.
+                    root.show-queue = false;
+                    if !root.show-lyrics {
+                        root.show-lyrics = true;
+                        root.show-lyrics-changed(true);
+                    }
+                } else {
+                    root.show-lyrics = !root.show-lyrics;
+                    root.show-lyrics-changed(root.show-lyrics);
+                }
             }
         }
     }

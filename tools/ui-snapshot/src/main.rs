@@ -142,6 +142,28 @@ fn tracks() -> Value {
     )
 }
 
+fn queue() -> Value {
+    let rows = [
+        ("夜に駆ける", "YOASOBI", "4:21"),
+        ("晴天", "周杰伦", "4:29"),
+        ("Get Lucky (feat. Pharrell Williams & Nile Rodgers)", "Daft Punk", "6:09"),
+        ("だんご大家族", "茶太", "3:38"),
+    ];
+    model(
+        (0..12)
+            .map(|i| {
+                let (t, a, d) = rows[i % rows.len()];
+                let mut row = Struct::default();
+                row.set_field("uid".into(), Value::Number(i as f64 + 1.0));
+                row.set_field("title".into(), s(t));
+                row.set_field("artist".into(), s(a));
+                row.set_field("duration".into(), s(d));
+                Value::Struct(row)
+            })
+            .collect(),
+    )
+}
+
 fn lyrics() -> Value {
     let lines = [
         "沈むように溶けてゆくように",
@@ -254,6 +276,15 @@ fn main() {
     set(&inst, "page", Value::Number(1.0));
     set(&inst, "notice", s("播放失败：loading failed"));
     render(&window, size, &format!("{out}/tracks.png"));
+
+    set(&inst, "notice", s(""));
+    set(&inst, "queue", queue());
+    set(&inst, "queue-current", Value::Number(1.0));
+    set(&inst, "show-queue", Value::Bool(true));
+    set(&inst, "shuffle", Value::Bool(true));
+    set(&inst, "repeat", Value::Number(2.0));
+    render(&window, size, &format!("{out}/queue.png"));
+    set(&inst, "show-queue", Value::Bool(false));
 
     set(&inst, "page", Value::Number(2.0));
     set(&inst, "notice", s(""));

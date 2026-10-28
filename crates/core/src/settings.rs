@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::queue::Repeat;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -16,6 +18,8 @@ pub struct Settings {
     /// WASAPI exclusive mode (`audio-exclusive`).
     pub exclusive: bool,
     pub show_lyrics: bool,
+    pub repeat: Repeat,
+    pub shuffle: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +29,8 @@ impl Default for Settings {
             audio_device: None,
             exclusive: false,
             show_lyrics: true,
+            repeat: Repeat::Off,
+            shuffle: false,
         }
     }
 }
@@ -79,6 +85,8 @@ mod tests {
             audio_device: Some("wasapi/{x}".into()),
             exclusive: true,
             show_lyrics: false,
+            repeat: Repeat::One,
+            shuffle: true,
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);

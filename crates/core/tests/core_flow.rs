@@ -31,6 +31,12 @@ impl Engine for FakeEngine {
     fn load(&self, url: &str) -> Result<(), String> {
         self.push(format!("load {url}"))
     }
+    fn append(&self, url: &str) -> Result<(), String> {
+        self.push(format!("append {url}"))
+    }
+    fn clear_upcoming(&self) -> Result<(), String> {
+        self.push("clear_upcoming".into())
+    }
     fn stop(&self) -> Result<(), String> {
         self.push("stop".into())
     }
@@ -226,7 +232,7 @@ async fn login_play_auto_advance_and_report() {
         reason: EngineEnd::Eof,
         error: None,
     });
-    core.engine_event(EngineEvent::FileLoaded);
+    core.engine_event(EngineEvent::FileLoaded { path: None });
     core.engine_event(EngineEvent::TimePos(6.0));
     events.wait("second line", |e| *e == Event::LyricsActive(Some(1)));
     core.engine_event(EngineEvent::TimePos(239.0));

@@ -27,6 +27,12 @@ impl Engine for FakeEngine {
     fn load(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
+    fn append(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn clear_upcoming(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn stop(&self) -> Result<(), String> {
         Ok(())
     }
@@ -125,6 +131,7 @@ async fn output_changes_and_volume_are_saved() {
             audio_device: Some("wasapi/{a}".into()),
             exclusive: true,
             show_lyrics: false,
+            ..Settings::default()
         }
     );
 

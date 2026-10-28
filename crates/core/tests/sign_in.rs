@@ -18,6 +18,12 @@ impl Engine for NoEngine {
     fn load(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
+    fn append(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn clear_upcoming(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn stop(&self) -> Result<(), String> {
         Ok(())
     }

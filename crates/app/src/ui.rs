@@ -5,7 +5,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use client_core::{
-    AudioDevice, Command, Commander, Event, LoginFailure, Rgba, Settings, SignOutReason, format,
+    AudioDevice, Command, Commander, Event, LoginFailure, QueuePosition, Repeat, Rgba, Settings,
+    SignOutReason, TrackSource, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -13,7 +14,7 @@ use slint::{
 };
 
 use crate::albums::{AlbumGridModel, image_key};
-use crate::{AppWindow, LyricLine, TrackRow};
+use crate::{AppWindow, LyricLine, QueueRow, TrackRow};
 
 struct Ui {
     window: slint::Weak<AppWindow>,
@@ -21,6 +22,7 @@ struct Ui {
     albums: Rc<AlbumGridModel>,
     tracks: Rc<VecModel<TrackRow>>,
     lyrics: Rc<VecModel<LyricLine>>,
+    queue: Rc<VecModel<QueueRow>>,
     now_cover_key: RefCell<Option<String>>,
     notice_timer: Timer,
     /// Engine names behind the device combo box; index 0 (`None`) is the
@@ -85,9 +87,13 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_volume(settings.volume as f32);
     window.set_show_lyrics(settings.show_lyrics);
     window.set_exclusive(settings.exclusive);
+    window.set_repeat(repeat_index(settings.repeat));
+    window.set_shuffle(settings.shuffle);
     let albums = AlbumGridModel::new(commander.clone());
     let tracks = Rc::new(VecModel::<TrackRow>::default());
     let lyrics = Rc::new(VecModel::<LyricLine>::default());
+    let queue = Rc::new(VecModel::<QueueRow>::default());
+    window.set_queue(ModelRc::from(queue.clone()));
     window.set_album_rows(ModelRc::from(albums.clone()));
     window.set_tracks(ModelRc::from(tracks.clone()));
     window.set_lyrics(ModelRc::from(lyrics.clone()));
@@ -155,6 +161,52 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         }
     });
     let c = commander.clone();
+    window.on_enqueue_track(move |index, next| {
+        if let Ok(index) = usize::try_from(index) {
+            c.send(Command::Enqueue {
+                source: TrackSource::Library(index),
+                at: position(next),
+            });
+        }
+    });
+    let c = commander.clone();
+    window.on_enqueue_album(move |id, next| {
+        c.send(Command::Enqueue {
+            source: TrackSource::Album(id.into()),
+            at: position(next),
+        });
+    });
+    let c = commander.clone();
+    window.on_play_queue_item(move |uid| {
+        if let Ok(uid) = u64::try_from(uid) {
+            c.send(Command::PlayQueueItem(uid));
+        }
+    });
+    let c = commander.clone();
+    window.on_remove_queue_item(move |uid| {
+        if let Ok(uid) = u64::try_from(uid) {
+            c.send(Command::RemoveFromQueue(uid));
+        }
+    });
+    let c = commander.clone();
+    window.on_clear_queue(move || c.send(Command::ClearQueue));
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_toggle_shuffle(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetShuffle(!w.get_shuffle()));
+        }
+    });
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_cycle_repeat(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetRepeat(
+                repeat_from_index(w.get_repeat()).cycle(),
+            ));
+        }
+    });
+    let c = commander.clone();
     window.on_toggle_pause(move || c.send(Command::TogglePause));
     let c = commander.clone();
     window.on_next(move || c.send(Command::Next));
@@ -175,12 +227,41 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         albums,
         tracks,
         lyrics,
+        queue,
         now_cover_key: RefCell::default(),
         notice_timer: Timer::default(),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
     });
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
+}
+
+fn position(next: bool) -> QueuePosition {
+    if next {
+        QueuePosition::Next
+    } else {
+        QueuePosition::Last
+    }
+}
+
+fn repeat_index(repeat: Repeat) -> i32 {
+    match repeat {
+        Repeat::Off => 0,
+        Repeat::All => 1,
+        Repeat::One => 2,
+    }
+}
+
+fn repeat_from_index(index: i32) -> Repeat {
+    match index {
+        1 => Repeat::All,
+        2 => Repeat::One,
+        _ => Repeat::Off,
+    }
+}
+
+fn row_index(index: Option<usize>) -> i32 {
+    index.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
 }
 
 fn to_image(rgba: &Rgba) -> Image {
@@ -334,6 +415,23 @@ pub fn apply(event: Event) {
             w.set_lyrics_active(-1);
             w.set_lyrics_source(source.unwrap_or_default().into());
         }
+        Event::Queue { items, current } => {
+            ui.queue.set_vec(
+                items
+                    .into_iter()
+                    .map(|e| QueueRow {
+                        uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
+                        title: e.title.into(),
+                        artist: e.artist.into(),
+                        duration: e.duration.into(),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            w.set_queue_current(row_index(current));
+        }
+        Event::QueuePosition(current) => w.set_queue_current(row_index(current)),
+        Event::Repeat(repeat) => w.set_repeat(repeat_index(repeat)),
+        Event::Shuffle(shuffle) => w.set_shuffle(shuffle),
         Event::AudioDevices(devices) => ui.set_devices(w, devices),
         Event::AudioDevice(device) => {
             *ui.selected_device.borrow_mut() = device;
