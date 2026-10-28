@@ -46,7 +46,7 @@ jobs:
           Copy-Item "$out/032player.exe" $dir
           Copy-Item "$out/libmpv-2.dll" $dir
           @"
-          032player $sha (M0 preview)
+          032player $sha (preview)
 
           Run 032player.exe. The console window shows the log; keep it for bug reports.
           Optional: set M032_SERVER_URL, M032_API_TOKEN and M032_MEDIA_TOKEN to sign in automatically.
