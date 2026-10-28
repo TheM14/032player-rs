@@ -12,6 +12,17 @@ name = "client_core"
 api.workspace = true
 session.workspace = true
 lyrics.workspace = true
+image.workspace = true
+lru.workspace = true
+bytes.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

@@ -22,6 +22,15 @@ thiserror = "2"
 reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2", "json", "system-proxy"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 url = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+lru = "0.16"
+bytes = "1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+slint = "1.18"
+slint-build = "1.18"
+directories = "6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wiremock = "0.6"
 
 [workspace.lints.rust]
