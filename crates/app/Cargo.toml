@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 [[bin]]
 name = "032player"
@@ -13,6 +14,13 @@ path = "src/main.rs"
 client-core.workspace = true
 player.workspace = true
 os.workspace = true
+directories.workspace = true
+slint.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
 
 [lints]
 workspace = true
