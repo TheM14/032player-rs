@@ -147,6 +147,8 @@ pub struct AlbumItem {
     /// `releaseKind` (manual edits and inference folded in), else
     /// `albumType`; lower case, empty when unknown.
     pub kind: String,
+    /// When it entered the library (ISO time, may be empty).
+    pub added_at: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -164,9 +166,18 @@ pub struct TrackItem {
     pub favorite: bool,
     /// Extra label of the row (the use on a work page, e.g. "OP1").
     pub tag: String,
-    /// "作词 A · 作曲 B · 编曲 C · 制作 D" (album pages show it under the
-    /// title, like the 032 web album page).
-    pub credits: String,
+    /// "作词 A · 作曲 B · 编曲 C · 制作 D" in pieces (album pages show it
+    /// under the title, like the 032 web album page; names link to artists).
+    pub credits: Vec<CreditPart>,
+}
+
+/// A piece of a credits line: a label / separator (`artist_id` 0) or a name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CreditPart {
+    pub text: String,
+    /// The credited artist; 0 for labels, separators and names known only
+    /// from the file tags.
+    pub artist_id: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -286,6 +297,7 @@ pub fn album_item(album: &Album) -> AlbumItem {
         }
         .trim()
         .to_lowercase(),
+        added_at: album.added_at.clone(),
     }
 }
 
@@ -351,7 +363,7 @@ pub fn track_item(track: &Track) -> TrackItem {
         track_number: track.track_number,
         favorite: track.is_favorite,
         tag: String::new(),
-        credits: credits_line(track),
+        credits: credit_parts(track),
     }
 }
 
@@ -364,31 +376,48 @@ const CREDIT_ROLES: [(&str, &str); 4] = [
     ("producer", "制作"),
 ];
 
-/// "作词 A · 作曲 B, C · 编曲 D".
-pub fn credits_line(track: &Track) -> String {
-    CREDIT_ROLES
-        .iter()
-        .filter_map(|(role, label)| {
-            let names: Vec<&str> = track
-                .credits
-                .iter()
-                .find(|c| c.role == *role)
-                .map(|c| c.artists.iter().map(|a| a.name.as_str()).collect())
-                .unwrap_or_default();
-            let names = if names.is_empty() {
-                match *role {
-                    "lyricist" => track.lyricist.trim().to_owned(),
-                    "composer" => track.composer.trim().to_owned(),
-                    "arranger" => track.arranger.trim().to_owned(),
-                    _ => String::new(),
+/// "作词 A · 作曲 B, C · 编曲 D" in pieces; credited artists carry their
+/// id, names from the file tags (no artist record) do not.
+pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
+    let part = |text: &str, artist_id: i64| CreditPart {
+        text: text.to_owned(),
+        artist_id,
+    };
+    let mut parts = Vec::new();
+    for (role, label) in CREDIT_ROLES {
+        let names: Vec<(&str, i64)> = match track.credits.iter().find(|c| c.role == *role) {
+            Some(c) if !c.artists.is_empty() => {
+                c.artists.iter().map(|a| (a.name.as_str(), a.id)).collect()
+            }
+            _ => {
+                let tag = match role {
+                    "lyricist" => track.lyricist.trim(),
+                    "composer" => track.composer.trim(),
+                    "arranger" => track.arranger.trim(),
+                    _ => "",
+                };
+                if tag.is_empty() {
+                    vec![]
+                } else {
+                    vec![(tag, 0)]
                 }
-            } else {
-                names.join(", ")
-            };
-            (!names.is_empty()).then(|| format!("{label} {names}"))
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
+            }
+        };
+        if names.is_empty() {
+            continue;
+        }
+        if !parts.is_empty() {
+            parts.push(part(" · ", 0));
+        }
+        parts.push(part(&format!("{label} "), 0));
+        for (i, (name, id)) in names.into_iter().enumerate() {
+            if i > 0 {
+                parts.push(part(", ", 0));
+            }
+            parts.push(part(name, id));
+        }
+    }
+    parts
 }
 
 /// Someone performing on or credited on an album's tracks.
@@ -901,8 +930,15 @@ mod tests {
                 ..Track::default()
             },
         ];
-        assert_eq!(credits_line(&tracks[0]), "作词 Ayase · 作曲 Ayase");
-        assert_eq!(credits_line(&tracks[1]), "作曲 Ayase · 编曲 A, B");
+        let line = |t: &Track| {
+            credit_parts(t)
+                .iter()
+                .map(|p| format!("{}{}", p.text, if p.artist_id > 0 { "#" } else { "" }))
+                .collect::<String>()
+        };
+        // Tag-only names do not link; credited artists do.
+        assert_eq!(line(&tracks[0]), "作词 Ayase · 作曲 Ayase#");
+        assert_eq!(line(&tracks[1]), "作曲 Ayase# · 编曲 A#, B#");
         let people = album_people(&tracks);
         let shape: Vec<(&str, &str, usize)> = people
             .iter()

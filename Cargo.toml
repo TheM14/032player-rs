@@ -25,8 +25,6 @@ url = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 lru = "0.16"
 # Japanese segmentation for furigana / romaji (IPADIC embedded, about 48 MB).
-lindera = { version = "6.2", default-features = false, features = ["embed-ipadic"] }
-wana_kana = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 bytes = "1"
 tracing = "0.1"

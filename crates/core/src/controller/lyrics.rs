@@ -33,8 +33,6 @@ pub(super) struct LyricsState {
     offsets: HashMap<i64, i64>,
     results: Vec<LyricsSearchResult>,
     pub(super) active: Option<usize>,
-    /// Furigana and romaji per line, computed on first use.
-    japanese: Vec<Option<(Option<Vec<lyrics::japanese::Ruby>>, String)>>,
 }
 
 impl Core {
@@ -111,7 +109,6 @@ impl Core {
                     .collect(),
             ));
         }
-        self.lyr.japanese = vec![None; lines.len()];
         self.lyr.lines = lines;
         self.lyr.synced = lyrics.synced;
         self.lyr.source = lyrics.source_name.or(lyrics.source);
@@ -125,24 +122,9 @@ impl Core {
     }
 
     /// Rows as shown: the translation under each line (bilingual) or
-    /// instead of it (translated only); furigana / romaji on the original
-    /// text (not when only the translation shows).
+    /// instead of it (translated only).
     fn emit_lyrics(&mut self) {
-        let settings = self.settings.lyrics.clone();
-        let translated_only = settings.translation_mode == TranslationMode::Translated
-            && self.lyr.show_translation
-            && self.lyr.translation.is_some();
-        if (settings.furigana || settings.romaji) && !translated_only {
-            let state = &mut self.lyr;
-            for (slot, (_, text, _)) in state.japanese.iter_mut().zip(&state.lines) {
-                if slot.is_none() {
-                    *slot = Some((
-                        lyrics::japanese::furigana(text),
-                        lyrics::japanese::romaji(text),
-                    ));
-                }
-            }
-        }
+        let settings = &self.settings.lyrics;
         let state = &self.lyr;
         let translation = state
             .translation
@@ -152,17 +134,7 @@ impl Core {
         let lines = state
             .lines
             .iter()
-            .enumerate()
-            .map(|(row, (_, text, i))| {
-                let japanese = state.japanese.get(row).and_then(Option::as_ref);
-                let ruby = japanese
-                    .and_then(|(ruby, _)| ruby.clone())
-                    .filter(|_| settings.furigana)
-                    .unwrap_or_default();
-                let romaji = japanese
-                    .map(|(_, romaji)| romaji.clone())
-                    .filter(|_| settings.romaji)
-                    .unwrap_or_default();
+            .map(|(_, text, i)| {
                 let translated = translation
                     .and_then(|t| t.get(*i))
                     .map(|t| t.trim())
@@ -175,14 +147,10 @@ impl Core {
                     (Some(t), TranslationMode::Bilingual) if t != text.trim() => LyricRow {
                         text: text.clone(),
                         translation: t.to_owned(),
-                        ruby,
-                        romaji,
                     },
                     _ => LyricRow {
                         text: text.clone(),
                         translation: String::new(),
-                        ruby,
-                        romaji,
                     },
                 }
             })

@@ -423,6 +423,8 @@ pub struct QueueEntry {
     pub title: String,
     pub artist: String,
     pub duration: String,
+    /// Server-relative artwork path.
+    pub artwork: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -639,10 +641,6 @@ pub struct LyricRow {
     pub text: String,
     /// The translation under the original (bilingual).
     pub translation: String,
-    /// Kana readings over the kanji of `text` (furigana on; empty otherwise).
-    pub ruby: Vec<::lyrics::japanese::Ruby>,
-    /// Romaji under Japanese lines (romaji on).
-    pub romaji: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1738,6 +1736,7 @@ impl Core {
                 title: item.track.title.clone(),
                 artist: item.track.artist.clone(),
                 duration: format::duration(item.track.duration_millis),
+                artwork: item.track.artwork_url.clone(),
             })
             .collect();
         self.emit(Event::Queue {

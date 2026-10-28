@@ -94,6 +94,35 @@ pub fn decode(bytes: &[u8], px: u32) -> Result<Rgba, String> {
     })
 }
 
+/// Spotlight backdrop (Electron `.hero-bg img`: the cover at 45% opacity
+/// under `blur(64px) saturate(1.3)`). Slint has no blur filter, so the
+/// cover is shrunk, blurred and saturated here; the UI stretches the small
+/// result, which stays smooth because the image has no detail left.
+pub fn backdrop(width: u32, height: u32, rgba: &[u8]) -> Option<Rgba> {
+    let image = image::RgbaImage::from_raw(width, height, rgba.to_vec())?;
+    // Shrink first (cheap), then blur at a size where the stretched result
+    // has no visible steps.
+    let small = image::imageops::resize(&image, 24, 24, image::imageops::FilterType::Triangle);
+    let mut big = image::imageops::resize(&small, 96, 96, image::imageops::FilterType::Triangle);
+    big = image::imageops::blur(&big, 6.0);
+    for p in big.pixels_mut() {
+        let [r, g, b, _] = p.0;
+        let gray = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+        let sat = |c: u8| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let v = (gray + (f32::from(c) - gray) * 1.3).clamp(0.0, 255.0) as u8;
+            v
+        };
+        p.0 = [sat(r), sat(g), sat(b), 255];
+    }
+    let (width, height) = big.dimensions();
+    Some(Rgba {
+        width,
+        height,
+        pixels: big.into_raw().into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

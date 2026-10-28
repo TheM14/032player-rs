@@ -94,10 +94,6 @@ pub struct LyricsSettings {
     pub translation_mode: TranslationMode,
     /// Translate as soon as lyrics load (server translation enabled).
     pub auto_translate: bool,
-    /// Kana readings over kanji of Japanese lines.
-    pub furigana: bool,
-    /// A romaji line under Japanese lines.
-    pub romaji: bool,
 }
 
 impl Default for LyricsSettings {
@@ -106,8 +102,6 @@ impl Default for LyricsSettings {
             translation_language: "zh-Hans".into(),
             translation_mode: TranslationMode::Bilingual,
             auto_translate: false,
-            furigana: false,
-            romaji: false,
         }
     }
 }
@@ -194,8 +188,6 @@ mod tests {
                 translation_language: "en".into(),
                 translation_mode: TranslationMode::Translated,
                 auto_translate: true,
-                furigana: true,
-                romaji: false,
             },
         };
         settings.save(&dir).unwrap();

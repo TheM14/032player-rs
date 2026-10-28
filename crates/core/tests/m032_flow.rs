@@ -622,36 +622,3 @@ async fn lyrics_translation_offset_and_search() {
     );
     h.shutdown().await;
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn japanese_lines_get_furigana_and_romaji() {
-    let server = server(json!({})).await;
-    get(
-        &server,
-        "/api/v1/tracks/1/lyrics",
-        json!({ "synced": true, "lines": [
-            { "timeMs": 1000, "text": "君の姿" },
-            { "timeMs": 2000, "text": "我的歌声里" }
-        ] }),
-    )
-    .await;
-    let h = Harness::start(&server);
-    h.send(Command::SetLyricsSettings(LyricsSettings {
-        furigana: true,
-        romaji: true,
-        ..LyricsSettings::default()
-    }));
-    h.send(Command::Play(TrackSource::Work(15)));
-    let Event::Lyrics { lines, .. } = h.wait(
-        "lyrics",
-        |e| matches!(e, Event::Lyrics { lines, .. } if lines.len() == 2),
-    ) else {
-        unreachable!()
-    };
-    assert_eq!(lines[0].romaji, "kimi no sugata");
-    assert_eq!(lines[0].ruby[0].base, "君");
-    assert_eq!(lines[0].ruby[0].reading, "きみ");
-    // Chinese: no kana, left alone.
-    assert!(lines[1].ruby.is_empty() && lines[1].romaji.is_empty());
-    h.shutdown().await;
-}

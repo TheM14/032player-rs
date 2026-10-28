@@ -1,9 +1,6 @@
 //! Lyrics display helpers. The server already resolves and parses lyrics into
 //! timed lines (`GET /tracks/{id}/lyrics`); this crate maps a playback
-//! position to the active line and annotates Japanese lines
-//! ([`japanese`]: furigana, romaji).
-
-pub mod japanese;
+//! position to the active line.
 
 /// One timed lyrics line.
 #[derive(Clone, Debug, PartialEq, Eq)]

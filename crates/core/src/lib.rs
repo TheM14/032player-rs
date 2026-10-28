@@ -17,9 +17,9 @@ pub use api::{
     AlbumSort, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode, WorkListQuery, WorkSort,
 };
 pub use browse::{
-    AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, DetailView,
-    PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, ReleaseGroup, TrackFilter, TrackItem,
-    TrackList, release_groups,
+    AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, CreditPart,
+    DetailView, PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, ReleaseGroup,
+    TrackFilter, TrackItem, TrackList, release_groups,
 };
 pub use controller::{
     Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow, LyricsResultItem,
@@ -27,8 +27,7 @@ pub use controller::{
     SignOutReason, SleepStatus, SleepTimer, TrackSource, start,
 };
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
-pub use images::{Rgba, decode, server_size};
-pub use lyrics::japanese::Ruby;
+pub use images::{Rgba, backdrop, decode, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::{LyricsSettings, RightPanel, Settings, TranslationMode};
