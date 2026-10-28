@@ -1,7 +1,9 @@
 //! Lyrics display helpers. The server already resolves and parses lyrics into
 //! timed lines (`GET /tracks/{id}/lyrics`); this crate maps a playback
-//! position to the active line. Word-level cues, translation merging and
-//! furigana / romaji come in M3.
+//! position to the active line and annotates Japanese lines
+//! ([`japanese`]: furigana, romaji).
+
+pub mod japanese;
 
 /// One timed lyrics line.
 #[derive(Clone, Debug, PartialEq, Eq)]

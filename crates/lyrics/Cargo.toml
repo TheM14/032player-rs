@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+lindera.workspace = true
+wana_kana.workspace = true
 
 [lints]
 workspace = true
