@@ -38,6 +38,8 @@
     `crates/app/ui/app.slint` 填假数据渲染成 PNG（登录页、专辑、曲目），再用 read 工具查看。改了 `.slint` 后要同步更新假数据。
   - 不能做：运行 UI、实际播放。`player` crate 只做编译检查（`cargo check` 不链接 libmpv）。
 - 用户的主力平台是 Windows，UI 和播放在用户机器上 `cargo run` 验证，结果（截图 / 日志）由用户回传。
+  Windows 编译慢：**不要每做完一项就请用户测**。标 **[Win]** 的项先攒着，一个大模块（例如整个 M1）完成后，
+  在 `TASKS.md` 汇总成一份验证清单，再请用户一次性验证。
 - 无界面 crate 必须能在没有 libmpv 和显示环境的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app`；
   `core`（包名 `client-core`）不依赖它们，需要时在 `core` 定义 trait，由 `app` 注入。
 
