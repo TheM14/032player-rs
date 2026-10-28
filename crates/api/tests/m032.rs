@@ -498,3 +498,33 @@ async fn lyrics_tools() {
     let err = c.translate_lyrics(6, "en").await.unwrap_err();
     assert_eq!(err.code(), Some("translation_disabled"));
 }
+
+#[tokio::test]
+async fn album_works_and_missing_endpoint() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        "GET",
+        "/api/v1/albums/5/works",
+        200,
+        json!({ "items": [
+            { "id": 31, "title": "CLANNAD", "type": "anime", "role": "ost", "source": "album" },
+            { "id": 32, "title": "AS", "type": "anime", "role": "op", "source": "manual", "trackId": 9, "trackTitle": "TORCH" }
+        ]}),
+    )
+    .await;
+    mount(
+        &server,
+        "GET",
+        "/api/v1/albums/6/works",
+        404,
+        json!({ "error": { "code": "not_found", "message": "x" } }),
+    )
+    .await;
+    let c = client(&server).await;
+    let works = c.album_works(5).await.unwrap();
+    assert_eq!(works.len(), 2);
+    assert_eq!((works[0].kind.as_str(), works[0].track_id), ("anime", None));
+    assert_eq!(works[1].track_id, Some(9));
+    assert!(c.album_works(6).await.unwrap().is_empty());
+}

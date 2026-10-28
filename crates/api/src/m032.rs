@@ -463,6 +463,21 @@ pub struct TrackWork {
     pub series_id: Option<i64>,
 }
 
+/// `GET /albums/{id}/works` item: one row per work linked to the album (the
+/// album-level link, else the first linked track).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AlbumWorkLink {
+    pub id: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub role: String,
+    pub source: String,
+    pub track_id: Option<i64>,
+    pub track_title: String,
+}
+
 /// `GET /lyrics/search` result; `score` 0 is a perfect match.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -646,6 +661,18 @@ impl Client {
             .get(&format!("/tracks/{track_id}/works"), &Query::new())
             .await?;
         Ok(res.items)
+    }
+
+    /// Works linked to an album; empty on servers without the endpoint.
+    pub async fn album_works(&self, album_id: i64) -> Result<Vec<AlbumWorkLink>, ApiError> {
+        match self
+            .get::<Items<AlbumWorkLink>>(&format!("/albums/{album_id}/works"), &Query::new())
+            .await
+        {
+            Ok(res) => Ok(res.items),
+            Err(e) if e.status() == Some(404) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Tracks with playback records, most recent first.
