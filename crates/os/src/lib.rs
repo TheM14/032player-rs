@@ -1,6 +1,7 @@
 //! OS integration: credential store, media controls, tray, single instance,
-//! file dialogs.
+//! file dialogs, the browser.
 
+pub mod browser;
 pub mod dialog;
 pub mod instance;
 pub mod media;
