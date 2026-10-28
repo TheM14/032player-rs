@@ -10,19 +10,19 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 登录：服务器 URL + API Token + 媒体凭据（两者必填且不能相同） | `ctrl` `authenticate` | M0 | [ ] |
-| 校验 `GET /api/v1/capabilities`，`apiRevision` 必须为 3 | `ctrl` `M032_API_REVISION` | M0 | [ ] |
-| 媒体凭据校验：取 1 首曲目，Range `bytes=0-0` 请求流，401 即无效；空库跳过 | `ctrl` `verifyMediaToken` | M0 | [ ] |
-| Bearer 请求；非 2xx 解析 `{error:{code,message}}` | `renderer/api/music032/music032-api.ts` | M0 | [ ] |
+| 登录：服务器 URL + API Token + 媒体凭据（两者必填且不能相同） | `ctrl` `authenticate` | M0 | [x] api |
+| 校验 `GET /api/v1/capabilities`，`apiRevision` 必须为 3 | `ctrl` `M032_API_REVISION` | M0 | [x] |
+| 媒体凭据校验：取 1 首曲目，Range `bytes=0-0` 请求流，401 即无效；空库跳过 | `ctrl` `verifyMediaToken` | M0 | [x] |
+| Bearer 请求；非 2xx 解析 `{error:{code,message}}` | `renderer/api/music032/music032-api.ts` | M0 | [x] |
 | 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [ ] |
-| 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [ ] |
+| 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [x] |
 | 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / series，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [ ] |
 
 ## 播放
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 原始文件流 `/api/v1/tracks/{id}/stream`（bit-perfect 前提） | `ctrl` `getStreamUrl` | M0 | [ ] |
+| 原始文件流 `/api/v1/tracks/{id}/stream`（bit-perfect 前提） | `ctrl` `getStreamUrl` | M0 | [x] |
 | 可选转码 `/api/v1/tracks/{id}/transcode.{format}` | 同上 | M2 | [ ] |
 | mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [ ] |
 | 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [ ] |
@@ -42,14 +42,14 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 会话状态机：start / pause / resume / seek / buffering / heartbeat / end，seq，重试 | `renderer/api/music032/music032-playback-session.ts` | M0 | [ ] |
-| 播放器信号适配层 | `renderer/api/music032/music032-playback-adapter.ts` | M1 | [ ] |
+| 会话状态机：start / pause / resume / seek / buffering / heartbeat / end，seq，重试 | `renderer/api/music032/music032-playback-session.ts` | M0 | [x] |
+| 播放器信号适配层 | `renderer/api/music032/music032-playback-adapter.ts` | M1 | [x] |
 | 接线：`POST /api/v1/playback/events` | `features/player/hooks/use-music032-playback-reporter.ts` | M1 | [ ] |
 | 会话恢复快照、resume_invalid 持久化（应用重启可续） | session 文件头注释 | M1 | [ ] |
 | clientKind：capabilities `playback.clientKinds` 含 `desktop` 时报 `desktop`，会话内固定 | `MUSIC032_CHANGES.md` 播放上报接线 | M1 | [ ] |
 | 每日推荐 context 只在全新 start 发送；加入队列的曲目不带 context | `MUSIC032_CHANGES.md` 每日推荐 | M3 | [ ] |
 | 退出时尽力发送 `client_closed` | 同上 | M1 | [ ] |
-| 测试：移植 `scripts/music032/playback-reporter.test.mjs` | - | M0 | [ ] |
+| 测试：移植 `scripts/music032/playback-reporter.test.mjs` | - | M0 | [x] |
 
 ## 曲库
 
@@ -66,7 +66,7 @@
 | 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [ ] |
 | 搜索 | `ctrl` `search` | M2 | [ ] |
 | 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [ ] |
-| 封面 / 艺人图 / 作品海报（2:3）URL，按尺寸请求 | `ctrl` `getImageUrl` | M0 | [ ] |
+| 封面 / 艺人图 / 作品海报（2:3）URL，按尺寸请求 | `ctrl` `getImageUrl` | M0 | [x] |
 
 ## 歌单
 

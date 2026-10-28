@@ -1,0 +1,68 @@
+# 任务清单
+
+当前里程碑的细粒度任务。完成打勾；需要用户在 Windows 上验证的标 **[Win]**。
+里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
+
+## M0 - 可行性验证
+
+### 0. 环境与仓库
+
+- [x] 容器内装 Rust stable（rustup，`~/.cargo`），clippy + rustfmt
+- [x] GitHub 仓库 `lux032/032player-rs`（private），remote `origin`
+- [ ] 首次提交并推送（等用户确认）
+- [ ] CI 首次跑通（推送后看 Actions） **[Win]**（windows job）
+
+### 1. Workspace 骨架
+
+- [x] workspace（edition 2024，resolver 3），7 个 crate：`api` `session` `lyrics` `core`（包名 `client-core`）`player` `os` `app`
+- [x] `rust-toolchain.toml`（stable）、`rustfmt.toml`、workspace lints
+- [x] CI：`.github/workflows/ci.yml`，Linux（fmt / clippy / test）+ Windows（clippy / test / build app）
+- [x] 依赖方向调整：`core` 不依赖 `player` / `os`（见 `ARCHITECTURE.md`），保证 `core` 可无 libmpv 测试
+
+### 2. session（播放上报状态机）
+
+- [x] 移植 `music032-playback-session.ts`（sans-IO：`poll_transmit` / `handle_outcome` / `on_timer`）
+- [x] 移植 `music032-playback-adapter.ts`
+- [x] 移植 `playback-reporter.test.mjs` 全部 25 条用例，全部通过
+- [x] 补充：事件体 JSON 形状、网络错误按配置重试且复用同一 body
+
+### 3. api
+
+- [x] 类型：`Album` `Track` `ArtistRef` `TrackCredit` `Page` `Capabilities` `Lyrics`，缺字段走默认值
+- [x] `Client`：Bearer 请求，非 2xx 解析 `{error:{code,message}}`，`is_unauthorized()`
+- [x] `authenticate`：两个凭据必填且不同、`apiRevision == 3`、媒体凭据 Range 探测（空库跳过）
+- [x] `/browse/albums`、`/browse/tracks`（sort / order / yearFrom / yearTo / seed），无 browse 回退 `/albums`、`/tracks`
+- [x] 媒体 URL：`mediaToken`、`stream_url`、`image_url`（`size` 为 0 不发送）
+- [x] `lyrics(track_id)`（404 返回 `None`）
+- [x] wiremock 测试 13 条
+- [ ] 用真实服务端冒烟（需要服务器地址和 Token，可在用户机器上做）
+
+### 4. lyrics
+
+- [x] `SyncedLyrics::active_index`（当前行、偏移）
+
+### 5. player
+
+- [x] libmpv2 封装：load / append / next / stop / pause / seek / 音量 / 静音
+- [x] 事件线程：time-pos、duration、pause、paused-for-cache、playlist-pos、idle、end-file（含 error）
+- [x] 输出设备列表 / 切换，独占模式切换（回读校验 + 回滚，对照 `audio-exclusive.ts`）
+- [x] `build.rs`：Windows 自动下载固定版本 mpv-dev（SourceForge 永久镜像，sha256 校验），生成 `mpv.lib`，复制 `libmpv-2.dll`；`MPV_LIB_DIR` / `MPV_DEV_URL` 可覆盖
+- [x] 容器内 `cargo check --target x86_64-pc-windows-msvc` 验证下载 / 解压 / 缓存
+- [ ] MSVC 链接 `mpv.lib`（由 `libmpv.dll.a` 复制而来）可用 **[Win]**
+- [ ] 实际播放、seek、独占模式切换 **[Win]**
+
+### 6. core + app
+
+- [ ] Slint 依赖与构建（容器内能编译 `.slint`）
+- [ ] `core`：tokio 运行时、命令通道、状态推送（`invoke_from_event_loop`），播放器 trait
+- [ ] 登录页（服务器 URL、API Token、媒体凭据，错误提示）
+- [ ] 专辑网格（封面异步加载、后台解码、按尺寸请求）
+- [ ] 曲目列表：1 万行虚拟列表
+- [ ] 播放条：封面、标题、艺人、进度、音量、播放 / 暂停 / 下一首
+- [ ] 中日文逐行滚动歌词
+- [ ] 上报接线（M0 只做最简：play / pause / seek / end），clientKind 按能力位
+- [ ] 中日文字体显示和输入法 **[Win]**
+
+### 7. 测量
+
+- [ ] 冷启动时间、空闲 / 播放 / 滚动内存、滚动帧率，与 Electron 版对比，写进 `PLAN.md` **[Win]**

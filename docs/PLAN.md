@@ -73,13 +73,13 @@ UI 框架备选（D2 在 M0 不过关时再选）：
 
 ### M0 - 可行性验证（约 2 周）
 
-目标：用最少代码回答"值不值得继续"。
+目标：用最少代码回答"值不值得继续"。细粒度进度见 `TASKS.md`。
 
-- [ ] Cargo workspace 骨架（crate 见 `ARCHITECTURE.md`）、CI（fmt / clippy / test）
-- [ ] `api`：类型移植（够用即可：专辑、曲目、capabilities、错误体）、Token 登录、
+- [x] Cargo workspace 骨架（crate 见 `ARCHITECTURE.md`）、CI（fmt / clippy / test）
+- [x] `api`：类型移植（够用即可：专辑、曲目、capabilities、错误体）、Token 登录、
       `/browse/albums`、`/browse/tracks`（无 browse 时回退 `/albums`、`/tracks`）、流 URL（带 `mediaToken`）、封面 URL
-- [ ] `session`：移植 `music032-playback-session.ts` + `scripts/music032/playback-reporter.test.mjs`
-- [ ] `player`：libmpv 播放 / 暂停 / seek / 下一首、进度事件、输出设备、独占模式
+- [x] `session`：移植 `music032-playback-session.ts` + `scripts/music032/playback-reporter.test.mjs`
+- [ ] `player`：（代码完成，待 Windows 实测）libmpv 播放 / 暂停 / seek / 下一首、进度事件、输出设备、独占模式
 - [ ] `app`：登录页、专辑网格、曲目列表（1 万行虚拟列表 + 封面异步加载）、播放条、一段中日文滚动歌词
 - [ ] 实测并记录到本文件：冷启动时间、空闲 / 播放 / 滚动时内存、滚动帧率，与 Electron 版对比
 

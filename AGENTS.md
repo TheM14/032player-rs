@@ -10,7 +10,7 @@
 
 ## 先读
 
-1. `docs/PLAN.md` - 已定决策和当前里程碑。
+1. `docs/PLAN.md` - 已定决策和当前里程碑；`docs/TASKS.md` - 当前任务清单，完成后打勾。
 2. `docs/ARCHITECTURE.md` - crate 边界。
 3. 做某个功能前，在 `docs/FEATURES.md` 找到对应条目和 Electron 版源码位置，**以 Electron 版行为为准**。
 
@@ -29,10 +29,13 @@
 ## 开发环境说明
 
 - 代理所在容器：aarch64 Linux，无 sudo，无 libmpv，无显示器。可用 rustup 装到 `~`。
+  - 工具链已装在 `~/.cargo`，新 shell 先 `source ~/.cargo/env`。
   - 能做：`cargo check`、`cargo test`（无界面、无音频的 crate）、`cargo clippy`。
+  - 已装 `x86_64-pc-windows-msvc` 标准库：`cargo check --target x86_64-pc-windows-msvc` 可检查 Windows 专属代码（不链接）。
   - 不能做：运行 UI、实际播放。`player` crate 只做编译检查（`cargo check` 不链接 libmpv）。
 - 用户的主力平台是 Windows，UI 和播放在用户机器上 `cargo run` 验证，结果（截图 / 日志）由用户回传。
-- 无界面 crate 必须能在没有 libmpv 和显示环境的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app`。
+- 无界面 crate 必须能在没有 libmpv 和显示环境的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app`；
+  `core`（包名 `client-core`）不依赖它们，需要时在 `core` 定义 trait，由 `app` 注入。
 
 ## 检查
 
