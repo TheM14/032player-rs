@@ -87,6 +87,8 @@ UI 框架备选（D2 在 M0 不过关时再选）：
 
 ### M1 - 能日常使用
 
+状态：代码完成（2026-10-28），待用户 Windows 验证（清单见 `TASKS.md`）。拖动排序挪到 M2；最小化到托盘、Linux 托盘未做。
+
 - 队列（随机、循环、下一首播放、加到末尾）、无缝播放、睡眠定时
 - 播放上报接线（start / pause / resume / seek / buffering / heartbeat / end，会话恢复，clientKind `desktop`）
 - 系统集成：SMTC / MPRIS / 媒体键、托盘、单实例
