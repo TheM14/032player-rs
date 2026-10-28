@@ -187,6 +187,7 @@ impl AlbumListQuery {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrackListQuery {
+    pub album_id: Option<i64>,
     pub artist_id: Option<i64>,
     pub genre: Option<String>,
     pub search: Option<String>,
@@ -202,6 +203,7 @@ impl TrackListQuery {
     /// Endpoint path and parameters (without paging).
     pub fn source(&self, browse: bool) -> (&'static str, Query) {
         let mut q = Query::new();
+        q.push_opt("album", self.album_id);
         q.push_opt("artist", self.artist_id);
         q.push_opt("genre", self.genre.as_deref());
         q.push_opt("q", self.search.as_deref());

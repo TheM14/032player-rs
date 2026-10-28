@@ -183,6 +183,39 @@ impl Client {
         self.get(path, &q).await
     }
 
+    /// `POST /api/v1/playback/events`. Any HTTP status is a result (the
+    /// session interprets it); only network failures are errors.
+    /// `keepalive` (app close) authenticates with the media token in the
+    /// query, like the web client's `sendBeacon`.
+    pub async fn post_playback_event<B: Serialize + Sync>(
+        &self,
+        body: &B,
+        keepalive: bool,
+    ) -> Result<(u16, serde_json::Value), ApiError> {
+        let mut url = self.api_url("/playback/events", &Query::new())?;
+        let req = if keepalive {
+            set_param(&mut url, "mediaToken", &self.media_token);
+            self.http.post(url)
+        } else {
+            self.http.post(url).bearer_auth(&self.api_token)
+        };
+        let body = serde_json::to_vec(body).map_err(|e| ApiError::Decode(e.to_string()))?;
+        let res = req
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await?;
+        let status = res.status().as_u16();
+        let json = res
+            .bytes()
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or(serde_json::Value::Null);
+        Ok((status, json))
+    }
+
     /// Lyrics of a track; `None` when the server has none (404).
     pub async fn lyrics(&self, track_id: i64) -> Result<Option<Lyrics>, ApiError> {
         match self
