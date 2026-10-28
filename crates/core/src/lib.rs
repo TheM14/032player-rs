@@ -18,7 +18,8 @@ pub use api::{
 };
 pub use browse::{
     AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, DetailView,
-    PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, TrackFilter, TrackItem, TrackList,
+    PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, ReleaseGroup, TrackFilter, TrackItem,
+    TrackList, release_groups,
 };
 pub use controller::{
     Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow, LyricsResultItem,
@@ -30,5 +31,5 @@ pub use images::{Rgba, decode, server_size};
 pub use lyrics::japanese::Ruby;
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
-pub use settings::{LyricsSettings, Settings, TranslationMode};
+pub use settings::{LyricsSettings, RightPanel, Settings, TranslationMode};
 pub use storage::FileStorage;

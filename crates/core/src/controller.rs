@@ -191,7 +191,8 @@ pub enum Command {
     SetAudioDevice(Option<String>),
     /// Answered with [`Event::Exclusive`] (the old value on failure).
     SetExclusive(bool),
-    SetShowLyrics(bool),
+    /// Layout of the right panel (queue / lyrics).
+    SetRightPanel(crate::settings::RightPanel),
     SetCloseToTray(bool),
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
@@ -308,6 +309,8 @@ pub enum TrackSource {
     Series(i64),
     /// Playable tracks of a daily mix (playing it reports the mix).
     DailyMix(i64),
+    /// The play queue in play order ("另存为歌单" of the queue panel).
+    Queue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -524,6 +527,13 @@ pub enum Event {
     Detail {
         view: DetailView,
         tracks: Vec<TrackItem>,
+    },
+    /// Works linked to the open album (after [`Event::Detail`]); `tieups`:
+    /// per track, the first use label and the number of works.
+    AlbumWorks {
+        album_id: i64,
+        works: Vec<crate::m032::AlbumWorkEntry>,
+        tieups: Vec<(i64, String, usize)>,
     },
     SearchResults {
         query: String,
@@ -776,6 +786,8 @@ enum Loaded {
     WorksPage(Vec<WorkItem>, usize),
     SeriesPage(Vec<SeriesItem>, usize),
     HistoryPage(Vec<api::PlaybackRecord>, usize),
+    /// Works linked to the open album.
+    AlbumWorks(i64, Vec<crate::m032::AlbumWorkEntry>),
 }
 
 /// Handle to the running core. Dropping it does not stop the core; call
@@ -1459,7 +1471,7 @@ impl Core {
                     move |r| Internal::ExclusiveSet(enabled, r),
                 );
             }
-            Command::SetShowLyrics(show) => self.update_settings(|s| s.show_lyrics = show),
+            Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {

@@ -266,6 +266,11 @@ impl Core {
         }
         let random = browse && filter.sort == api::ArtistSort::Random;
         let query = ArtistListQuery {
+            role: if filter.all_roles {
+                api::ArtistRole::All
+            } else {
+                api::ArtistRole::Album
+            },
             favorite: favorites,
             search: Some(filter.search.trim().to_owned()).filter(|s| !s.is_empty()),
             sort: Some(filter.sort),
@@ -388,6 +393,10 @@ impl Core {
                             track_count: a.track_count.max(detail.tracks_total),
                             favorite: a.is_favorite,
                             biography: a.biography.clone(),
+                            biography_source: a.biography_source.clone(),
+                            artist_type: a.artist_type.clone(),
+                            country: a.country.clone(),
+                            aliases: a.aliases.clone(),
                             releases,
                             top_tracks_popular: detail.top_tracks_are_popular,
                         };
@@ -438,6 +447,11 @@ impl Core {
                 })
             }
             .await;
+            // Album pages also show the works linked to the album.
+            let album = match (key, &result) {
+                (DetailKey::Album(id), Ok((_, tracks, _))) => Some((id, tracks.clone())),
+                _ => None,
+            };
             let msg = match result {
                 Ok((view, tracks, tags)) => Internal::Loaded(
                     Target::Detail,
@@ -447,6 +461,16 @@ impl Core {
                 Err(e) => Self::failed(&client, "加载详情", e),
             };
             let _ = tx.send(msg);
+            if let Some((id, tracks)) = album {
+                let works = album_works(&client, id, &tracks).await;
+                if !works.is_empty() {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::Detail,
+                        seq,
+                        Loaded::AlbumWorks(id, works),
+                    ));
+                }
+            }
         });
     }
 
@@ -548,6 +572,14 @@ impl Core {
                 self.emit(Event::Detail {
                     view,
                     tracks: items,
+                });
+            }
+            Loaded::AlbumWorks(album_id, works) => {
+                let tieups = crate::m032::track_tieups(&works);
+                self.emit(Event::AlbumWorks {
+                    album_id,
+                    works,
+                    tieups,
                 });
             }
             Loaded::Search {
@@ -652,6 +684,12 @@ impl Core {
                 library.list(list).get(index).cloned().map(|t| vec![t])
             }
             TrackSource::List(list) => Some(library.list(list).to_vec()),
+            TrackSource::Queue => Some(
+                self.queue
+                    .in_play_order()
+                    .map(|item| item.track.clone())
+                    .collect(),
+            ),
             _ => None,
         };
         if let Some(tracks) = tracks {
@@ -712,7 +750,9 @@ impl Core {
                     }
                     playable.into_iter().map(|t| t.track).collect()
                 }),
-                TrackSource::Track(..) | TrackSource::List(_) => Ok(Vec::new()),
+                TrackSource::Track(..) | TrackSource::List(_) | TrackSource::Queue => {
+                    Ok(Vec::new())
+                }
             };
             let _ = tx.send(Internal::Fetched(result, intent));
         });
@@ -1025,4 +1065,44 @@ fn added_notice(r: &api::PlaylistItemResult) -> Internal {
         notice: Some(notice),
         deleted: None,
     }
+}
+
+/// Works linked to an album with each work's detail, albums and tracks
+/// (fetched concurrently). Errors leave the inspector without works.
+async fn album_works(
+    client: &Client,
+    album_id: i64,
+    tracks: &[Track],
+) -> Vec<crate::m032::AlbumWorkEntry> {
+    let links = match client.album_works(album_id).await {
+        Ok(links) => links,
+        Err(e) => {
+            tracing::debug!(album_id, error = %e, "album works unavailable");
+            return Vec::new();
+        }
+    };
+    let handles: Vec<_> = links
+        .iter()
+        .map(|link| {
+            let client = client.clone();
+            let id = link.id;
+            tokio::spawn(async move {
+                let (detail, albums, tracks) = tokio::join!(
+                    client.work(id),
+                    client.work_albums(id),
+                    client.work_tracks(id)
+                );
+                (
+                    detail.ok(),
+                    albums.unwrap_or_default(),
+                    tracks.unwrap_or_default(),
+                )
+            })
+        })
+        .collect();
+    let mut per_work = Vec::with_capacity(handles.len());
+    for handle in handles {
+        per_work.push(handle.await.unwrap_or_default());
+    }
+    crate::m032::album_works(album_id, tracks, &links, &per_work)
 }

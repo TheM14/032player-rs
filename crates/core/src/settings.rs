@@ -17,7 +17,7 @@ pub struct Settings {
     pub audio_device: Option<String>,
     /// WASAPI exclusive mode (`audio-exclusive`).
     pub exclusive: bool,
-    pub show_lyrics: bool,
+    pub right_panel: RightPanel,
     pub repeat: Repeat,
     pub shuffle: bool,
     /// Closing the window hides it to the tray (Windows).
@@ -26,6 +26,53 @@ pub struct Settings {
     /// the bit-perfect default). Ignored when the server cannot.
     pub transcode: Option<api::Transcode>,
     pub lyrics: LyricsSettings,
+}
+
+/// The right panel: queue and lyrics stacked (Electron `sidebar-play-queue`:
+/// `rightExpanded`, `showQueueInSidebar`, `showLyricsInSidebar`,
+/// `sidebarPanelOrder`, the split and the width).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RightPanel {
+    /// The player bar's queue button toggles the whole panel.
+    pub open: bool,
+    pub queue: bool,
+    pub lyrics: bool,
+    /// Lyrics above the queue.
+    pub lyrics_first: bool,
+    /// Share of the height taken by the upper pane when both show.
+    pub split: f32,
+    /// Width in logical px.
+    pub width: f32,
+}
+
+impl Default for RightPanel {
+    fn default() -> Self {
+        Self {
+            open: true,
+            queue: true,
+            lyrics: true,
+            lyrics_first: false,
+            split: 0.5,
+            width: 360.0,
+        }
+    }
+}
+
+impl RightPanel {
+    fn sanitize(&mut self) {
+        let d = Self::default();
+        self.split = if self.split.is_finite() {
+            self.split.clamp(0.15, 0.85)
+        } else {
+            d.split
+        };
+        self.width = if self.width.is_finite() {
+            self.width.clamp(260.0, 720.0)
+        } else {
+            d.width
+        };
+    }
 }
 
 /// How translated lyrics show (`lyrics.translationDisplayMode`).
@@ -71,7 +118,7 @@ impl Default for Settings {
             volume: 100.0,
             audio_device: None,
             exclusive: false,
-            show_lyrics: true,
+            right_panel: RightPanel::default(),
             repeat: Repeat::Off,
             shuffle: false,
             close_to_tray: false,
@@ -96,6 +143,7 @@ impl Settings {
             settings.volume = 100.0;
         }
         settings.volume = settings.volume.clamp(0.0, 100.0);
+        settings.right_panel.sanitize();
         settings.audio_device = settings
             .audio_device
             .filter(|d| !d.is_empty() && d != "auto");
@@ -130,7 +178,14 @@ mod tests {
             volume: 42.0,
             audio_device: Some("wasapi/{x}".into()),
             exclusive: true,
-            show_lyrics: false,
+            right_panel: RightPanel {
+                open: false,
+                queue: true,
+                lyrics: false,
+                lyrics_first: true,
+                split: 0.3,
+                width: 420.0,
+            },
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
@@ -154,7 +209,15 @@ mod tests {
         let loaded = Settings::load(&dir);
         assert_eq!(loaded.volume, 100.0);
         assert_eq!(loaded.audio_device, None);
-        assert!(loaded.show_lyrics);
+        assert_eq!(loaded.right_panel, RightPanel::default());
+
+        fs::write(
+            Settings::path(&dir),
+            br#"{"rightPanel": {"split": 3, "width": 10}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&dir).right_panel;
+        assert_eq!((loaded.split, loaded.width), (0.85, 260.0));
 
         fs::write(Settings::path(&dir), b"nope").unwrap();
         assert_eq!(Settings::load(&dir), Settings::default());

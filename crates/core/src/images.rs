@@ -76,11 +76,14 @@ impl Images {
     }
 }
 
-/// Decodes and shrinks to at most `px` on the long side.
+/// Decodes and shrinks to at most `px` on the long side. The UI draws the
+/// result 1:1 (its boxes are snapped to physical pixels), so this is the
+/// only resampling step: use a sharp filter (Catmull-Rom) rather than the
+/// soft bilinear one.
 pub fn decode(bytes: &[u8], px: u32) -> Result<Rgba, String> {
     let mut image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     if px > 0 && (image.width() > px || image.height() > px) {
-        image = image.resize(px, px, image::imageops::FilterType::Triangle);
+        image = image.resize(px, px, image::imageops::FilterType::CatmullRom);
     }
     let rgba = image.into_rgba8();
     let (width, height) = rgba.dimensions();

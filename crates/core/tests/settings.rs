@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use client_core::{
-    AudioDevice, Command, CoreConfig, Engine, EngineEvent, Event, MemorySecrets, Settings,
+    AudioDevice, Command, CoreConfig, Engine, EngineEvent, Event, MemorySecrets, RightPanel,
+    Settings,
 };
 
 #[derive(Default)]
@@ -113,7 +114,11 @@ async fn output_changes_and_volume_are_saved() {
     wait(&rx, "rollback", |e| *e == Event::Exclusive(true));
 
     core.engine_event(EngineEvent::Volume(35.0));
-    core.send(Command::SetShowLyrics(false));
+    let panel = RightPanel {
+        lyrics: false,
+        ..RightPanel::default()
+    };
+    core.send(Command::SetRightPanel(panel));
     wait(&rx, "volume", |e| *e == Event::Volume(35.0));
     // Debounced write; shutdown flushes anything pending.
     tokio::task::spawn_blocking(move || core.shutdown())
@@ -130,7 +135,7 @@ async fn output_changes_and_volume_are_saved() {
             volume: 35.0,
             audio_device: Some("wasapi/{a}".into()),
             exclusive: true,
-            show_lyrics: false,
+            right_panel: panel,
             ..Settings::default()
         }
     );

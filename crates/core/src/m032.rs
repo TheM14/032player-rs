@@ -3,9 +3,9 @@
 //! follow `features/home/music032/lib/format.ts` and the zh-Hans strings.
 
 use api::{
-    AlbumWork, DailyMix, DailyMixDetail, Home, HomeAlbumPane, HomeSeriesPane, HomeSongRow,
-    HomeWorkCard, PlaybackRecord, RoleCount, RotationPage, Series, SeriesAlbumEntry, SeriesDetail,
-    SeriesMember, Track, Work, WorkDetail, WorkTrack, work_poster_path,
+    AlbumWork, AlbumWorkLink, DailyMix, DailyMixDetail, Home, HomeAlbumPane, HomeSeriesPane,
+    HomeSongRow, HomeWorkCard, PlaybackRecord, RoleCount, RotationPage, Series, SeriesAlbumEntry,
+    SeriesDetail, SeriesMember, Track, Work, WorkDetail, WorkTrack, work_poster_path,
 };
 
 use crate::browse::{AlbumItem, PlaylistItem, TrackItem, album_item, playlist_item, track_item};
@@ -62,7 +62,7 @@ pub fn work_type_long_label(kind: &str) -> &'static str {
 /// Work types of the works page filter, in menu order.
 pub const WORK_TYPES: [&str; 6] = ["anime", "drama", "movie", "game", "commercial", "other"];
 
-fn album_type_label(kind: &str) -> &'static str {
+pub(crate) fn album_type_label(kind: &str) -> &'static str {
     match kind {
         "album" => "专辑",
         "bootleg" => "非官方发行",
@@ -122,6 +122,193 @@ pub fn album_relation_label(album: &AlbumWork) -> String {
     } else {
         format!("{} {suffix}", parts.join(" · "))
     }
+}
+
+/// `storage.WorkRoleRank` order.
+const ROLE_RANK: [&str; 7] = [
+    "op",
+    "ed",
+    "insert",
+    "theme",
+    "character",
+    "image_song",
+    "ost",
+];
+
+fn role_rank(role: &str) -> usize {
+    ROLE_RANK
+        .iter()
+        .position(|r| *r == role)
+        .unwrap_or(ROLE_RANK.len())
+}
+
+/// `workAlbumUsageLabel`: album-level OST plus the distinct track uses,
+/// "OST · OP · ED".
+fn usage_label(album_role: &str, track_roles: &[&str]) -> String {
+    let mut parts: Vec<String> = if album_role == "ost" {
+        vec!["OST".into()]
+    } else {
+        Vec::new()
+    };
+    let mut roles = track_roles.to_vec();
+    roles.sort_by_key(|r| role_rank(r));
+    for role in roles {
+        if role.is_empty() || role == "other" {
+            continue;
+        }
+        let label = role_label(role);
+        if !parts.contains(&label) {
+            parts.push(label);
+        }
+    }
+    parts.join(" · ")
+}
+
+/// A work linked to an album (album inspector, header capsules).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlbumWorkEntry {
+    pub id: i64,
+    pub title: String,
+    pub translated: String,
+    /// "动画 · 2023".
+    pub meta: String,
+    /// "OST · OP", "原声集 OST" or "整张专辑关联".
+    pub relation: String,
+    /// The capsule tag ("OST · OP"; "OST" for a plain OST; empty).
+    pub usage: String,
+    pub ost: bool,
+    pub poster: String,
+    /// Linked tracks of the album in album order.
+    pub tracks: Vec<WorkUse>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkUse {
+    pub track_id: i64,
+    /// "OP · ED"; "相关" without a meaningful use.
+    pub label: String,
+    pub title: String,
+}
+
+/// Works of an album shaped like the 032 web album page
+/// (`useMusic32AlbumWorks`): per link, the work detail, its albums (the
+/// album-level role) and tracks (the uses on this album).
+pub fn album_works(
+    album_id: i64,
+    album_tracks: &[Track],
+    links: &[AlbumWorkLink],
+    per_work: &[(Option<WorkDetail>, Vec<AlbumWork>, Vec<WorkTrack>)],
+) -> Vec<AlbumWorkEntry> {
+    let order = |id: i64| album_tracks.iter().position(|t| t.id == id).unwrap_or(0);
+    links
+        .iter()
+        .zip(per_work)
+        .map(|(link, (detail, albums, tracks))| {
+            let album_role = albums
+                .iter()
+                .find(|a| a.album_id == album_id)
+                .map(|a| {
+                    if a.album_role.is_empty() {
+                        a.role.clone()
+                    } else {
+                        a.album_role.clone()
+                    }
+                })
+                .unwrap_or_default();
+            // source=album rows are the whole-album link, not a track use.
+            let uses: Vec<&WorkTrack> = tracks
+                .iter()
+                .filter(|t| t.track.album_id == album_id && t.source != "album")
+                .collect();
+            let mut by_track: Vec<(i64, String, Vec<&str>)> = Vec::new();
+            for u in &uses {
+                match by_track.iter_mut().find(|(id, ..)| *id == u.track.id) {
+                    Some((_, _, roles)) => roles.push(&u.role),
+                    None => by_track.push((u.track.id, u.track.title.clone(), vec![&u.role])),
+                }
+            }
+            by_track.sort_by_key(|(id, ..)| order(*id));
+            let usage = usage_label(
+                &album_role,
+                &uses.iter().map(|u| u.role.as_str()).collect::<Vec<_>>(),
+            );
+            let ost = album_role == "ost";
+            let (title, translated, kind, year, poster) = match detail {
+                Some(d) => (
+                    d.work.title.clone(),
+                    d.work.translated_title.clone(),
+                    d.work.kind.clone(),
+                    d.work.year,
+                    api::work_poster_path(
+                        link.id,
+                        if d.poster_api_url.is_empty() {
+                            &d.work.poster_url
+                        } else {
+                            &d.poster_api_url
+                        },
+                    ),
+                ),
+                None => (
+                    link.title.clone(),
+                    String::new(),
+                    link.kind.clone(),
+                    0,
+                    api::work_poster_path(link.id, ""),
+                ),
+            };
+            let relation = if !usage.is_empty() {
+                usage.clone()
+            } else if ost {
+                "原声集 OST".into()
+            } else {
+                "整张专辑关联".into()
+            };
+            AlbumWorkEntry {
+                id: link.id,
+                title,
+                translated,
+                meta: type_year(&kind, year, true),
+                relation,
+                usage: if usage.is_empty() && ost {
+                    "OST".into()
+                } else {
+                    usage
+                },
+                ost,
+                poster,
+                tracks: by_track
+                    .into_iter()
+                    .map(|(track_id, title, roles)| {
+                        let label = usage_label("", &roles);
+                        WorkUse {
+                            track_id,
+                            label: if label.is_empty() {
+                                "相关".into()
+                            } else {
+                                label
+                            },
+                            title,
+                        }
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// Per track of the album: "◆ OP" (first work's use) and the number of
+/// works, for the track list (web `TrackTieups`).
+pub fn track_tieups(works: &[AlbumWorkEntry]) -> Vec<(i64, String, usize)> {
+    let mut out: Vec<(i64, String, usize)> = Vec::new();
+    for work in works {
+        for u in &work.tracks {
+            match out.iter_mut().find(|(id, ..)| *id == u.track_id) {
+                Some((_, _, n)) => *n += 1,
+                None => out.push((u.track_id, u.label.clone(), 1)),
+            }
+        }
+    }
+    out
 }
 
 fn role_counts_label(counts: &[RoleCount]) -> String {

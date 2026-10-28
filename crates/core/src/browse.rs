@@ -77,6 +77,10 @@ pub struct ArtistFilter {
     pub sort: ArtistSort,
     pub order: SortOrder,
     pub search: String,
+    /// Everyone credited on a track (`role=all`: performers, composers,
+    /// lyricists, arrangers, producers) instead of album artists only
+    /// (Electron 「艺术家」 / 「专辑艺术家」).
+    pub all_roles: bool,
 }
 
 impl Default for ArtistFilter {
@@ -85,6 +89,7 @@ impl Default for ArtistFilter {
             sort: ArtistSort::Name,
             order: SortOrder::Asc,
             search: String::new(),
+            all_roles: false,
         }
     }
 }
@@ -139,6 +144,9 @@ pub struct AlbumItem {
     pub favorite: bool,
     /// On an artist page: own / collaboration / appearance / credit.
     pub relation: String,
+    /// `releaseKind` (manual edits and inference folded in), else
+    /// `albumType`; lower case, empty when unknown.
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,6 +164,9 @@ pub struct TrackItem {
     pub favorite: bool,
     /// Extra label of the row (the use on a work page, e.g. "OP1").
     pub tag: String,
+    /// "作词 A · 作曲 B · 编曲 C · 制作 D" (album pages show it under the
+    /// title, like the 032 web album page).
+    pub credits: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -196,6 +207,15 @@ pub struct AlbumView {
     pub favorite: bool,
     /// Several discs: the track list shows disc numbers.
     pub multi_disc: bool,
+    /// Inspector "发行信息" (label, value): 类型, 演出者, 发行日期, ...
+    pub release_facts: Vec<(String, String)>,
+    /// Inspector "媒体信息": 格式, 容量.
+    pub media_facts: Vec<(String, String)>,
+    pub people: Vec<AlbumPerson>,
+    /// Release kind label ("专辑", "单曲", ...; empty when unknown).
+    pub kind: String,
+    /// The album review / comment.
+    pub review: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -207,6 +227,12 @@ pub struct ArtistView {
     pub track_count: i64,
     pub favorite: bool,
     pub biography: String,
+    /// Where the biography comes from (Last.fm, ...).
+    pub biography_source: String,
+    /// "个人" / "组合" ... and the country, aliases.
+    pub artist_type: String,
+    pub country: String,
+    pub aliases: Vec<String>,
     pub releases: Vec<AlbumItem>,
     /// Top tracks are the most played (else the first in album order).
     pub top_tracks_popular: bool,
@@ -253,7 +279,59 @@ pub fn album_item(album: &Album) -> AlbumItem {
         artwork: album.artwork_url.clone(),
         favorite: album.is_favorite,
         relation: String::new(),
+        kind: if album.release_kind.trim().is_empty() {
+            &album.album_type
+        } else {
+            &album.release_kind
+        }
+        .trim()
+        .to_lowercase(),
     }
+}
+
+/// A titled group of an artist's releases.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReleaseGroup {
+    pub title: &'static str,
+    pub items: Vec<AlbumItem>,
+}
+
+/// Groups of the artist page in the 032 server's order
+/// (`groupArtistDiscography` in `internal/http/identity.go`, Electron
+/// `MUSIC032_GROUPS`): the artist's own releases by kind, then
+/// collaborations, appearances and releases reached only through credits
+/// (composer, lyricist, ...). Empty groups are left out.
+pub fn release_groups(releases: &[AlbumItem]) -> Vec<ReleaseGroup> {
+    const TITLES: [&str; 7] = [
+        "专辑",
+        "单曲与 EP",
+        "合辑与现场",
+        "其他发行",
+        "合作发行",
+        "参与作品",
+        "幕后参与",
+    ];
+    let mut groups: Vec<Vec<AlbumItem>> = vec![Vec::new(); TITLES.len()];
+    for album in releases {
+        let slot = match album.relation.as_str() {
+            "collaboration" => 4,
+            "appearance" => 5,
+            "credit" => 6,
+            _ => match album.kind.as_str() {
+                "single" | "ep" => 1,
+                "compilation" | "live" => 2,
+                "soundtrack" | "bootleg" | "other" => 3,
+                _ => 0,
+            },
+        };
+        groups[slot].push(album.clone());
+    }
+    TITLES
+        .iter()
+        .zip(groups)
+        .filter(|(_, items)| !items.is_empty())
+        .map(|(title, items)| ReleaseGroup { title, items })
+        .collect()
 }
 
 pub fn track_item(track: &Track) -> TrackItem {
@@ -273,6 +351,184 @@ pub fn track_item(track: &Track) -> TrackItem {
         track_number: track.track_number,
         favorite: track.is_favorite,
         tag: String::new(),
+        credits: credits_line(track),
+    }
+}
+
+/// Credit roles in the order of the web template "track-credits"
+/// (album.html), with the plain tag text as fallback.
+const CREDIT_ROLES: [(&str, &str); 4] = [
+    ("lyricist", "作词"),
+    ("composer", "作曲"),
+    ("arranger", "编曲"),
+    ("producer", "制作"),
+];
+
+/// "作词 A · 作曲 B, C · 编曲 D".
+pub fn credits_line(track: &Track) -> String {
+    CREDIT_ROLES
+        .iter()
+        .filter_map(|(role, label)| {
+            let names: Vec<&str> = track
+                .credits
+                .iter()
+                .find(|c| c.role == *role)
+                .map(|c| c.artists.iter().map(|a| a.name.as_str()).collect())
+                .unwrap_or_default();
+            let names = if names.is_empty() {
+                match *role {
+                    "lyricist" => track.lyricist.trim().to_owned(),
+                    "composer" => track.composer.trim().to_owned(),
+                    "arranger" => track.arranger.trim().to_owned(),
+                    _ => String::new(),
+                }
+            } else {
+                names.join(", ")
+            };
+            (!names.is_empty()).then(|| format!("{label} {names}"))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Someone performing on or credited on an album's tracks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AlbumPerson {
+    pub id: i64,
+    pub name: String,
+    /// "演唱 · 作曲".
+    pub roles: String,
+    pub track_count: usize,
+}
+
+/// `albumPeople` of the 032 server (`internal/http/album_people.go`):
+/// performers and credited people, most tracks first, performers first on
+/// ties, then first appearance.
+pub fn album_people(tracks: &[Track]) -> Vec<AlbumPerson> {
+    struct Entry {
+        id: i64,
+        name: String,
+        roles: Vec<&'static str>,
+        performer: bool,
+        tracks: std::collections::HashSet<i64>,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut add = |id: i64, name: &str, role: &'static str, track: i64| {
+        if id == 0 || name.trim().is_empty() {
+            return;
+        }
+        let i = match entries.iter().position(|e| e.id == id) {
+            Some(i) => i,
+            None => {
+                entries.push(Entry {
+                    id,
+                    name: name.to_owned(),
+                    roles: Vec::new(),
+                    performer: false,
+                    tracks: std::collections::HashSet::new(),
+                });
+                entries.len() - 1
+            }
+        };
+        let e = &mut entries[i];
+        if role == "演唱" {
+            e.performer = true;
+        }
+        if !e.roles.contains(&role) {
+            e.roles.push(role);
+        }
+        e.tracks.insert(track);
+    };
+    for track in tracks {
+        for a in &track.artists {
+            add(a.id, &a.name, "演唱", track.id);
+        }
+        for (role, label) in [
+            ("composer", "作曲"),
+            ("lyricist", "作词"),
+            ("arranger", "编曲"),
+            ("producer", "制作"),
+        ] {
+            if let Some(credit) = track.credits.iter().find(|c| c.role == role) {
+                for a in &credit.artists {
+                    add(a.id, &a.name, label, track.id);
+                }
+            }
+        }
+    }
+    // Stable sort keeps the first-appearance order on ties.
+    entries.sort_by(|a, b| {
+        b.tracks
+            .len()
+            .cmp(&a.tracks.len())
+            .then(b.performer.cmp(&a.performer))
+    });
+    entries
+        .into_iter()
+        .map(|e| AlbumPerson {
+            id: e.id,
+            name: e.name,
+            roles: e.roles.join(" · "),
+            track_count: e.tracks.len(),
+        })
+        .collect()
+}
+
+/// `albumSpecLabel` of the 032 server (`internal/http/audio_spec.go`):
+/// "FLAC / 24bit / 96kHz"; mixed albums show ranges ("16–24bit").
+pub fn album_spec_label(tracks: &[Track], fallback: &str) -> String {
+    let mut codecs: Vec<String> = Vec::new();
+    let (mut depth, mut rate) = ((0, 0), (0, 0));
+    let widen = |range: &mut (i32, i32), v: i32| {
+        if v > 0 {
+            range.0 = if range.0 == 0 { v } else { range.0.min(v) };
+            range.1 = range.1.max(v);
+        }
+    };
+    for t in tracks {
+        let codec = t
+            .codec
+            .as_deref()
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or(&t.container)
+            .trim()
+            .to_uppercase();
+        if !codec.is_empty() && !codecs.contains(&codec) {
+            codecs.push(codec);
+        }
+        widen(&mut depth, t.bit_depth.unwrap_or(0));
+        widen(&mut rate, t.sample_rate.unwrap_or(0));
+    }
+    let range = |(lo, hi): (i32, i32), fmt: &dyn Fn(i32) -> String, unit: &str| {
+        if hi <= 0 {
+            String::new()
+        } else if lo == hi {
+            format!("{}{unit}", fmt(hi))
+        } else {
+            format!("{}–{}{unit}", fmt(lo), fmt(hi))
+        }
+    };
+    let khz = |hz: i32| {
+        let v = f64::from(hz) / 1000.0;
+        if v.fract() == 0.0 {
+            format!("{v:.0}")
+        } else {
+            format!("{v}")
+        }
+    };
+    let label = [
+        codecs.join("/"),
+        range(depth, &|d| d.to_string(), "bit"),
+        range(rate, &khz, "kHz"),
+    ]
+    .into_iter()
+    .filter(|p| !p.is_empty())
+    .collect::<Vec<_>>()
+    .join(" / ");
+    if label.is_empty() {
+        fallback.to_owned()
+    } else {
+        label
     }
 }
 
@@ -316,7 +572,65 @@ pub fn album_view(album: &Album, tracks: &[Track]) -> AlbumView {
         release_date: album.release_date.clone(),
         favorite: album.is_favorite,
         multi_disc: album.disc_count > 1 || tracks.iter().any(|t| t.disc_number > 1),
+        release_facts: release_facts(album),
+        media_facts: {
+            let mut facts = Vec::new();
+            let spec = album_spec_label(tracks, &album.formats);
+            if !spec.is_empty() {
+                facts.push(("格式".to_owned(), spec));
+            }
+            if !album.total_size.is_empty() {
+                facts.push(("容量".to_owned(), album.total_size.clone()));
+            }
+            facts
+        },
+        people: album_people(tracks),
+        kind: {
+            let kind = album_item(album).kind;
+            if kind.is_empty() {
+                String::new()
+            } else {
+                crate::m032::album_type_label(&kind).to_owned()
+            }
+        },
+        review: album.review.trim().to_owned(),
     }
+}
+
+/// "发行信息" of the album inspector (`Music032AlbumInspector`).
+fn release_facts(album: &Album) -> Vec<(String, String)> {
+    let mut facts = Vec::new();
+    let mut push = |label: &str, value: &str| {
+        if !value.trim().is_empty() {
+            facts.push((label.to_owned(), value.trim().to_owned()));
+        }
+    };
+    let kind = album_item(album).kind;
+    if !kind.is_empty() {
+        push("类型", crate::m032::album_type_label(&kind));
+    }
+    let performers = if album.artists.is_empty() {
+        if album.performed_by.is_empty() {
+            album.artist.clone()
+        } else {
+            album.performed_by.clone()
+        }
+    } else {
+        album
+            .artists
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    push("演出者", &performers);
+    push("发行日期", &album.release_date);
+    push("原始发行", &album.original_release_date);
+    push("厂牌", &album.label);
+    push("目录号", &album.catalog_number);
+    push("国家/地区", &album.country);
+    push("流派", &album.genres);
+    facts
 }
 
 pub fn playlist_view(playlist: &Playlist) -> PlaylistView {
@@ -552,6 +866,113 @@ mod tests {
         let mut r = ids(&favorite_albums(items, &random, None, 7), |a| a.id);
         r.sort_unstable();
         assert_eq!(r, [1, 2, 3]);
+    }
+
+    #[test]
+    fn album_people_and_credits() {
+        let r = |id: i64, name: &str| api::ArtistRef {
+            id,
+            name: name.into(),
+        };
+        let credit = |role: &str, artists: Vec<api::ArtistRef>| api::TrackCredit {
+            role: role.into(),
+            artists,
+        };
+        let tracks = vec![
+            Track {
+                id: 1,
+                artists: vec![r(10, "ikura")],
+                credits: vec![credit("composer", vec![r(20, "Ayase")])],
+                lyricist: "Ayase".into(),
+                ..Track::default()
+            },
+            Track {
+                id: 2,
+                artists: vec![r(10, "ikura")],
+                credits: vec![
+                    credit("composer", vec![r(20, "Ayase")]),
+                    credit("arranger", vec![r(30, "A"), r(31, "B")]),
+                ],
+                ..Track::default()
+            },
+            Track {
+                id: 3,
+                artists: vec![r(20, "Ayase")],
+                ..Track::default()
+            },
+        ];
+        assert_eq!(credits_line(&tracks[0]), "作词 Ayase · 作曲 Ayase");
+        assert_eq!(credits_line(&tracks[1]), "作曲 Ayase · 编曲 A, B");
+        let people = album_people(&tracks);
+        let shape: Vec<(&str, &str, usize)> = people
+            .iter()
+            .map(|p| (p.name.as_str(), p.roles.as_str(), p.track_count))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("Ayase", "作曲 · 演唱", 3),
+                ("ikura", "演唱", 2),
+                ("A", "编曲", 1),
+                ("B", "编曲", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn spec_label_shows_ranges() {
+        let t = |codec: &str, depth: i32, rate: i32| Track {
+            codec: Some(codec.into()),
+            bit_depth: Some(depth),
+            sample_rate: Some(rate),
+            ..Track::default()
+        };
+        assert_eq!(
+            album_spec_label(&[t("flac", 24, 48000)], ""),
+            "FLAC / 24bit / 48kHz"
+        );
+        assert_eq!(
+            album_spec_label(&[t("flac", 16, 44100), t("flac", 24, 96000)], ""),
+            "FLAC / 16–24bit / 44.1–96kHz"
+        );
+        assert_eq!(album_spec_label(&[], "FLAC"), "FLAC");
+    }
+
+    #[test]
+    fn groups_releases_like_the_server() {
+        let album = |id: i64, relation: &str, kind: &str| AlbumItem {
+            id,
+            relation: relation.into(),
+            kind: kind.into(),
+            ..AlbumItem::default()
+        };
+        let groups = release_groups(&[
+            album(1, "personal", "album"),
+            album(2, "personal", "single"),
+            album(3, "credit", ""),
+            album(4, "personal", ""),
+            album(5, "collaboration", "album"),
+            album(6, "personal", "soundtrack"),
+            album(7, "appearance", "compilation"),
+            album(8, "personal", "live"),
+            album(9, "personal", "ep"),
+        ]);
+        let shape: Vec<(&str, Vec<i64>)> = groups
+            .iter()
+            .map(|g| (g.title, g.items.iter().map(|a| a.id).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("专辑", vec![1, 4]),
+                ("单曲与 EP", vec![2, 9]),
+                ("合辑与现场", vec![8]),
+                ("其他发行", vec![6]),
+                ("合作发行", vec![5]),
+                ("参与作品", vec![7]),
+                ("幕后参与", vec![3]),
+            ]
+        );
     }
 
     #[test]
