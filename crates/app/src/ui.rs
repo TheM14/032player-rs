@@ -20,8 +20,8 @@ use slint::{
 
 use crate::cards::{Card, CardGridModel, image_key, key_path};
 use crate::{
-    AppWindow, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult, LyricsSearch,
-    PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
+    AppWindow, CreditPart, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult,
+    LyricsSearch, PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
 };
 use m032::{
     Bind, GRID_CHRONICLE, GRID_HOME_ALBUMS, GRID_HOME_PLAYLISTS, GRID_HOME_WORKS, GRID_MEMBERS,
@@ -52,6 +52,10 @@ const PAGE_DETAIL: i32 = 10;
 /// Detail header cover size (logical px).
 const DETAIL_COVER: f32 = 200.0;
 /// Player bar cover (logical px).
+/// Sidebar cover: sidebar width minus padding (logical px).
+const NP_LARGE: f32 = 190.0;
+/// Queue thumbnails (logical px).
+const QUEUE_COVER: f32 = 40.0;
 const NP_COVER: f32 = 56.0;
 /// Playlist artwork upload limit of the server.
 const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
@@ -240,6 +244,8 @@ struct Ui {
     playlist_choices: Rc<VecModel<PlaylistChoice>>,
     now: RefCell<Option<NowPlaying>>,
     now_cover_key: RefCell<Option<String>>,
+    /// The sidebar copy of the current cover.
+    now_large_key: RefCell<Option<String>>,
     detail_cover_key: RefCell<Option<String>>,
     detail: RefCell<Option<DetailView>>,
     route: Cell<Route>,
@@ -262,6 +268,10 @@ struct Ui {
     /// model holds the entries matching the queue search.
     queue_all: RefCell<(Vec<client_core::QueueEntry>, Option<usize>)>,
     queue_search: RefCell<String>,
+    /// Queue thumbnails by artwork path (40px; queues repeat albums).
+    queue_covers: Rc<RefCell<HashMap<String, Image>>>,
+    /// Artwork path of each row in the queue model.
+    queue_paths: Rc<RefCell<Vec<String>>>,
     /// Engine names behind the device combo box; index 0 (`None`) is the
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
@@ -1045,8 +1055,11 @@ impl Ui {
         let (items, current) = &*all;
         let current_uid = current.and_then(|i| items.get(i)).map(|e| e.uid);
         let mut rows = Vec::new();
+        let mut paths = Vec::new();
+        let mut missing = Vec::new();
         let mut current_row = None;
-        for e in items {
+        let covers = self.queue_covers.borrow();
+        for (n, e) in items.iter().enumerate() {
             if !search.is_empty()
                 && !e.title.to_lowercase().contains(&search)
                 && !e.artist.to_lowercase().contains(&search)
@@ -1056,14 +1069,46 @@ impl Ui {
             if Some(e.uid) == current_uid {
                 current_row = Some(rows.len());
             }
+            let cover = covers.get(&e.artwork).cloned();
+            if cover.is_none() && !e.artwork.is_empty() && !missing.contains(&e.artwork) {
+                missing.push(e.artwork.clone());
+            }
             rows.push(QueueRow {
                 uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
+                number: int(i64::try_from(n + 1).unwrap_or(i64::MAX)),
                 title: e.title.as_str().into(),
                 artist: e.artist.as_str().into(),
                 duration: e.duration.as_str().into(),
+                cover: cover.unwrap_or_default(),
             });
+            paths.push(e.artwork.clone());
         }
+        drop(covers);
         self.queue.set_vec(rows);
+        *self.queue_paths.borrow_mut() = paths;
+        // A cover fills every row of its album, now and on later updates.
+        for path in missing {
+            let queue = self.queue.clone();
+            let covers = self.queue_covers.clone();
+            let paths = self.queue_paths.clone();
+            self.bind_image(
+                w,
+                m032::Bind::Queue,
+                &path.clone(),
+                QUEUE_COVER,
+                move |image| {
+                    covers.borrow_mut().insert(path.clone(), image.clone());
+                    for (i, p) in paths.borrow().iter().enumerate() {
+                        if *p == path
+                            && let Some(mut row) = queue.row_data(i)
+                        {
+                            row.cover = image.clone();
+                            queue.set_row_data(i, row);
+                        }
+                    }
+                },
+            );
+        }
         w.set_queue_total(i32::try_from(items.len()).unwrap_or(i32::MAX));
         w.set_queue_current(row_index(current_row));
     }
@@ -1077,6 +1122,8 @@ impl Ui {
         for grid in &self.grids {
             grid.rescale(scale);
         }
+        self.queue_covers.borrow_mut().clear();
+        self.show_queue(w);
         if let Some(path) = self.detail_cover_key.borrow().as_deref().and_then(key_path) {
             let path = path.to_owned();
             *self.detail_cover_key.borrow_mut() = None;
@@ -1093,7 +1140,36 @@ impl Ui {
                 px,
             });
             *self.now_cover_key.borrow_mut() = Some(key);
+            *self.now_large_key.borrow_mut() = None;
+            self.load_now_large(
+                w,
+                &self
+                    .now
+                    .borrow()
+                    .as_ref()
+                    .map(|n| n.artwork.clone())
+                    .unwrap_or_default(),
+            );
         }
+    }
+
+    /// The current cover at the sidebar width (Electron sidebar image).
+    fn load_now_large(&self, w: &AppWindow, artwork: &str) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let px = (NP_LARGE * self.scale(w)).round().max(1.0) as u32;
+        let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
+        if *self.now_large_key.borrow() == key {
+            return;
+        }
+        match &key {
+            Some(key) => self.send(Command::LoadImage {
+                key: key.clone(),
+                path: artwork.to_owned(),
+                px,
+            }),
+            None => w.set_np_cover_large(Image::default()),
+        }
+        *self.now_large_key.borrow_mut() = key;
     }
 
     fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
@@ -1232,6 +1308,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         playlist_choices: Rc::new(VecModel::default()),
         now: RefCell::default(),
         now_cover_key: RefCell::default(),
+        now_large_key: RefCell::default(),
         detail_cover_key: RefCell::default(),
         detail: RefCell::default(),
         route: Cell::new(Route::Page(PAGE_ALBUMS)),
@@ -1246,6 +1323,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         notice_timer: Timer::default(),
         scale_timer: Timer::default(),
         queue_all: RefCell::default(),
+        queue_covers: Rc::default(),
+        queue_paths: Rc::default(),
         queue_search: RefCell::default(),
         last_scale: Cell::new(window.window().scale_factor()),
         device_names: RefCell::new(vec![None]),
@@ -1632,7 +1711,7 @@ fn row_index(index: Option<usize>) -> i32 {
     index.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
 }
 
-fn to_image(rgba: &Rgba) -> Image {
+pub(super) fn to_image(rgba: &Rgba) -> Image {
     let buffer =
         SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&rgba.pixels, rgba.width, rgba.height);
     Image::from_rgba8(buffer)
@@ -1670,7 +1749,15 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
         artist: t.artist.into(),
         album: t.album.into(),
         duration: t.duration.into(),
-        credits: t.credits.into(),
+        credits: ModelRc::new(VecModel::from(
+            t.credits
+                .into_iter()
+                .map(|p| CreditPart {
+                    text: p.text.into(),
+                    id: int(p.artist_id),
+                })
+                .collect::<Vec<_>>(),
+        )),
         album_id: int(t.album_id),
         artist_id: int(t.artist_id),
         favorite: t.favorite,
@@ -1718,6 +1805,7 @@ pub fn apply(event: Event) {
             });
             w.set_dialog(0);
             *ui.now_cover_key.borrow_mut() = None;
+            *ui.now_large_key.borrow_mut() = None;
             *ui.now.borrow_mut() = None;
             for grid in &ui.grids {
                 grid.clear();
@@ -1801,6 +1889,7 @@ pub fn apply(event: Event) {
             ui.grids[GRID_PLAYLISTS].set(cards(items));
         }
         Event::PlaylistChoices(items) => {
+            ui.side_playlists(w, &items);
             ui.playlist_choices.set_vec(
                 items
                     .into_iter()
@@ -1845,6 +1934,9 @@ pub fn apply(event: Event) {
             if ui.now_cover_key.borrow().as_deref() == Some(key.as_str()) {
                 w.set_np_cover(image.clone());
             }
+            if ui.now_large_key.borrow().as_deref() == Some(key.as_str()) {
+                w.set_np_cover_large(image.clone());
+            }
             if ui.detail_cover_key.borrow().as_deref() == Some(key.as_str()) {
                 w.set_detail_cover(image);
             }
@@ -1881,6 +1973,7 @@ pub fn apply(event: Event) {
                 None => w.set_np_cover(Image::default()),
             }
             *ui.now_cover_key.borrow_mut() = key;
+            ui.load_now_large(w, &now.artwork);
             *ui.now.borrow_mut() = Some(now);
         }
         Event::Position {

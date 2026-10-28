@@ -46,6 +46,8 @@ pub struct Card {
     pub badge: String,
     /// Third line (track uses on a work page, roles of a work).
     pub note: String,
+    /// Muted last line ("入库于 3 天前").
+    pub added: String,
     /// The current track belongs to it.
     pub playing: bool,
 }
@@ -426,6 +428,7 @@ impl Model for CardGridModel {
                     favorite: entry.item.favorite,
                     badge: SharedString::from(entry.item.badge.as_str()),
                     note: SharedString::from(entry.item.note.as_str()),
+                    added: SharedString::from(entry.item.added.as_str()),
                     playing: entry.item.playing,
                 }
             })

@@ -15,8 +15,8 @@ use super::{Route, Ui, int, track_row};
 use crate::cards::{Card, image_key};
 use crate::{
     AlbumWorkRow, AppWindow, FactRow, Home, HomeRow, HomeStats, Lib032, LyricLine, LyricsResult,
-    LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, RubySegment, SeriesInfo, SeriesPane,
-    WorkInfo, WorkUseRow, YearBar,
+    LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, SeriesInfo, SeriesPane, WorkInfo,
+    WorkUseRow, YearBar,
 };
 
 /// Card grids of the 032 pages (see app.slint).
@@ -94,6 +94,10 @@ pub(super) enum Bind {
     /// Spotlight art (re-bound when its size changes).
     Hero,
     Detail,
+    /// Queue thumbnails (kept until they arrive; the queue caches them).
+    Queue,
+    /// Sidebar playlist covers.
+    Side,
 }
 
 type Setter = Box<dyn Fn(&Image)>;
@@ -350,8 +354,25 @@ impl Ui {
         let covers: Vec<String> = view.resume.iter().map(|r| r.artwork.clone()).collect();
         self.bind_row_covers(w, Bind::Home, &self.home_resume, &covers);
 
-        self.grids[GRID_HOME_ALBUMS]
-            .set(view.recent_albums.iter().cloned().map(Card::from).collect());
+        // Electron rows: title, artists, "入库于 …" (no year).
+        self.grids[GRID_HOME_ALBUMS].set(
+            view.recent_albums
+                .iter()
+                .cloned()
+                .map(|a| {
+                    let added = client_core::format::relative_time(&a.added_at);
+                    Card {
+                        year: 0,
+                        added: if added.is_empty() {
+                            String::new()
+                        } else {
+                            format!("入库于 {added}")
+                        },
+                        ..Card::from(a)
+                    }
+                })
+                .collect(),
+        );
         self.home_works(w, view.works);
         self.home_songs(w, view.songs);
         match view.chronicle {
@@ -373,6 +394,9 @@ impl Ui {
 
     fn show_tab(&self, w: &AppWindow, tab: SpotlightTab) {
         let home = w.global::<Home>();
+        if self.m032.borrow().tab != tab {
+            home.set_hero_backdrop(Image::default());
+        }
         // Spotlight art follows the width (clamp(180px, 17vw, 244px)).
         self.unbind(Bind::Hero);
         let art = home.get_hero_art().max(1.0);
@@ -427,8 +451,14 @@ impl Ui {
             home.set_series_fan(ModelRc::from(fan.clone()));
             for (i, path) in pane.fan.iter().enumerate() {
                 let fan = fan.clone();
+                let weak = self.window.clone();
                 self.bind_image(w, Bind::Hero, path, (art * 0.77).floor(), move |image| {
                     fan.set_row_data(i, image.clone());
+                    if i == 0
+                        && let Some(w) = weak.upgrade()
+                    {
+                        w.global::<Home>().set_hero_backdrop(hero_backdrop(image));
+                    }
                 });
             }
             return;
@@ -480,6 +510,7 @@ impl Ui {
                 if i64::from(p.album_id) == album_id {
                     p.cover = image.clone();
                     home.set_pane(p);
+                    home.set_hero_backdrop(hero_backdrop(image));
                 }
             }
         });
@@ -576,7 +607,16 @@ impl Ui {
             .collect()));
         home.set_year(c.year);
         home.set_year_total(int(c.total));
-        self.grids[GRID_CHRONICLE].set(c.albums.into_iter().map(Card::from).collect());
+        // All of the same year: title and artists only (Electron rows).
+        self.grids[GRID_CHRONICLE].set(
+            c.albums
+                .into_iter()
+                .map(|a| Card {
+                    year: 0,
+                    ..Card::from(a)
+                })
+                .collect(),
+        );
     }
 
     pub(super) fn home_action(&self, w: &AppWindow, action: &str, arg: i64) {
@@ -913,6 +953,35 @@ impl Ui {
         }
     }
 
+    /// Sidebar playlist list (Electron `sidebarPlaylistList`).
+    pub(super) fn side_playlists(&self, w: &AppWindow, items: &[client_core::PlaylistItem]) {
+        self.unbind(Bind::Side);
+        let model = std::rc::Rc::new(VecModel::from(
+            items
+                .iter()
+                .map(|p| NamedItem {
+                    id: int(p.id),
+                    title: s(&p.name),
+                    meta: s(&match &p.duration {
+                        Some(d) if p.track_count > 0 => format!("{} 首 · {d}", p.track_count),
+                        _ => format!("{} 首", p.track_count),
+                    }),
+                    ..NamedItem::default()
+                })
+                .collect::<Vec<_>>(),
+        ));
+        w.set_side_playlists(ModelRc::from(model.clone()));
+        for (i, p) in items.iter().enumerate() {
+            let model = model.clone();
+            self.bind_image(w, Bind::Side, &p.artwork, 36.0, move |image| {
+                if let Some(mut row) = model.row_data(i) {
+                    row.cover = image.clone();
+                    model.set_row_data(i, row);
+                }
+            });
+        }
+    }
+
     pub(super) fn tieup_work(&self, track_id: i64) -> Option<i64> {
         self.m032.borrow().tieup_works.get(&track_id).copied()
     }
@@ -1191,23 +1260,12 @@ impl Ui {
 
     pub(super) fn lyrics_lines(&self, w: &AppWindow, lines: Vec<LyricRow>) {
         w.set_lyrics_translated_lines(lines.iter().any(|l| !l.translation.is_empty()));
-        w.set_lyrics_ruby_lines(lines.iter().any(|l| !l.ruby.is_empty()));
-        w.set_lyrics_romaji_lines(lines.iter().any(|l| !l.romaji.is_empty()));
         self.lyrics.set_vec(
             lines
                 .into_iter()
                 .map(|l| LyricLine {
                     text: l.text.into(),
                     translation: l.translation.into(),
-                    ruby: rc(l
-                        .ruby
-                        .into_iter()
-                        .map(|r| RubySegment {
-                            base: r.base.into(),
-                            reading: r.reading.into(),
-                        })
-                        .collect()),
-                    romaji: l.romaji.into(),
                 })
                 .collect::<Vec<_>>(),
         );
@@ -1277,8 +1335,6 @@ impl Ui {
                 client_core::TranslationMode::Bilingual
             },
             auto_translate: w.get_lyrics_auto(),
-            furigana: w.get_lyrics_furigana(),
-            romaji: w.get_lyrics_romaji(),
         }
     }
 
@@ -1294,8 +1350,6 @@ impl Ui {
             settings.translation_mode == client_core::TranslationMode::Translated,
         ));
         w.set_lyrics_auto(settings.auto_translate);
-        w.set_lyrics_furigana(settings.furigana);
-        w.set_lyrics_romaji(settings.romaji);
     }
 }
 
@@ -1349,4 +1403,15 @@ pub(super) fn set_row_favorite(model: &VecModel<HomeRow>, id: i64, favorite: boo
             model.set_row_data(i, row);
         }
     }
+}
+
+/// Blurred, saturated copy of the spotlight cover for the card background.
+fn hero_backdrop(cover: &Image) -> Image {
+    cover
+        .to_rgba8()
+        .and_then(|buffer| {
+            client_core::backdrop(buffer.width(), buffer.height(), buffer.as_bytes())
+        })
+        .map(|rgba| super::to_image(&rgba))
+        .unwrap_or_default()
 }

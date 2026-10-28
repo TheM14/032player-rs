@@ -15,11 +15,19 @@ export struct AlbumCard {
     favorite: bool,
     badge: string,
     note: string,
+    // Muted last line ("入库于 3 天前").
+    added: string,
     playing: bool,
 }
 
 export struct AlbumRow {
     items: [AlbumCard],
+}
+
+// A piece of a credits line: label / separator (id 0) or an artist link.
+export struct CreditPart {
+    text: string,
+    id: int,
 }
 
 // `index`: row in its list; `number`: album track number ("1-03").
@@ -44,31 +52,25 @@ export struct TrackRow {
     blocked: bool,
     // Album pages: "作词 A · 作曲 B" under the title, and the work use
     // ("OP") with the number of linked works.
-    credits: string,
+    credits: [CreditPart],
     tieup: string,
     tieup-count: int,
 }
 
-// A piece of a lyrics line with its kana reading (empty: none).
-export struct RubySegment {
-    base: string,
-    reading: string,
-}
-
-// `translation`: shown under the line (bilingual); `ruby`: the line split
-// with furigana (empty: plain `text`); `romaji`: under Japanese lines.
+// `translation`: shown under the line (bilingual).
 export struct LyricLine {
     text: string,
     translation: string,
-    ruby: [RubySegment],
-    romaji: string,
 }
 
 export struct QueueRow {
     uid: int,
+    // Position in the queue (1-based; search keeps the queue numbers).
+    number: int,
     title: string,
     artist: string,
     duration: string,
+    cover: image,
 }
 
 export struct PlaylistChoice {
@@ -173,8 +175,10 @@ export component CardView inherits Rectangle {
     // The pointer is on the round play button (bottom right of the cover).
     property <bool> over-play: area.has-hover && area.mouse-x >= root.size - 52px && area.mouse-x <= root.size - 12px
         && area.mouse-y >= root.art-h - 52px && area.mouse-y <= root.art-h - 12px;
+    // The artist of an album card is a link (Electron `albumArtists` row).
+    property <bool> artist-link: root.kind == 0 && root.card.artist-id > 0 && root.card.artist != "";
     width: root.size;
-    height: root.art-h + 62px + (root.card.note != "" ? 18px : 0px);
+    height: root.art-h + 64px + (root.card.note != "" ? 18px : 0px) + (root.card.added != "" ? 18px : 0px);
 
     VerticalLayout {
         spacing: 6px;
@@ -245,7 +249,7 @@ export component CardView inherits Rectangle {
                 badge-text := Text {
                     text: root.card.badge;
                     color: #ffffff;
-                    font-size: 11px;
+                    font-size: 12px;
                 }
             }
         }
@@ -259,19 +263,37 @@ export component CardView inherits Rectangle {
             horizontal-alignment: root.kind == 1 ? center : left;
         }
 
-        Text {
-            text: root.card.year == "" ? root.card.artist : root.card.artist == "" ? root.card.year : root.card.artist + " · " + root.card.year;
-            color: Theme.text-dim;
-            font-size: 12px;
-            overflow: elide;
+        sub := HorizontalLayout {
             width: root.size;
-            horizontal-alignment: root.kind == 1 ? center : left;
+            alignment: root.kind == 1 ? center : start;
+            artist-text := Text {
+                text: root.card.artist;
+                visible: root.card.artist != "";
+                color: artist-area.has-hover ? Theme.text : Theme.text-dim;
+                font-size: 13px;
+                overflow: elide;
+                max-width: root.size - (year-text.visible ? year-text.preferred-width : 0px);
+            }
+            year-text := Text {
+                visible: root.card.year != "";
+                text: root.card.artist == "" ? root.card.year : " · " + root.card.year;
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
         }
 
         if root.card.note != "": Text {
             text: root.card.note;
             color: Theme.accent;
-            font-size: 11px;
+            font-size: 13px;
+            overflow: elide;
+            width: root.size;
+        }
+
+        if root.card.added != "": Text {
+            text: root.card.added;
+            color: Theme.text-faint;
+            font-size: 13px;
             overflow: elide;
             width: root.size;
         }
@@ -343,6 +365,17 @@ export component CardView inherits Rectangle {
             clicked => {
                 root.action(root.over-play && root.kind != 4 ? "play" : "open", 0);
             }
+        }
+    }
+
+    artist-area := TouchArea {
+        x: sub.x + artist-text.x;
+        y: sub.y + artist-text.y;
+        width: root.artist-link ? artist-text.width : 0px;
+        height: artist-text.height;
+        mouse-cursor: pointer;
+        clicked => {
+            root.action("artist", root.card.artist-id);
         }
     }
 }
@@ -423,7 +456,7 @@ export component TrackRowView inherits Rectangle {
     callback drop();
     property <length> press-y;
     property <bool> dragging;
-    property <bool> two-line: root.mode == 1 && root.track.credits != "";
+    property <bool> two-line: root.mode == 1 && root.track.credits.length > 0;
     height: root.two-line ? 50px : 36px;
     background: root.dragging ? Theme.accent-dim : row-area.has-hover ? Theme.surface-hover : transparent;
 
@@ -448,11 +481,25 @@ export component TrackRowView inherits Rectangle {
                     color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
                     overflow: elide;
                 }
-                if root.two-line: Text {
-                    text: root.track.credits;
-                    color: Theme.text-faint;
-                    font-size: 11px;
-                    overflow: elide;
+                // Credits: names link to the artist (web album page).
+                if root.two-line: Rectangle {
+                    height: 16px;
+                    clip: true;
+                    HorizontalLayout {
+                        alignment: start;
+                        for part in root.track.credits: Text {
+                            text: part.text;
+                            color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
+                            font-size: 13px;
+                            credit-area := TouchArea {
+                                enabled: part.id > 0;
+                                mouse-cursor: part.id > 0 ? pointer : default;
+                                clicked => {
+                                    root.action("artist", part.id);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // "◆ OP": the track is used in a work (click: the work).
@@ -471,14 +518,14 @@ export component TrackRowView inherits Rectangle {
                     Text {
                         text: "◆ " + root.track.tieup;
                         color: Theme.accent;
-                        font-size: 11px;
+                        font-size: 12px;
                         font-weight: 600;
                         vertical-alignment: center;
                     }
                     if root.track.tieup-count > 1: Text {
                         text: root.track.tieup-count;
                         color: Theme.text-dim;
-                        font-size: 10px;
+                        font-size: 11px;
                         vertical-alignment: center;
                     }
                 }
@@ -498,7 +545,7 @@ export component TrackRowView inherits Rectangle {
                 tag-text := Text {
                     text: root.track.tag;
                     color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
-                    font-size: 11px;
+                    font-size: 12px;
                 }
             }
         }
@@ -521,7 +568,7 @@ export component TrackRowView inherits Rectangle {
             Text {
                 text: root.track.blocked ? "已不再推荐" : "不再推荐";
                 color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
-                font-size: 11px;
+                font-size: 12px;
                 visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
             }
             block-area := TouchArea {
@@ -681,13 +728,13 @@ export component TrackList inherits Rectangle {
             padding-right: 32px;
             height: 28px;
             spacing: 16px;
-            Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
+            Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
+            Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
+            Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
+            if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
             if root.mode == 4: Rectangle { width: 64px; }
             Rectangle { width: TrackColumns.heart; }
-            Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
+            Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 13px; horizontal-alignment: right; vertical-alignment: center; }
         }
 
         Rectangle {
@@ -754,7 +801,7 @@ export component QueuePanel inherits Rectangle {
 
     function locate() {
         if root.current >= 0 {
-            list.content-y = -min(max(0px, root.current * 48px - (list.visible-height - 48px) / 2), max(0px, list.content-height - list.visible-height));
+            list.content-y = -min(max(0px, root.current * 52px - (list.visible-height - 52px) / 2), max(0px, list.content-height - list.visible-height));
         }
     }
 
@@ -784,7 +831,7 @@ export component QueuePanel inherits Rectangle {
             Text {
                 text: root.total == 0 ? "" : "  " + root.total + " 首";
                 color: Theme.text-faint;
-                font-size: 12px;
+                font-size: 13px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
@@ -841,7 +888,7 @@ export component QueuePanel inherits Rectangle {
             for row[i] in root.rows: Rectangle {
                 property <length> press-y;
                 property <bool> dragging: root.drag-from == i;
-                height: 48px;
+                height: 52px;
                 background: self.dragging ? Theme.accent-dim : i == root.current ? Theme.accent-dim : area.has-hover ? Theme.surface-hover : transparent;
 
                 area := TouchArea {
@@ -876,29 +923,53 @@ export component QueuePanel inherits Rectangle {
                     background: Theme.accent;
                 }
 
+                // Electron queue table: number, cover, title / artist, time.
                 HorizontalLayout {
-                    padding-left: 16px;
-                    padding-right: 8px;
-                    spacing: 8px;
+                    padding-left: 6px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    Text {
+                        width: 28px;
+                        text: row.number;
+                        color: i == root.current ? Theme.accent : Theme.text-faint;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: Theme.raised;
+                        clip: true;
+                        Image {
+                            source: row.cover;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: ImageFit.cover;
+                        }
+                    }
                     VerticalLayout {
                         alignment: center;
                         horizontal-stretch: 1;
                         Text {
                             text: row.title;
                             color: i == root.current ? Theme.accent : Theme.text;
+                            font-weight: 600;
                             overflow: elide;
                         }
                         Text {
                             text: row.artist;
                             color: Theme.text-dim;
-                            font-size: 11px;
+                            font-size: 12px;
                             overflow: elide;
                         }
                     }
                     Text {
                         text: row.duration;
                         color: Theme.text-faint;
-                        font-size: 11px;
+                        font-size: 12px;
                         vertical-alignment: center;
                     }
                     Rectangle {
@@ -934,7 +1005,7 @@ component LyricsTool inherits Rectangle {
     label := Text {
         text: root.text;
         color: root.active ? Theme.accent : area.has-hover ? Theme.text : Theme.text-dim;
-        font-size: 12px;
+        font-size: 13px;
     }
     area := TouchArea {
         mouse-cursor: pointer;
@@ -968,10 +1039,7 @@ export component LyricsPanel inherits Rectangle {
     in property <bool> can-move-down;
     callback move-panel(int);
     callback close-panel();
-    property <length> line-height: 40px + (root.lines-have-translation ? 18px : 0px) + (root.lines-have-ruby ? 14px : 0px) + (root.lines-have-romaji ? 16px : 0px);
     in property <bool> lines-have-translation;
-    in property <bool> lines-have-ruby;
-    in property <bool> lines-have-romaji;
     background: Theme.surface;
 
     VerticalLayout {
@@ -991,7 +1059,7 @@ export component LyricsPanel inherits Rectangle {
             Text {
                 text: root.source;
                 color: Theme.text-faint;
-                font-size: 11px;
+                font-size: 12px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
@@ -1036,23 +1104,22 @@ export component LyricsPanel inherits Rectangle {
             }
         }
 
+        // Synced lyrics (Electron sidebar lyrics: left aligned, bold, the
+        // other lines faded; long lines wrap). The active line stays at 40%
+        // of the height unless the user scrolled in the last 4 seconds.
         if root.lines.length > 0 && root.synced: synced-flick := Flickable {
             vertical-stretch: 1;
-            property <length> pad: max(0px, (self.height - root.line-height) / 2);
+            // Not from the content (its padding follows this height).
+            min-height: 0px;
+            max-height: 100000px;
+            preferred-height: 0px;
             property <bool> follow: true;
-            property <int> act: root.active;
-            changed act => {
-                if self.follow {
-                    self.recenter();
-                }
-            }
+            // Top of the active line in the column.
+            property <length> target;
             function recenter() {
-                self.content-y = -(max(0, root.active) * root.line-height);
+                self.content-y = -max(0px, min(self.target - self.height * 0.4, self.content-height - self.height));
             }
-            content-height: root.lines.length * root.line-height + 2 * self.pad;
-            init => {
-                self.recenter();
-            }
+            content-height: synced-col.preferred-height;
             flicked => {
                 self.follow = false;
                 resume.restart();
@@ -1073,66 +1140,63 @@ export component LyricsPanel inherits Rectangle {
             }
             animate content-y { duration: 380ms; easing: ease-out; }
 
-            for line[i] in root.lines: Rectangle {
-                x: 12px;
-                y: synced-flick.pad + i * root.line-height;
-                width: synced-flick.width - 24px;
-                height: root.line-height;
-                border-radius: Theme.radius;
-                background: line-area.has-hover ? Theme.surface-hover : transparent;
-                VerticalLayout {
-                    alignment: center;
-                    padding-left: 4px;
-                    padding-right: 4px;
-                    if line.ruby.length == 0: Text {
-                        text: line.text;
-                        overflow: elide;
-                        horizontal-alignment: center;
-                        font-size: i == root.active ? 18px : 15px;
-                        font-weight: i == root.active ? 700 : 400;
-                        color: i == root.active ? Theme.text : Theme.text-faint;
-                        animate color { duration: 200ms; }
-                    }
-                    if line.ruby.length > 0: HorizontalLayout {
-                        alignment: center;
-                        spacing: 0px;
-                        for seg in line.ruby: VerticalLayout {
-                            alignment: end;
-                            Text {
-                                text: seg.reading;
-                                height: 13px;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                color: i == root.active ? Theme.text-dim : Theme.text-faint;
-                            }
-                            Text {
-                                text: seg.base;
-                                horizontal-alignment: center;
-                                font-size: i == root.active ? 18px : 15px;
-                                font-weight: i == root.active ? 700 : 400;
-                                color: i == root.active ? Theme.text : Theme.text-faint;
+            synced-col := VerticalLayout {
+                width: synced-flick.width;
+                padding-top: synced-flick.height * 0.4;
+                padding-bottom: synced-flick.height * 0.5;
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 4px;
+                for line[i] in root.lines: Rectangle {
+                    property <bool> on: i == root.active;
+                    function track() {
+                        if self.on {
+                            synced-flick.target = self.y;
+                            if synced-flick.follow {
+                                synced-flick.recenter();
                             }
                         }
                     }
-                    if line.romaji != "": Text {
-                        text: line.romaji;
-                        overflow: elide;
-                        horizontal-alignment: center;
-                        font-size: 12px;
-                        color: Theme.text-faint;
+                    init => {
+                        self.track();
                     }
-                    if line.translation != "": Text {
-                        text: line.translation;
-                        overflow: elide;
-                        horizontal-alignment: center;
-                        font-size: 13px;
-                        color: i == root.active ? Theme.text-dim : Theme.text-faint;
+                    changed on => {
+                        self.track();
                     }
-                }
-                line-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.seek-line(i);
+                    changed y => {
+                        self.track();
+                    }
+                    height: line-col.preferred-height;
+                    border-radius: Theme.radius;
+                    background: line-area.has-hover ? Theme.surface-hover : transparent;
+                    line-col := VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        spacing: 2px;
+                        Text {
+                            text: line.text;
+                            wrap: word-wrap;
+                            font-size: 18px;
+                            font-weight: 700;
+                            color: on ? Theme.text : Theme.text.with-alpha(0.32);
+                            animate color { duration: 300ms; }
+                        }
+                        if line.translation != "": Text {
+                            text: line.translation;
+                            wrap: word-wrap;
+                            font-size: 15px;
+                            font-weight: 600;
+                            color: on ? Theme.text-dim : Theme.text.with-alpha(0.25);
+                            animate color { duration: 300ms; }
+                        }
+                    }
+                    line-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.seek-line(i);
+                        }
                     }
                 }
             }
@@ -1141,53 +1205,26 @@ export component LyricsPanel inherits Rectangle {
         // Plain lyrics: free scrolling.
         if root.lines.length > 0 && !root.synced: plain-flick := Flickable {
             vertical-stretch: 1;
-            content-height: root.lines.length * root.line-height + 32px;
-            for line[i] in root.lines: VerticalLayout {
-                x: 16px;
-                y: 16px + i * root.line-height;
-                width: plain-flick.width - 32px;
-                height: root.line-height;
-                alignment: center;
-                if line.ruby.length == 0: Text {
-                    text: line.text;
-                    overflow: elide;
-                    horizontal-alignment: center;
-                    font-size: 15px;
-                    color: Theme.text-dim;
-                }
-                if line.ruby.length > 0: HorizontalLayout {
-                    alignment: center;
-                    spacing: 0px;
-                    for seg in line.ruby: VerticalLayout {
-                        alignment: end;
-                        Text {
-                            text: seg.reading;
-                            height: 13px;
-                            font-size: 10px;
-                            horizontal-alignment: center;
-                            color: Theme.text-faint;
-                        }
-                        Text {
-                            text: seg.base;
-                            font-size: 15px;
-                            horizontal-alignment: center;
-                            color: Theme.text-dim;
-                        }
+            content-height: plain-col.preferred-height;
+            plain-col := VerticalLayout {
+                width: plain-flick.width;
+                padding: 16px;
+                spacing: 10px;
+                for line in root.lines: VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: line.text;
+                        wrap: word-wrap;
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: Theme.text-dim;
                     }
-                }
-                if line.romaji != "": Text {
-                    text: line.romaji;
-                    overflow: elide;
-                    horizontal-alignment: center;
-                    font-size: 12px;
-                    color: Theme.text-faint;
-                }
-                if line.translation != "": Text {
-                    text: line.translation;
-                    overflow: elide;
-                    horizontal-alignment: center;
-                    font-size: 13px;
-                    color: Theme.text-faint;
+                    if line.translation != "": Text {
+                        text: line.translation;
+                        wrap: word-wrap;
+                        font-size: 14px;
+                        color: Theme.text-faint;
+                    }
                 }
             }
         }
@@ -1216,7 +1253,7 @@ export component LyricsPanel inherits Rectangle {
             if root.synced: Text {
                 text: (root.offset-ms > 0 ? "+" : "") + root.offset-ms + " ms";
                 color: root.offset-ms == 0 ? Theme.text-faint : Theme.accent;
-                font-size: 12px;
+                font-size: 13px;
                 width: 64px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -1257,6 +1294,8 @@ export component PlayerBar inherits Rectangle {
     in property <string> album;
     in property <string> quality;
     in property <image> cover;
+    // The cover shows here only when the sidebar has no room for it.
+    in property <bool> show-cover: true;
     in property <int> position-ms;
     in property <int> duration-ms;
     in property <string> position-text;
@@ -1306,7 +1345,7 @@ export component PlayerBar inherits Rectangle {
             width: 30%;
             spacing: 12px;
             alignment: start;
-            Rectangle {
+            if root.show-cover: Rectangle {
                 width: 56px;
                 height: 56px;
                 y: (parent.height - self.height) / 2;
@@ -1321,40 +1360,67 @@ export component PlayerBar inherits Rectangle {
                 }
             }
 
+            // Electron player bar: the title, then the quality tag and
+            // "artist · album" links.
             VerticalLayout {
                 alignment: center;
-                spacing: 2px;
+                spacing: 4px;
                 horizontal-stretch: 1;
                 Text {
                     text: root.has-track ? root.title : "未在播放";
                     color: Theme.text;
-                    font-weight: 600;
+                    font-size: 15px;
+                    font-weight: 700;
                     overflow: elide;
-                    TouchArea {
-                        mouse-cursor: root.has-track ? pointer : default;
-                        clicked => {
-                            root.open-album();
+                }
+                if root.has-track: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    if root.quality != "": Rectangle {
+                        width: quality-text.preferred-width + 10px;
+                        height: 18px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: Theme.raised;
+                        quality-text := Text {
+                            text: root.quality;
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            font-weight: 600;
                         }
                     }
-                }
-                Text {
-                    text: root.artist;
-                    color: artist-area.has-hover ? Theme.text : Theme.text-dim;
-                    font-size: 12px;
-                    overflow: elide;
-                    artist-area := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.open-artist();
+                    Text {
+                        text: root.artist;
+                        color: artist-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
+                        font-size: 13px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        artist-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-artist();
+                            }
                         }
                     }
-                }
-                Text {
-                    text: root.quality;
-                    visible: root.quality != "";
-                    color: Theme.accent;
-                    font-size: 11px;
-                    overflow: elide;
+                    if root.album != "": Text {
+                        text: "·";
+                        color: Theme.text-faint;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                    if root.album != "": Text {
+                        text: root.album;
+                        color: album-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
+                        font-size: 13px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        album-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-album();
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1428,7 +1494,7 @@ export component PlayerBar inherits Rectangle {
                     text: seek-bar.dragging ? root.preview-text : root.position-text;
                     width: 48px;
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: 12px;
                     horizontal-alignment: right;
                     vertical-alignment: center;
                 }
@@ -1446,7 +1512,7 @@ export component PlayerBar inherits Rectangle {
                     text: root.buffering ? "缓冲中" : root.duration-text;
                     width: 48px;
                     color: Theme.text-dim;
-                    font-size: 11px;
+                    font-size: 12px;
                     vertical-alignment: center;
                 }
             }
@@ -1470,7 +1536,7 @@ export component PlayerBar inherits Rectangle {
                 if root.sleep-active: Text {
                     text: root.sleep-label;
                     color: Theme.accent;
-                    font-size: 11px;
+                    font-size: 12px;
                     vertical-alignment: center;
                 }
             }
@@ -1518,7 +1584,7 @@ export component PlayerBar inherits Rectangle {
                 Text {
                     text: "睡眠定时";
                     color: Theme.text-faint;
-                    font-size: 11px;
+                    font-size: 12px;
                     height: 24px;
                     vertical-alignment: center;
                     x: 10px;

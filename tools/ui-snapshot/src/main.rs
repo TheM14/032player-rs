@@ -67,6 +67,27 @@ fn album_rows(columns: usize) -> Value {
     album_rows_n(columns, 24)
 }
 
+/// 最近添加: no year, "入库于 …" last line.
+fn recent_rows(columns: usize, count: usize) -> Value {
+    let rows = album_rows_n(columns, count);
+    if let Value::Model(rows) = &rows {
+        for r in 0..rows.row_count() {
+            if let Some(Value::Struct(row)) = rows.row_data(r)
+                && let Some(Value::Model(items)) = row.get_field("items")
+            {
+                for i in 0..items.row_count() {
+                    if let Some(Value::Struct(mut card)) = items.row_data(i) {
+                        card.set_field("year".into(), s(""));
+                        card.set_field("added".into(), s(["入库于 5 小时前", "入库于 1 天前", "入库于 3 天前"][i % 3]));
+                        items.set_row_data(i, Value::Struct(card));
+                    }
+                }
+            }
+        }
+    }
+    rows
+}
+
 fn album_rows_n(columns: usize, count: usize) -> Value {
     let titles = [
         ("ハルジオン", "YOASOBI", "2020"),
@@ -222,6 +243,8 @@ fn queue() -> Value {
                 row.set_field("title".into(), s(t));
                 row.set_field("artist".into(), s(a));
                 row.set_field("duration".into(), s(d));
+                row.set_field("number".into(), Value::Number(i as f64 + 1.0));
+                row.set_field("cover".into(), Value::Image(cover(i as u32 % 4 + 2)));
                 Value::Struct(row)
             })
             .collect(),
@@ -246,8 +269,6 @@ fn lyrics() -> Value {
                 let mut row = Struct::default();
                 row.set_field("text".into(), s(l));
                 row.set_field("translation".into(), s(""));
-                row.set_field("ruby".into(), model(vec![]));
-                row.set_field("romaji".into(), s(""));
                 Value::Struct(row)
             })
             .collect(),
@@ -357,12 +378,17 @@ fn render(window: &MinimalSoftwareWindow, size: PhysicalSize, path: &str) {
     println!("wrote {path}");
 }
 
+// Same font stack as the app (`crates/app/src/fonts.rs`).
+#[path = "../../../crates/app/src/fonts.rs"]
+mod fonts;
+
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/app/ui/app.slint");
 
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(SnapshotPlatform(window.clone()))).unwrap();
+    fonts::register();
 
     let mut compiler = Compiler::default();
     compiler.set_style("fluent-dark".into());
@@ -460,6 +486,26 @@ fn main() {
     set(&inst, "np-quality", s("FLAC / 24bit / 48kHz"));
     set(&inst, "np-favorite", Value::Bool(true));
     set(&inst, "np-cover", Value::Image(cover(3)));
+    set(&inst, "np-cover-large", Value::Image(cover(3)));
+    set(
+        &inst,
+        "side-playlists",
+        model(
+            [("HOSHIMACHI SUISEI ARCHIVE", "20 首 · 1 小时 14 分"), ("音乃瀬奏", "1 首 · 3 分 12 秒"), ("通勤", "86 首 · 5 小时 2 分")]
+                .iter()
+                .enumerate()
+                .map(|(i, (t, m))| {
+                    st(&[
+                        ("id", n(i as f64 + 1.0)),
+                        ("title", s(t)),
+                        ("meta", s(m)),
+                        ("year", s("")),
+                        ("cover", Value::Image(if i == 2 { Image::default() } else { cover(30 + i as u32) })),
+                    ])
+                })
+                .collect(),
+        ),
+    );
     set(&inst, "position-ms", Value::Number(83_000.0));
     set(&inst, "duration-ms", Value::Number(261_000.0));
     set(&inst, "position-text", s("1:23"));
@@ -538,7 +584,15 @@ fn main() {
     if let Value::Model(m) = &album_tracks {
         for i in 0..m.row_count() {
             if let Some(Value::Struct(mut row)) = m.row_data(i) {
-                row.set_field("credits".into(), s(if i % 3 == 2 { "" } else { "作词 Ayase · 作曲 Ayase · 编曲 Ayase" }));
+                let parts: &[(&str, f64)] = if i % 3 == 2 {
+                    &[]
+                } else {
+                    &[("作词 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("作曲 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("编曲 ", 0.0), ("Ayase", 0.0), (", ", 0.0), ("Giga", 21.0)]
+                };
+                row.set_field(
+                    "credits".into(),
+                    model(parts.iter().map(|(t, id)| st(&[("text", s(t)), ("id", n(*id))])).collect()),
+                );
                 row.set_field("tieup".into(), s(match i % 4 { 0 => "OP", 1 => "ED", _ => "" }));
                 row.set_field("tieup-count".into(), n(if i == 0 { 2.0 } else { 1.0 }));
                 m.set_row_data(i, Value::Struct(row));
@@ -759,7 +813,8 @@ fn main() {
     set_g(&inst, "Home", "songs", home_rows("songs"));
     set_g(&inst, "Home", "songs-count", n(112.0));
     set_g(&inst, "Home", "songs-pages", n(6.0));
-    set_g(&inst, "Home", "recent-albums", album_rows_n(3, 6));
+    set_g(&inst, "Home", "recent-albums", recent_rows(3, 6));
+    set_g(&inst, "Home", "hero-backdrop", Value::Image(cover(7)));
     set_g(&inst, "Home", "works", album_rows(24));
     set_g(&inst, "Home", "works-count", n(87.0));
     set_g(&inst, "Home", "works-pages", n(4.0));
@@ -815,7 +870,7 @@ fn main() {
             3
         };
         let max = if page_w <= 1040 && page_w > 700 { 6 } else { cols * 2 };
-        set_g(&inst, "Home", "recent-albums", album_rows_n(cols, max));
+        set_g(&inst, "Home", "recent-albums", recent_rows(cols, max));
         render(
             &window,
             PhysicalSize::new(window_w, height),
@@ -1032,38 +1087,6 @@ fn main() {
     set(&inst, "lyrics-translation-shown", Value::Bool(true));
     set(&inst, "lyrics-offset", n(150.0));
     render(&window, size, &format!("{out}/lyrics.png"));
-    // Furigana and romaji.
-    let seg = |base: &str, reading: &str| st(&[("base", s(base)), ("reading", s(reading))]);
-    let ruby_lines: Vec<Value> = (0..8)
-        .map(|_| {
-            st(&[
-                ("text", s("日が沈み出した空と君の姿")),
-                ("translation", s("")),
-                (
-                    "ruby",
-                    model(vec![
-                        seg("日", "ひ"),
-                        seg("が", ""),
-                        seg("沈", "しず"),
-                        seg("み", ""),
-                        seg("出", "だ"),
-                        seg("した", ""),
-                        seg("空", "そら"),
-                        seg("と", ""),
-                        seg("君", "きみ"),
-                        seg("の", ""),
-                        seg("姿", "すがた"),
-                    ]),
-                ),
-                ("romaji", s("hi ga shizumi dashi ta sora to kimi no sugata")),
-            ])
-        })
-        .collect();
-    set(&inst, "lyrics", model(ruby_lines));
-    set(&inst, "lyrics-translated-lines", Value::Bool(false));
-    set(&inst, "lyrics-ruby-lines", Value::Bool(true));
-    set(&inst, "lyrics-romaji-lines", Value::Bool(true));
-    render(&window, size, &format!("{out}/lyrics-ruby.png"));
     set_g(&inst, "LyricsSearch", "name", s("夜に駆ける"));
     set_g(&inst, "LyricsSearch", "artist", s("YOASOBI"));
     set_g(

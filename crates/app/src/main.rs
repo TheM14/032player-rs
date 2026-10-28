@@ -6,6 +6,7 @@
 
 mod cards;
 mod engine;
+mod fonts;
 mod system;
 mod ui;
 
@@ -73,6 +74,10 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     };
 
+    // The font collection belongs to the platform: select it first, then
+    // register the bundled fonts before any text is measured.
+    slint::BackendSelector::new().select()?;
+    fonts::register();
     let window = AppWindow::new()?;
     let settings = Settings::load(&data_dir);
     let player_options = player::PlayerOptions {

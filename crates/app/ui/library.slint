@@ -324,7 +324,7 @@ export component DetailHeader inherits Rectangle {
             Text {
                 text: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: 13px;
             }
             Text {
                 text: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
@@ -349,18 +349,18 @@ export component DetailHeader inherits Rectangle {
             if root.info.meta != "": Text {
                 text: root.info.meta;
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: 13px;
                 overflow: elide;
             }
             if root.info.quality != "": Text {
                 text: root.info.quality;
                 color: Theme.accent;
-                font-size: 12px;
+                font-size: 13px;
             }
             if root.info.description != "": Text {
                 text: root.info.description;
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: 13px;
                 wrap: word-wrap;
                 overflow: elide;
                 max-height: 34px;
@@ -396,7 +396,7 @@ export component DetailHeader inherits Rectangle {
                         Text {
                             text: w.title;
                             color: Theme.text;
-                            font-size: 12px;
+                            font-size: 13px;
                             vertical-alignment: center;
                             overflow: elide;
                             max-width: 160px;
@@ -404,7 +404,7 @@ export component DetailHeader inherits Rectangle {
                         if w.usage != "": Text {
                             text: w.usage;
                             color: w.ost ? Theme.text-dim : Theme.accent;
-                            font-size: 11px;
+                            font-size: 12px;
                             font-weight: 600;
                             vertical-alignment: center;
                         }
@@ -696,7 +696,7 @@ export component ConfirmDialog inherits Rectangle {
 
 component InspectorKicker inherits Text {
     color: Theme.text-faint;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.6px;
 }
@@ -704,7 +704,7 @@ component InspectorKicker inherits Text {
 component InspectorMore inherits Text {
     callback clicked();
     color: more-area.has-hover ? Theme.accent : Theme.text-dim;
-    font-size: 12px;
+    font-size: 13px;
     more-area := TouchArea {
         mouse-cursor: pointer;
         clicked => {
@@ -722,12 +722,12 @@ component Facts inherits VerticalLayout {
             text: f.label;
             width: 72px;
             color: Theme.text-faint;
-            font-size: 12px;
+            font-size: 13px;
         }
         Text {
             text: f.value;
             color: Theme.text;
-            font-size: 12px;
+            font-size: 13px;
             wrap: word-wrap;
             horizontal-stretch: 1;
         }
@@ -818,13 +818,13 @@ export component AlbumInspector inherits Flickable {
                             if w.translated != "": Text {
                                 text: w.translated;
                                 color: Theme.text-dim;
-                                font-size: 11px;
+                                font-size: 12px;
                                 overflow: elide;
                             }
                             Text {
                                 text: w.meta;
                                 color: Theme.text-faint;
-                                font-size: 11px;
+                                font-size: 12px;
                             }
                             HorizontalLayout {
                                 alignment: start;
@@ -836,7 +836,7 @@ export component AlbumInspector inherits Flickable {
                                     rel := Text {
                                         text: w.relation;
                                         color: w.ost ? Theme.text-dim : Theme.accent;
-                                        font-size: 11px;
+                                        font-size: 12px;
                                     }
                                 }
                             }
@@ -853,7 +853,7 @@ export component AlbumInspector inherits Flickable {
                                 text: u.label;
                                 width: 56px;
                                 color: Theme.accent;
-                                font-size: 11px;
+                                font-size: 12px;
                                 font-weight: 600;
                                 overflow: elide;
                                 vertical-alignment: center;
@@ -861,7 +861,7 @@ export component AlbumInspector inherits Flickable {
                             Text {
                                 text: u.title;
                                 color: Theme.text-dim;
-                                font-size: 12px;
+                                font-size: 13px;
                                 overflow: elide;
                                 horizontal-stretch: 1;
                                 vertical-alignment: center;
@@ -927,7 +927,7 @@ export component AlbumInspector inherits Flickable {
                         if p.avatar.width == 0: Text {
                             text: p.name == "" ? "?" : "♪";
                             color: Theme.text-faint;
-                            font-size: 12px;
+                            font-size: 13px;
                         }
                         Image {
                             source: p.avatar;
@@ -949,7 +949,7 @@ export component AlbumInspector inherits Flickable {
                         Text {
                             text: p.roles;
                             color: Theme.text-faint;
-                            font-size: 11px;
+                            font-size: 12px;
                             overflow: elide;
                         }
                     }
@@ -982,7 +982,7 @@ export component AlbumInspector inherits Flickable {
             Text {
                 text: root.review;
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: 13px;
                 wrap: word-wrap;
             }
         }

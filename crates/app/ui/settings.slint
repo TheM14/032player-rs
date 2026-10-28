@@ -1,5 +1,6 @@
 import { ComboBox, Switch } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { GhostButton } from "controls.slint";
 
 component SettingRow inherits Rectangle {
     in property <string> title;
@@ -27,7 +28,7 @@ component SettingRow inherits Rectangle {
             if root.description != "": Text {
                 text: root.description;
                 color: Theme.text-dim;
-                font-size: 12px;
+                font-size: 13px;
                 wrap: word-wrap;
             }
         }
@@ -58,9 +59,10 @@ export component SettingsView inherits Rectangle {
     in-out property <int> lyrics-language;
     in-out property <int> lyrics-mode;
     in-out property <bool> lyrics-auto;
-    in-out property <bool> lyrics-furigana;
-    in-out property <bool> lyrics-romaji;
     callback lyrics-changed();
+    // Signed-in server; logout (moved here from the sidebar).
+    in property <string> server-label;
+    callback logout();
 
     init => {
         root.opened();
@@ -81,6 +83,25 @@ export component SettingsView inherits Rectangle {
                 color: Theme.text;
                 font-size: 24px;
                 font-weight: 700;
+            }
+
+            Text {
+                text: "账户";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            SettingRow {
+                title: "服务器";
+                description: root.server-label;
+                GhostButton {
+                    y: (parent.height - self.height) / 2;
+                    text: "退出登录";
+                    clicked => {
+                        root.logout();
+                    }
+                }
             }
 
             Text {
@@ -173,30 +194,6 @@ export component SettingsView inherits Rectangle {
                 Switch {
                     y: (parent.height - self.height) / 2;
                     checked <=> root.lyrics-auto;
-                    toggled => {
-                        root.lyrics-changed();
-                    }
-                }
-            }
-
-            SettingRow {
-                title: "假名注音";
-                description: "在日语歌词的汉字上方显示读音（只处理含假名的行）。只看译文时不显示。";
-                Switch {
-                    y: (parent.height - self.height) / 2;
-                    checked <=> root.lyrics-furigana;
-                    toggled => {
-                        root.lyrics-changed();
-                    }
-                }
-            }
-
-            SettingRow {
-                title: "罗马音";
-                description: "在日语歌词下方显示罗马音。";
-                Switch {
-                    y: (parent.height - self.height) / 2;
-                    checked <=> root.lyrics-romaji;
                     toggled => {
                         root.lyrics-changed();
                     }
