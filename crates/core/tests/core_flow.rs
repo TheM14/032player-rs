@@ -266,8 +266,11 @@ async fn login_play_auto_advance_and_report() {
 
     // Pause comes back from the engine as a property change.
     core.send(Command::TogglePause);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(engine.calls().contains(&"pause true".to_owned()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !engine.calls().contains(&"pause true".to_owned()) {
+        assert!(Instant::now() < deadline, "pause not sent to the engine");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     core.engine_event(EngineEvent::Paused(true));
     events.wait("paused", |e| *e == Event::Paused(true));
     let sent = wait_for_events(&server, 4).await;

@@ -304,5 +304,6 @@ fn main() {
     );
     set(&inst, "audio-device-index", Value::Number(2.0));
     set(&inst, "exclusive", Value::Bool(true));
+    set(&inst, "tray-available", Value::Bool(true));
     render(&window, size, &format!("{out}/settings.png"));
 }

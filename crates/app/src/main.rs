@@ -6,6 +6,7 @@
 
 mod albums;
 mod engine;
+mod system;
 mod ui;
 
 use std::path::PathBuf;
@@ -61,9 +62,18 @@ fn main() -> Result<(), slint::PlatformError> {
         )
         .init();
 
-    let window = AppWindow::new()?;
     let data_dir = data_dir();
     tracing::info!(data_dir = %data_dir.display(), "starting");
+    // A second start shows the running instance's window and exits.
+    let _instance = match os::instance::acquire(&data_dir, system::activate) {
+        os::instance::Instance::Primary(guard) => guard,
+        os::instance::Instance::Secondary { notified } => {
+            tracing::info!(notified, "already running");
+            return Ok(());
+        }
+    };
+
+    let window = AppWindow::new()?;
     let settings = Settings::load(&data_dir);
     let player_options = player::PlayerOptions {
         audio_device: settings.audio_device.clone(),
@@ -98,7 +108,10 @@ fn main() -> Result<(), slint::PlatformError> {
             settings: settings.clone(),
         },
         |event| {
-            let _ = slint::invoke_from_event_loop(move || ui::apply(event));
+            let _ = slint::invoke_from_event_loop(move || {
+                system::on_event(&event);
+                ui::apply(event);
+            });
         },
     );
     let _ = forward.set(Box::new(core.engine_sender()));
@@ -132,7 +145,11 @@ fn main() -> Result<(), slint::PlatformError> {
             "window shown (first event loop turn)"
         );
     });
-    window.run()?;
+    window.show()?;
+    system::install(&window, core.commander());
+    // Runs until quit (closing may only hide the window to the tray).
+    slint::run_event_loop_until_quit()?;
+    let _ = window.hide();
 
     tracing::info!("shutting down");
     core.shutdown();

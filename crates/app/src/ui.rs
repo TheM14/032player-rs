@@ -87,6 +87,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_volume(settings.volume as f32);
     window.set_show_lyrics(settings.show_lyrics);
     window.set_exclusive(settings.exclusive);
+    window.set_close_to_tray(settings.close_to_tray);
     window.set_repeat(repeat_index(settings.repeat));
     window.set_shuffle(settings.shuffle);
     let albums = AlbumGridModel::new(commander.clone());
@@ -116,6 +117,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
 
     let c = commander.clone();
     window.on_show_lyrics_changed(move |show| c.send(Command::SetShowLyrics(show)));
+    let c = commander.clone();
+    window.on_close_to_tray_toggled(move |on| c.send(Command::SetCloseToTray(on)));
     let c = commander.clone();
     window.on_settings_opened(move || c.send(Command::RefreshAudioDevices));
     let c = commander.clone();

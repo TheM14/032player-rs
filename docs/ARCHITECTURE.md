@@ -76,6 +76,13 @@
   删 API Token、保留媒体凭据，停止播放回到登录页。用户退出登录：两个都删。
 - 每次登录 / 退出递增 generation，旧会话的列表分页和上报定时器结果直接丢弃。
 
+### 系统集成
+
+- `os` 不依赖 `core`，`app/src/system.rs` 在 UI 线程上把两边接起来：core 事件同步到媒体控件和托盘；
+  系统回调（其他线程）经 `slint::invoke_from_event_loop` 回到 UI 线程，再发 `Command`。
+- 关闭窗口：开了"关闭时最小化到托盘"且有托盘则隐藏，否则 `quit_event_loop`。主循环是 `run_event_loop_until_quit`。
+- 单实例只用标准库：锁文件 + 本机回环端口，不引入额外依赖。
+
 ### api
 
 - `Client { base_url, api_token, media_token, http }`，方法按资源分组（albums、tracks、browse、

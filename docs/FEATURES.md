@@ -111,9 +111,9 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| SMTC（Windows）/ MPRIS（Linux）/ macOS Now Playing、媒体键 | `main/features/linux/mpris.ts`、`main/features/core/player/media-keys.ts` | M1 | [ ] |
-| 托盘、最小化到托盘 | `main/index.ts` | M1 | [ ] |
-| 单实例 | `main/index.ts` | M1 | [ ] |
+| SMTC（Windows）/ MPRIS（Linux）/ macOS Now Playing、媒体键 | `main/features/linux/mpris.ts`、`main/features/core/player/media-keys.ts` | M1 | [x] `souvlaki` |
+| 托盘、最小化到托盘 | `main/index.ts` | M1 | [x] Windows；关闭到托盘（最小化到托盘未做），Linux 托盘未做 |
+| 单实例 | `main/index.ts` | M1 | [x] |
 | 全局快捷键 | `main/index.ts` | M4 | [ ] |
 | 自动更新（读本仓库 GitHub Releases） | `main/fork-config.ts` | M4 | [ ] |
 | 设置导出 / 导入 | `renderer/components/export-import-settings-modal/` | 待定 | [ ] |

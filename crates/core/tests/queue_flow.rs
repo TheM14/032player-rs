@@ -220,7 +220,7 @@ impl Harness {
 
     /// Lets the core drain its inbox, then returns the engine calls.
     async fn calls(&self) -> Vec<String> {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         self.engine.take()
     }
 
@@ -324,8 +324,12 @@ async fn gapless_queue_editing_and_repeat() {
     h.wait("cleared", |e| *e == Event::NowPlaying(None));
     assert_eq!(h.wait_queue(), (Vec::new(), None));
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let sent = playback_events(&server).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut sent = playback_events(&server).await;
+    while sent.len() < 5 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        sent = playback_events(&server).await;
+    }
     // start 1, end 1 (completed), start 2, end 2 (repeat pass), start 2, ...
     assert_eq!(
         &sent[..5],
@@ -353,6 +357,16 @@ async fn restart_restores_the_queue_and_resumes_the_chain() {
     h.engine(EngineEvent::TimePos(30.0));
     h.engine(EngineEvent::Paused(true));
     h.wait("paused", |e| *e == Event::Paused(true));
+    // Events go out one at a time: once the pause arrived, the start was
+    // acknowledged, which is what makes the chain resumable.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !playback_events(&server)
+        .await
+        .contains(&"pause:2".to_owned())
+    {
+        assert!(Instant::now() < deadline, "pause not reported");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     h.engine.take();
     h.shutdown().await;
     let first = playback_bodies(&server).await;
@@ -381,9 +395,14 @@ async fn restart_restores_the_queue_and_resumes_the_chain() {
     h.loaded(2);
     let calls = h.calls().await;
     assert_eq!(calls[0], "seek 30");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let all = playback_bodies(&server).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut all = playback_bodies(&server).await;
+    while all.len() <= first.len() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        all = playback_bodies(&server).await;
+    }
     let resumed = &all[first.len()];
+
     assert_eq!(resumed["type"], "start");
     assert_eq!(resumed["trackId"], 2);
     assert_eq!(resumed["resumedFromSessionId"], session_id.as_str());

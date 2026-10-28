@@ -20,7 +20,7 @@
    2. ~~设置持久化 + 设置页~~（已完成）。
    3. ~~队列 + 无缝播放~~（已完成；拖动排序未做，Slint ListView 拖放要自己实现，放到 M2 曲库交互时一起做）。
    4. ~~上报补全 + 重启恢复队列~~（已完成）。
-   5. 系统集成：SMTC / 媒体键（`souvlaki`）、托盘、单实例。
+   5. ~~系统集成~~（已完成）。
    6. 睡眠定时。
    M1 各项做完后再汇总 [Win] 项请用户一次性验证（不逐项请用户测，见 `AGENTS.md`）。
 3. 如果用户更想先要歌词翻译，可以把 M3 的"翻译 + 显示方式"提前（接口：`POST /tracks/{id}/lyrics/translation`，能力位 `lyricsTranslation`）。
@@ -74,6 +74,21 @@
   （`resumedFromSessionId`），文件加载后跳到保存的位置；未播放前拖进度条改的是续播位置
 - [x] 测试：`queue.rs` 快照往返，`queue_flow.rs` 重启恢复（随机顺序、位置、续链）
 - [ ] 重启后续播（位置、服务端播放记录不重复计次） **[Win]**
+
+### 5. 系统集成
+
+- [x] `os::media`（`souvlaki`，Linux 用纯 Rust 的 zbus 后端）：标题 / 艺人 / 专辑 / 封面 URL（512，带媒体凭据）/ 时长，
+  播放状态和位置（状态变化、跳转、播放中每 5 秒）；媒体键、SMTC 浮窗按钮、快进快退（±10 秒）、拖动进度、Raise / Quit
+- [x] Windows 取 HWND：Slint `raw-window-handle-06`；窗口 `show()` 后再创建媒体控件
+- [x] `os::tray`（`tray-icon`，仅 Windows）：菜单与 Electron 版一致（播放 / 暂停、下一首、上一首、停止、打开主窗口、退出），
+  左键单击显示窗口，提示文字为当前曲目
+- [x] 设置"关闭时最小化到托盘"（默认关，与 Electron 一致；只在有托盘时显示）。事件循环改为 `run_event_loop_until_quit`
+- [x] `os::instance` 单实例：`instance.lock`（`File::try_lock`）+ 回环 TCP 端口（`instance.port`），第二次启动唤起已有窗口后退出
+- [x] `Command::Stop`（托盘 / SMTC 的"停止"：保留队列，再播放从头开始）
+- [x] 窗口图标、托盘图标沿用 Electron 版 `assets/icons`
+- [x] 修 CI 上偶发失败的测试（`start` 未被确认前关闭不会保存续播快照，测试改为等服务端收到 `pause`；固定等待改为轮询）
+- [ ] 未做：最小化到托盘（Electron 默认关，Slint 没有最小化事件，要接 winit）、Linux 托盘（需要 gtk 或改用 `ksni`）
+- [ ] 媒体键、SMTC 浮窗（封面、进度、按钮）、托盘菜单、关闭到托盘、第二次启动唤起窗口 **[Win]**
 
 ## M0 - 可行性验证
 

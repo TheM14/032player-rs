@@ -34,6 +34,7 @@ component NavItem inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "032player";
+    icon: @image-url("../assets/icon.png");
     preferred-width: 1280px;
     preferred-height: 800px;
     min-width: 960px;
@@ -123,6 +124,10 @@ export component AppWindow inherits Window {
     callback settings-opened();
     callback audio-device-selected(int);
     callback exclusive-toggled(bool);
+    // Windows tray exists: closing can hide to it.
+    in property <bool> tray-available;
+    in-out property <bool> close-to-tray;
+    callback close-to-tray-toggled(bool);
 
     in property <string> notice;
 
@@ -247,6 +252,11 @@ export component AppWindow inherits Window {
                     exclusive-toggled(on) => {
                         root.output-busy = true;
                         root.exclusive-toggled(on);
+                    }
+                    tray-available: root.tray-available;
+                    close-to-tray <=> root.close-to-tray;
+                    close-to-tray-toggled(on) => {
+                        root.close-to-tray-toggled(on);
                     }
                 }
             }

@@ -20,6 +20,8 @@ pub struct Settings {
     pub show_lyrics: bool,
     pub repeat: Repeat,
     pub shuffle: bool,
+    /// Closing the window hides it to the tray (Windows).
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             show_lyrics: true,
             repeat: Repeat::Off,
             shuffle: false,
+            close_to_tray: false,
         }
     }
 }
@@ -87,6 +90,7 @@ mod tests {
             show_lyrics: false,
             repeat: Repeat::One,
             shuffle: true,
+            close_to_tray: true,
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);

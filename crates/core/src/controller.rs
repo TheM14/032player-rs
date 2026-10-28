@@ -93,6 +93,8 @@ pub enum Command {
     SetRepeat(Repeat),
     SetShuffle(bool),
     TogglePause,
+    /// Stop (keeps the queue; play starts the current entry over).
+    Stop,
     Next,
     Previous,
     Seek {
@@ -106,6 +108,7 @@ pub enum Command {
     /// Answered with [`Event::Exclusive`] (the old value on failure).
     SetExclusive(bool),
     SetShowLyrics(bool),
+    SetCloseToTray(bool),
     /// Load artwork `path` for display at `px` physical pixels (long side);
     /// answered with [`Event::Image`] carrying `key`.
     LoadImage {
@@ -202,6 +205,9 @@ pub struct NowPlaying {
     pub artist: String,
     pub album: String,
     pub artwork: String,
+    /// Absolute artwork URL (with the media token) for the system media
+    /// controls.
+    pub artwork_url: Option<String>,
     pub duration_ms: i64,
     pub quality: Option<String>,
 }
@@ -621,6 +627,24 @@ impl Core {
         (self.sink)(event);
     }
 
+    fn now_playing(&self, track: &Track) -> NowPlaying {
+        let artwork_url = self.library.as_ref().and_then(|l| {
+            l.client
+                .image_url(&track.artwork_url, Some(512))
+                .map(|u| u.to_string())
+        });
+        NowPlaying {
+            track_id: track.id,
+            title: track.title.clone(),
+            artist: track.artist.clone(),
+            album: track.album.clone(),
+            artwork: track.artwork_url.clone(),
+            artwork_url,
+            duration_ms: track.duration_millis,
+            quality: format::audio_quality(track),
+        }
+    }
+
     /// Applies `f` to the settings and schedules a save if anything changed.
     fn update_settings(&mut self, f: impl FnOnce(&mut Settings)) {
         let before = self.settings.clone();
@@ -850,6 +874,12 @@ impl Core {
                 );
             }
             Command::SetShowLyrics(show) => self.update_settings(|s| s.show_lyrics = show),
+            Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
+            Command::Stop => {
+                if !self.idle {
+                    self.stop_playback();
+                }
+            }
             Command::LoadImage { key, path, px } => {
                 let Some(library) = &self.library else { return };
                 let images = library.images.clone();
@@ -956,7 +986,10 @@ impl Core {
             r.act(|a| a.on_track_change(adapter_track));
         }
         self.started_uid = None;
-        let now = self.queue.current().map(|item| now_playing(&item.track));
+        let now = self
+            .queue
+            .current()
+            .map(|item| self.now_playing(&item.track));
         self.emit(Event::NowPlaying(now));
         self.emit_position();
         self.lyrics = None;
@@ -1109,7 +1142,7 @@ impl Core {
             #[allow(clippy::cast_precision_loss)]
             r.act(|a| a.on_progress(position_ms as f64 / 1000.0));
         }
-        self.emit(Event::NowPlaying(Some(now_playing(&item.track))));
+        self.emit(Event::NowPlaying(Some(self.now_playing(&item.track))));
         self.emit(Event::Paused(true));
         self.emit_position();
         self.load_lyrics(item.track.id);
@@ -1202,7 +1235,7 @@ impl Core {
         }
 
         let track = &item.track;
-        self.emit(Event::NowPlaying(Some(now_playing(track))));
+        self.emit(Event::NowPlaying(Some(self.now_playing(track))));
         self.emit(Event::Paused(false));
         self.emit_position();
         self.save_position();
@@ -1713,18 +1746,6 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         tracing::warn!("writing {}: {e}", path.display());
-    }
-}
-
-fn now_playing(track: &Track) -> NowPlaying {
-    NowPlaying {
-        track_id: track.id,
-        title: track.title.clone(),
-        artist: track.artist.clone(),
-        album: track.album.clone(),
-        artwork: track.artwork_url.clone(),
-        duration_ms: track.duration_millis,
-        quality: format::audio_quality(track),
     }
 }
 

@@ -46,6 +46,9 @@ export component SettingsView inherits Rectangle {
     callback opened();
     callback device-selected(int);
     callback exclusive-toggled(bool);
+    in property <bool> tray-available;
+    in-out property <bool> close-to-tray;
+    callback close-to-tray-toggled(bool);
 
     init => {
         root.opened();
@@ -96,6 +99,25 @@ export component SettingsView inherits Rectangle {
                 enabled: !root.output-busy;
                 toggled => {
                     root.exclusive-toggled(self.checked);
+                }
+            }
+        }
+
+        if root.tray-available: Text {
+            text: "窗口";
+            color: Theme.text-dim;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        if root.tray-available: SettingRow {
+            title: "关闭时最小化到托盘";
+            description: "关闭窗口后继续播放，从托盘图标重新打开或退出。";
+            Switch {
+                y: (parent.height - self.height) / 2;
+                checked <=> root.close-to-tray;
+                toggled => {
+                    root.close-to-tray-toggled(self.checked);
                 }
             }
         }
