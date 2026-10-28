@@ -39,8 +39,10 @@
 | 设置 / 状态 | `serde` + TOML / JSON 文件，`directories` 定位 | |
 | 缓存 | 磁盘图片缓存 + 内存 LRU（`lru` 或 `moka`） | |
 | 图片解码 | `image`（后台线程，按显示尺寸缩放） | |
-| 日语分词 | `lindera`（替代 kuromoji） | M3 |
+| 日语分词 | `lindera`（替代 kuromoji），内嵌 IPADIC | M3，exe 增加约 48 MB（zip 约 11 MB） |
 | 罗马音 | `wana_kana` | M3 |
+| 时间 | `chrono` | M3（相对时间、本地时间） |
+| 打开网页 | `open` | M3 |
 | i18n | `slint` 内置 `@tr()` + gettext，或 `fluent` | M4 决定 |
 | 日志 | `tracing` + `tracing-subscriber`（滚动文件） | |
 | 更新 | 待定（`self_update` / velopack） | M4 |
@@ -79,6 +81,26 @@
   导航历史在 `app/src/ui.rs`，详情页进入时向 `core` 发 `Open*`，返回时重新请求。
 - 转码：`settings.json` `transcode`，服务端支持才生效。MP3 / Opus 实时转码不支持 Range，拖动进度时带 `offsetMs` 重新加载，
   `core` 记住偏移，引擎回报的时间加上偏移才是播放位置。
+
+### 032 专属页面（M3）
+
+- `api/src/m032.rs`：主页、作品、系列、每日推荐、播放记录、`/tracks/{id}/works`、歌词搜索 / 选用 / 翻译的类型和端点。
+- `core::m032`：UI 用的视图类型和标签（用途 OP / ED、作品类型、专辑关系、每日推荐副标题等，对照 Electron `home/music032/lib/format.ts`），纯函数，有单元测试。
+  时间显示（"3 天前"、本地时间）用 `chrono`。
+- `core/src/controller/m032.rs`：主页（含部分刷新：作品 / 主题曲换一批、编年、换一张、每日推荐 5 秒轮询）、作品 / 系列 / 播放记录列表、
+  每日推荐操作、正在播放标识。主页的曲目行是独立的 `TrackList`（聚焦卡页签、接着听、最近播放、主题曲、播放记录），沿用"哪个列表第几行"的模式。
+- 每日推荐的 `playbackContext` 挂在队列条目上（`QueueItem::context`，随 `queue.json` 保存），上报 start 时由 adapter 带出；
+  接着听的断点是 `QueueItem::start_ms`，只在该条目第一次播放时生效。
+- 正在播放标识：当前曲目变化时（服务端有 `trackWorks`）查 `/tracks/{id}/works`，再并上本次会话展开过的作品 / 系列 -> 曲目映射（最多 200 个），
+  以 `Event::PlayingSources` 推给 UI。
+- `core/src/controller/lyrics.rs`：歌词加载、按曲目的会话偏移（正值 = 歌词提前，对照 Electron `位置 + offset`）、服务端翻译（双语 / 只看译文、自动翻译）、
+  在线搜索 / 预览 / 选用 / 清除。
+- app：新页面的数据放在 Slint 全局 `Home` / `Lib032` / `LyricsSearch`（`ui/m032.slint`），Rust 用 `window.global::<..>()` 设置，避免层层转发属性；
+  作品 / 系列海报和主页货架复用 `CardGridModel`（卡片 kind 3 / 4 为 2:3 海报）；主页小行、聚焦卡、每日推荐封面用按图片 key 回填的绑定
+  （`ui/m032.rs` `bind_image`，按组在换数据时丢弃）。主页货架用左右翻页按钮，不嵌套 Flickable。
+- 「在网页中打开」：`os::browser::open_url`（`open` crate）。
+- 假名注音 / 罗马音：`lyrics::japanese`（lindera 分词，词典第一次用时加载，几毫秒）；core 在开关打开时按行算一次并缓存，结果随
+  `LyricRow::ruby` / `romaji` 推给 UI，歌词面板按段排版（读音在上）。
 
 ### 登录态
 

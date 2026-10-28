@@ -33,7 +33,7 @@
 | 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |
 | 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序在 M2 完成 |
 | 随机、单曲 / 列表循环 | 同上 | M1 | [x] |
-| 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [ ] |
+| 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [x] 接着听 / 最近在听，条目第一次播放时生效 |
 | 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [x] |
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [x] 100 首 |
 | Auto DJ（如保留） | `features/player/auto-dj/` | 待定 | [ ] |
@@ -50,7 +50,7 @@
 | 会话恢复快照、resume_invalid 持久化（应用重启可续） | session 文件头注释 | M1 | [x] |
 | 重启恢复队列和播放位置（停止状态，播放时从原位置继续） | `player.store.ts` `partialize`、`use-queue-restore.ts` | M1 | [x] |
 | clientKind：capabilities `playback.clientKinds` 含 `desktop` 时报 `desktop`，会话内固定 | `MUSIC032_CHANGES.md` 播放上报接线 | M1 | [x] |
-| 每日推荐 context 只在全新 start 发送；加入队列的曲目不带 context | `MUSIC032_CHANGES.md` 每日推荐 | M3 | [ ] |
+| 每日推荐 context 只在全新 start 发送；加入队列的曲目不带 context | `MUSIC032_CHANGES.md` 每日推荐 | M3 | [x] 随队列保存 |
 | 退出时尽力发送 `client_closed` | 同上 | M1 | [x] |
 | 测试：移植 `scripts/music032/playback-reporter.test.mjs` | - | M0 | [x] |
 
@@ -85,26 +85,26 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 032 主页：`/home`、`/home/works`、`/home/songs`、`/home/chronicle`、`/home/spotlight/random`、最近播放；404/501 回退普通主页 | `features/home/music032/`、`032music-server/docs/api/home.md` | M3 | [ ] |
-| 作品列表（搜索、类型、排序、无限滚动）/ 详情（关联专辑、曲目用途、系列横幅） | `features/works/`、`032music-server/docs/api/works.md` | M3 | [ ] |
-| 系列列表 / 详情（按类型分组成员、系列专辑）；无能力时回退网页 | `features/series/`、`docs/api/series.md` | M3 | [ ] |
-| 每日推荐：列表、详情、生成中 5 秒轮询、评价、换一个、另存为歌单、不再推荐 | `features/daily-mix/`、`032music-server/docs/daily-mix-design.md` | M3 | [ ] |
-| 播放记录 `/playback/history`（无限滚动、清空） | `features/playback-history/` | M3 | [ ] |
-| 正在播放标识：`/tracks/{id}/works`（`features.trackWorks`），旧服务端用会话映射 | `features/shared/components/playing-indicator/` | M3 | [ ] |
-| 「在网页中打开」（作品 / 系列编辑等） | 各页面 | M3 | [ ] |
+| 032 主页：`/home`、`/home/works`、`/home/songs`、`/home/chronicle`、`/home/spotlight/random`、最近播放；404/501 回退普通主页 | `features/home/music032/`、`032music-server/docs/api/home.md` | M3 | [x] 无主页接口时侧栏不显示主页、默认进专辑 |
+| 作品列表（搜索、类型、排序、无限滚动）/ 详情（关联专辑、曲目用途、系列横幅） | `features/works/`、`032music-server/docs/api/works.md` | M3 | [x] 列表后台分页全量加载 |
+| 系列列表 / 详情（按类型分组成员、系列专辑）；无能力时回退网页 | `features/series/`、`docs/api/series.md` | M3 | [x] 成员用类型角标代替分组标题 |
+| 每日推荐：列表、详情、生成中 5 秒轮询、评价、换一个、另存为歌单、不再推荐 | `features/daily-mix/`、`032music-server/docs/daily-mix-design.md` | M3 | [x] |
+| 播放记录 `/playback/history`（无限滚动、清空） | `features/playback-history/` | M3 | [x] |
+| 正在播放标识：`/tracks/{id}/works`（`features.trackWorks`），旧服务端用会话映射 | `features/shared/components/playing-indicator/` | M3 | [x] |
+| 「在网页中打开」（作品 / 系列编辑等） | 各页面 | M3 | [x] |
 
 ## 歌词
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 获取 `/tracks/{id}/lyrics`（来源由服务端决定，显示 `sourceName` / 匹配信息） | `ctrl` `getLyrics`、`features/lyrics/api/lyrics-api.ts` | M0（逐行）/ M3 | [ ] |
-| 同步滚动、点击跳转、非同步歌词 | `features/lyrics/synchronized-lyrics.tsx` | M3 | [ ] |
-| 逐字卡拉 OK | `features/lyrics/synchronized-karaoke-lyrics.tsx`、`split-word-cue.ts` | M3 | [ ] |
-| 搜索 `/lyrics/search`、预览 `/lyrics/remote/{source}/{id}`、确定 `PUT .../lyrics/source`、清除 `DELETE` | `features/lyrics/components/lyrics-search-form.tsx` | M3 | [ ] |
-| 翻译 `POST /tracks/{id}/lyrics/translation {targetLanguage}`；`translation_disabled` 时刷新能力位 | `features/lyrics/api/lyric-translate.ts` | M3 | [ ] |
-| 显示方式：bilingual / translated | `features/lyrics/utils/translation-display-modes.ts` | M3 | [ ] |
-| 偏移（仅当前会话） | - | M3 | [ ] |
-| 假名注音、罗马音（原在主进程 kuromoji） | `main/features/core/lyrics/furigana.ts` | M3 | [ ] |
+| 获取 `/tracks/{id}/lyrics`（来源由服务端决定，显示 `sourceName` / 匹配信息） | `ctrl` `getLyrics`、`features/lyrics/api/lyrics-api.ts` | M0（逐行）/ M3 | [x] 显示 `sourceName` |
+| 同步滚动、点击跳转、非同步歌词 | `features/lyrics/synchronized-lyrics.tsx` | M3 | [x] 手动滚动后 4 秒恢复居中 |
+| 逐字卡拉 OK | `features/lyrics/synchronized-karaoke-lyrics.tsx`、`split-word-cue.ts` | M3 | - 不做：032 歌词只有逐行时间 |
+| 搜索 `/lyrics/search`、预览 `/lyrics/remote/{source}/{id}`、确定 `PUT .../lyrics/source`、清除 `DELETE` | `features/lyrics/components/lyrics-search-form.tsx` | M3 | [x] |
+| 翻译 `POST /tracks/{id}/lyrics/translation {targetLanguage}`；`translation_disabled` 时刷新能力位 | `features/lyrics/api/lyric-translate.ts` | M3 | [x] `translation_disabled` 后本次会话隐藏翻译 |
+| 显示方式：bilingual / translated | `features/lyrics/utils/translation-display-modes.ts` | M3 | [x] 另有自动翻译、目标语言 |
+| 偏移（仅当前会话） | - | M3 | [x] 按曲目 |
+| 假名注音、罗马音（原在主进程 kuromoji） | `main/features/core/lyrics/furigana.ts` | M3 | [x] lindera + 内嵌 IPADIC，wana_kana |
 | 中文行用中文字体 | 提交 ec619cb0 | M3 | [ ] |
 
 ## 系统集成
@@ -123,7 +123,7 @@
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
 | 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4 | [ ] |
-| 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [x] 主页、作品、系列、播放记录在 M3 |
+| 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [x] |
 | zh-Hans / zh-Hant / en | `i18n/locales/` | M4 | [ ] |
 
 ## 待定（默认不做，见 PLAN.md）
