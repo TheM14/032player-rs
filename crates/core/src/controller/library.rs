@@ -11,6 +11,7 @@ use api::{
 };
 use serde::de::DeserializeOwned;
 
+use super::m032::SourceKey;
 use super::{Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, Target, TrackSource};
 use crate::browse::{
     self, AlbumFilter, ArtistFilter, DetailView, TrackFilter, TrackList, album_item, artist_item,
@@ -40,10 +41,11 @@ pub(crate) fn random_seed() -> i64 {
 
 /// Reads every page of a list, one message per page. Random lists take
 /// their seed from `seeds` per page (stable across pages, new from offset 0).
-async fn load_pages<T: DeserializeOwned>(
+pub(super) async fn load_pages<T: DeserializeOwned>(
     client: &Client,
     path: &str,
     base: &Query,
+    page_size: u32,
     seeds: Option<&std::sync::Mutex<api::RandomSeeds>>,
     mut each: impl FnMut(Vec<T>, usize) -> bool,
 ) -> Result<(), ApiError> {
@@ -57,7 +59,7 @@ async fn load_pages<T: DeserializeOwned>(
                 .map_or_else(|_| random_seed(), |mut s| s.seed(&key, offset, random_seed));
             q.push("seed", seed);
         }
-        q.page(offset, PAGE);
+        q.page(offset, page_size);
         let page: Page<T> = client.get(path, &q).await?;
         let n = u32::try_from(page.items.len()).unwrap_or(u32::MAX);
         let total = usize::try_from(page.total).unwrap_or(0);
@@ -75,19 +77,19 @@ fn year(y: Option<i32>) -> Option<i32> {
 
 impl Core {
     /// Starts a request for `target`; older ones of the same target are dropped.
-    fn next_seq(&mut self, target: Target) -> u64 {
+    pub(super) fn next_seq(&mut self, target: Target) -> u64 {
         self.seq += 1;
         self.latest.insert(target, self.seq);
         self.seq
     }
 
     /// Client, internal sender and API token for a background request.
-    fn request(&self) -> Option<(Client, tokio::sync::mpsc::UnboundedSender<Internal>)> {
+    pub(super) fn request(&self) -> Option<(Client, tokio::sync::mpsc::UnboundedSender<Internal>)> {
         let library = self.library.as_ref()?;
         Some((library.client.clone(), self.internal.clone()))
     }
 
-    fn failed(client: &Client, what: &'static str, error: ApiError) -> Internal {
+    pub(super) fn failed(client: &Client, what: &'static str, error: ApiError) -> Internal {
         Internal::Failed {
             api_token: client.api_token().to_owned(),
             what,
@@ -159,6 +161,7 @@ impl Core {
                 &client,
                 path,
                 &q,
+                PAGE,
                 random.then_some(&*seeds),
                 |items, total| {
                     let items = items.iter().map(album_item).collect();
@@ -226,6 +229,7 @@ impl Core {
                 &client,
                 path,
                 &q,
+                PAGE,
                 random.then_some(&*seeds),
                 |items, total| {
                     tx.send(Internal::Loaded(
@@ -275,6 +279,7 @@ impl Core {
                 &client,
                 path,
                 &q,
+                PAGE,
                 random.then_some(&*seeds),
                 |items, total| {
                     let items: Vec<_> = items.iter().map(artist_item).collect();
@@ -342,13 +347,14 @@ impl Core {
                 .unwrap_or_default(),
             _ => String::new(),
         };
+        let mixes_known = self.home.as_ref().and_then(|h| h.mixes()).cloned();
         tokio::spawn(async move {
-            let result: Result<(DetailView, Vec<Track>), ApiError> = async {
+            let result: Result<(DetailView, Vec<Track>, Vec<String>), ApiError> = async {
                 Ok(match key {
                     DetailKey::Album(id) => {
                         let detail = client.album(id).await?;
                         let view = browse::album_view(&detail.album, &detail.tracks);
-                        (DetailView::Album(view), detail.tracks)
+                        (DetailView::Album(view), detail.tracks, Vec::new())
                     }
                     DetailKey::Artist(id) => {
                         let mut q = Query::new();
@@ -385,12 +391,12 @@ impl Core {
                             releases,
                             top_tracks_popular: detail.top_tracks_are_popular,
                         };
-                        (DetailView::Artist(view), detail.top_tracks)
+                        (DetailView::Artist(view), detail.top_tracks, Vec::new())
                     }
                     DetailKey::Playlist(id) => {
                         let detail = client.playlist(id).await?;
                         let view = browse::playlist_view(&detail.playlist);
-                        (DetailView::Playlist(view), detail.tracks)
+                        (DetailView::Playlist(view), detail.tracks, Vec::new())
                     }
                     DetailKey::Similar(id) => {
                         let tracks = client.similar_tracks(id, SIMILAR_COUNT).await?;
@@ -400,15 +406,44 @@ impl Core {
                                 title: similar_title,
                             },
                             tracks,
+                            Vec::new(),
                         )
+                    }
+                    DetailKey::Work(id) => {
+                        let (work, albums, tracks) = tokio::join!(
+                            client.work(id),
+                            client.work_albums(id),
+                            client.work_tracks(id)
+                        );
+                        let (view, collected, tags) =
+                            crate::m032::work_view(&work?, &albums?, &tracks?);
+                        (DetailView::Work(view), collected, tags)
+                    }
+                    DetailKey::Series(id) => {
+                        let (detail, albums) =
+                            tokio::join!(client.series(id), client.series_albums(id));
+                        let view = crate::m032::series_view(&detail?, &albums?);
+                        (DetailView::Series(view), Vec::new(), Vec::new())
+                    }
+                    DetailKey::DailyMix(id) => {
+                        let (detail, list) = match mixes_known {
+                            Some(list) => (client.daily_mix(id).await, Ok(list)),
+                            None => tokio::join!(client.daily_mix(id), client.daily_mixes()),
+                        };
+                        let detail = detail?;
+                        let view = crate::m032::mix_view(&detail, list.ok().as_ref());
+                        let tracks = detail.tracks.into_iter().map(|t| t.track).collect();
+                        (DetailView::DailyMix(view), tracks, Vec::new())
                     }
                 })
             }
             .await;
             let msg = match result {
-                Ok((view, tracks)) => {
-                    Internal::Loaded(Target::Detail, seq, Loaded::Detail(view, tracks))
-                }
+                Ok((view, tracks, tags)) => Internal::Loaded(
+                    Target::Detail,
+                    seq,
+                    Loaded::Detail(Box::new(view), tracks, tags),
+                ),
                 Err(e) => Self::failed(&client, "加载详情", e),
             };
             let _ = tx.send(msg);
@@ -496,8 +531,19 @@ impl Core {
                 ));
                 self.emit_playlists();
             }
-            Loaded::Detail(view, tracks) => {
-                let items = tracks.iter().map(track_item).collect();
+            Loaded::Detail(view, tracks, tags) => {
+                let view = *view;
+                let mut items: Vec<_> = tracks.iter().map(track_item).collect();
+                for (item, tag) in items.iter_mut().zip(tags) {
+                    item.tag = tag;
+                }
+                self.open_mix = match &view {
+                    DetailView::DailyMix(m) => Some(super::m032::OpenMix {
+                        id: m.id,
+                        rows: m.rows.clone(),
+                    }),
+                    _ => None,
+                };
                 self.set_list(TrackList::Detail, tracks);
                 self.emit(Event::Detail {
                     view,
@@ -519,10 +565,16 @@ impl Core {
                     tracks: items,
                 });
             }
+            Loaded::WorksPage(items, total) => self.emit(Event::WorksAppended { items, total }),
+            Loaded::SeriesPage(items, total) => {
+                self.emit(Event::SeriesAppended { items, total });
+            }
+            Loaded::HistoryPage(records, total) => self.history_page(records, total),
+            home => self.home_loaded(home),
         }
     }
 
-    fn set_list(&mut self, list: TrackList, tracks: Vec<Track>) {
+    pub(super) fn set_list(&mut self, list: TrackList, tracks: Vec<Track>) {
         if let Some(library) = self.library.as_mut() {
             library.lists.insert(list, tracks);
         }
@@ -581,10 +633,20 @@ impl Core {
 
     // ------------------------------------------------------------ tracks
 
-    /// Resolves `source` to tracks (fetching albums, artists, playlists)
-    /// and applies `intent` to them.
+    /// Resolves `source` to tracks (fetching albums, artists, playlists,
+    /// works, series, daily mixes) and applies `intent` to them.
     pub(super) fn with_tracks(&mut self, source: TrackSource, intent: Intent) {
         let Some(library) = &self.library else { return };
+        let with_context = library.capabilities.has(api::Feature::PlaybackContext);
+        // Playing the open daily mix: its playable rows, attributed to it.
+        if let (TrackSource::List(TrackList::Detail), Intent::Play { start, shuffle, .. }) =
+            (source, &intent)
+            && let Some((tracks, play)) = self.mix_playable(*start, true)
+        {
+            let play = if *shuffle { play.shuffled() } else { play };
+            self.fetched(tracks, play);
+            return;
+        }
         let tracks = match source {
             TrackSource::Track(list, index) => {
                 library.list(list).get(index).cloned().map(|t| vec![t])
@@ -614,30 +676,77 @@ impl Core {
             return;
         }
         tokio::spawn(async move {
+            let mut intent = intent;
             let result = match source {
                 TrackSource::Album(id) => client.album(id).await.map(|d| d.tracks),
                 TrackSource::Artist(id) => client.artist_tracks(id, ArtistTrackSort::Album).await,
                 TrackSource::Playlist(id) => client.playlist(id).await.map(|d| d.tracks),
+                TrackSource::Work(id) => client.work_tracks(id).await.map(|items| {
+                    let tracks = unique_tracks(items);
+                    let ids = tracks.iter().map(|t| t.id).collect();
+                    let _ = tx.send(Internal::SourceTracks(SourceKey::Work(id), ids));
+                    tracks
+                }),
+                TrackSource::Series(id) => client.series_tracks(id).await.map(|items| {
+                    let tracks = unique_tracks(items);
+                    let ids = tracks.iter().map(|t| t.id).collect();
+                    let _ = tx.send(Internal::SourceTracks(SourceKey::Series(id), ids));
+                    tracks
+                }),
+                TrackSource::DailyMix(id) => client.daily_mix(id).await.map(|detail| {
+                    // "加入队列" songs belong to the queue, not the mix: only
+                    // playing the mix carries its context.
+                    let playable: Vec<_> = detail
+                        .tracks
+                        .into_iter()
+                        .filter(|t| !t.track.missing)
+                        .collect();
+                    if let Intent::Play { contexts, .. } = &mut intent
+                        && with_context
+                        && id > 0
+                    {
+                        *contexts = playable
+                            .iter()
+                            .map(|t| Some(session::PlaybackContext::daily_mix(id, t.position)))
+                            .collect();
+                    }
+                    playable.into_iter().map(|t| t.track).collect()
+                }),
                 TrackSource::Track(..) | TrackSource::List(_) => Ok(Vec::new()),
             };
             let _ = tx.send(Internal::Fetched(result, intent));
         });
     }
 
-    pub(super) fn fetched(&mut self, mut tracks: Vec<Track>, intent: Intent) {
+    pub(super) fn fetched(&mut self, tracks: Vec<Track>, intent: Intent) {
         if self.library.is_none() {
             return;
         }
         match intent {
-            Intent::Play { start, shuffle } => {
+            Intent::Play {
+                start,
+                shuffle,
+                contexts,
+                start_ms,
+            } => {
                 if tracks.is_empty() {
+                    self.emit(Event::Notice("没有可播放的歌曲".into()));
                     return;
                 }
+                let mut contexts = contexts;
+                contexts.resize(tracks.len(), None);
+                let mut entries: Vec<_> = tracks.into_iter().zip(contexts).collect();
                 if shuffle {
                     #[allow(clippy::cast_sign_loss)]
-                    browse::shuffle(&mut tracks, random_seed() as u64);
+                    browse::shuffle(&mut entries, random_seed() as u64);
                 }
-                if self.queue.replace(tracks, start).is_some() {
+                let (tracks, contexts): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
+                let started = self.queue.replace(tracks, start).is_some();
+                self.queue.set_contexts(contexts);
+                if started {
+                    if start_ms > 0 {
+                        self.queue.set_current_start(start_ms);
+                    }
                     self.play_current(true);
                 }
                 self.queue_changed();
@@ -713,13 +822,7 @@ impl Core {
                 Ok::<_, ApiError>(items)
             }
             .await;
-            let _ = tx.send(Internal::Fetched(
-                result,
-                Intent::Play {
-                    start: 0,
-                    shuffle: false,
-                },
-            ));
+            let _ = tx.send(Internal::Fetched(result, Intent::play_at(0)));
         });
     }
 
@@ -895,6 +998,16 @@ impl Core {
             let _ = tx.send(msg);
         });
     }
+}
+
+/// Tracks of work / series expansions, each once in first-seen order.
+fn unique_tracks(items: Vec<api::WorkTrack>) -> Vec<Track> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .map(|t| t.track)
+        .filter(|t| seen.insert(t.id))
+        .collect()
 }
 
 fn added_notice(r: &api::PlaylistItemResult) -> Internal {

@@ -6,25 +6,29 @@ mod controller;
 mod engine;
 pub mod format;
 mod images;
+pub mod m032;
 mod queue;
 mod reporter;
 mod secrets;
 mod settings;
 mod storage;
 
-pub use api::{AlbumSort, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode};
+pub use api::{
+    AlbumSort, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode, WorkListQuery, WorkSort,
+};
 pub use browse::{
     AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, DetailView,
     PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, TrackFilter, TrackItem, TrackList,
 };
 pub use controller::{
-    Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, NowPlaying, QueueEntry,
-    QueuePosition, SavedLogin, ServerFeatures, SignOutReason, SleepStatus, SleepTimer, TrackSource,
-    start,
+    Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow, LyricsResultItem,
+    LyricsTools, NowPlaying, PlayingSources, QueueEntry, QueuePosition, SavedLogin, ServerFeatures,
+    SignOutReason, SleepStatus, SleepTimer, TrackSource, start,
 };
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, decode, server_size};
+pub use lyrics::japanese::Ruby;
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
-pub use settings::Settings;
+pub use settings::{LyricsSettings, Settings, TranslationMode};
 pub use storage::FileStorage;

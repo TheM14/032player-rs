@@ -82,9 +82,125 @@ pub fn duration(millis: i64) -> String {
     }
 }
 
+/// Audio spec of a set of tracks from the first one that has a codec
+/// (`audioSpecLabel` on the home page): "FLAC / 24bit / 96kHz".
+pub fn spec_label(tracks: &[Track]) -> Option<String> {
+    let track = tracks
+        .iter()
+        .find(|t| t.codec.as_deref().is_some_and(|c| !c.is_empty()) || !t.container.is_empty())?;
+    let codec = track
+        .codec
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .unwrap_or(&track.container)
+        .trim()
+        .to_uppercase();
+    let mut parts = vec![codec];
+    if let Some(d) = track.bit_depth.filter(|d| *d > 0) {
+        parts.push(format!("{d}bit"));
+    }
+    if let Some(r) = track.sample_rate.filter(|r| *r > 0) {
+        parts.push(format!("{}kHz", trim_decimal(f64::from(r) / 1000.0)));
+    }
+    parts.retain(|p| !p.is_empty());
+    (!parts.is_empty()).then(|| parts.join(" / "))
+}
+
+fn parse_time(iso: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(iso.trim())
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// "3 天前" (dayjs `fromNow`, zh-cn); empty for a missing or bad time.
+pub fn relative_time(iso: &str) -> String {
+    relative_time_at(iso, chrono::Utc::now())
+}
+
+fn relative_time_at(iso: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Some(time) = parse_time(iso) else {
+        return String::new();
+    };
+    let seconds = (now - time).num_seconds();
+    let future = seconds < 0;
+    #[allow(clippy::cast_precision_loss)]
+    let s = seconds.unsigned_abs() as f64;
+    let (m, h, d) = (s / 60.0, s / 3600.0, s / 86400.0);
+    // dayjs relativeTime thresholds.
+    #[allow(clippy::cast_possible_truncation)]
+    let round = |x: f64| x.round() as i64;
+    let text = if s < 45.0 {
+        "几秒".to_owned()
+    } else if s < 90.0 {
+        "1 分钟".to_owned()
+    } else if m < 45.0 {
+        format!("{} 分钟", round(m))
+    } else if m < 90.0 {
+        "1 小时".to_owned()
+    } else if h < 22.0 {
+        format!("{} 小时", round(h))
+    } else if h < 36.0 {
+        "1 天".to_owned()
+    } else if d < 26.0 {
+        format!("{} 天", round(d))
+    } else if d < 46.0 {
+        "1 个月".to_owned()
+    } else if d < 320.0 {
+        format!("{} 个月", round(d / 30.4).max(2))
+    } else if d < 548.0 {
+        "1 年".to_owned()
+    } else {
+        format!("{} 年", round(d / 365.0).max(2))
+    };
+    if future {
+        format!("{text}后")
+    } else {
+        format!("{text}前")
+    }
+}
+
+/// Local date and time, "2026年10月12日 09:15" (dayjs `lll`, zh-cn).
+pub fn date_time(iso: &str) -> String {
+    parse_time(iso).map_or_else(String::new, |t| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y年%-m月%-d日 %H:%M")
+            .to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_times() {
+        let now = parse_time("2026-10-28T12:00:00Z").unwrap();
+        let r = |iso| relative_time_at(iso, now);
+        assert_eq!(r("2026-10-28T11:59:30.000Z"), "几秒前");
+        assert_eq!(r("2026-10-28T11:30:00Z"), "30 分钟前");
+        assert_eq!(r("2026-10-28T02:00:00Z"), "10 小时前");
+        assert_eq!(r("2026-10-25T12:00:00Z"), "3 天前");
+        assert_eq!(r("2026-07-28T12:00:00Z"), "3 个月前");
+        assert_eq!(r("2023-10-28T12:00:00Z"), "3 年前");
+        assert_eq!(r(""), "");
+        assert_eq!(r("garbage"), "");
+        assert!(date_time("2026-10-12T03:15:00.123Z").starts_with("2026年10月12日"));
+    }
+
+    #[test]
+    fn spec_labels() {
+        let t = Track {
+            codec: Some("flac".into()),
+            bit_depth: Some(24),
+            sample_rate: Some(96_000),
+            ..Track::default()
+        };
+        assert_eq!(
+            spec_label(&[Track::default(), t]).as_deref(),
+            Some("FLAC / 24bit / 96kHz")
+        );
+        assert_eq!(spec_label(&[Track::default()]), None);
+    }
 
     #[test]
     fn quality_labels() {

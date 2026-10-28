@@ -4,12 +4,17 @@
 
 use api::Track;
 use serde::{Deserialize, Serialize};
+use session::PlaybackContext;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueItem {
     /// Unique per queue entry: the same track queued twice gets two ids.
     pub uid: u64,
     pub track: Track,
+    /// Where the play came from (a daily mix), reported on fresh starts.
+    pub context: Option<PlaybackContext>,
+    /// Start here the first time the entry plays (接着听).
+    pub start_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +48,9 @@ pub struct QueueSnapshot {
     /// Current position in the play order.
     pub position: Option<usize>,
     pub shuffle: bool,
+    /// Playback contexts per entry (queue order); empty when none has one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<Option<PlaybackContext>>,
 }
 
 /// Where a move through the queue lands.
@@ -171,11 +179,17 @@ impl Queue {
     }
 
     pub fn snapshot(&self) -> QueueSnapshot {
+        let contexts = if self.items.iter().any(|i| i.context.is_some()) {
+            self.items.iter().map(|i| i.context.clone()).collect()
+        } else {
+            Vec::new()
+        };
         QueueSnapshot {
             tracks: self.items.iter().map(|i| i.track.clone()).collect(),
             order: self.order.clone(),
             position: self.pos,
             shuffle: self.shuffle,
+            contexts,
         }
     }
 
@@ -188,8 +202,12 @@ impl Queue {
             order,
             position,
             shuffle,
+            contexts,
         } = snapshot;
         self.items = self.wrap(tracks);
+        for (item, context) in self.items.iter_mut().zip(contexts) {
+            item.context = context;
+        }
         let n = self.items.len();
         let mut seen = vec![false; n];
         let valid = order.len() == n
@@ -216,6 +234,8 @@ impl Queue {
                 QueueItem {
                     uid: self.next_uid,
                     track,
+                    context: None,
+                    start_ms: 0,
                 }
             })
             .collect()
@@ -228,6 +248,30 @@ impl Queue {
         let start = (start < self.items.len()).then_some(start);
         self.rebuild_order(start);
         self.current()
+    }
+
+    /// Sets the playback contexts of the entries in queue order (right
+    /// after [`Queue::replace`]).
+    pub fn set_contexts(&mut self, contexts: Vec<Option<PlaybackContext>>) {
+        for (item, context) in self.items.iter_mut().zip(contexts) {
+            item.context = context;
+        }
+    }
+
+    /// Makes the current entry start at `ms` the first time it plays.
+    pub fn set_current_start(&mut self, ms: i64) {
+        if let Some(p) = self.pos {
+            let i = self.order[p];
+            self.items[i].start_ms = ms.max(0);
+        }
+    }
+
+    /// The current entry's start position, cleared once taken.
+    pub fn take_current_start(&mut self) -> i64 {
+        self.pos.map_or(0, |p| {
+            let i = self.order[p];
+            std::mem::take(&mut self.items[i].start_ms)
+        })
     }
 
     /// Inserts after the current entry (at the front when nothing is current).
@@ -592,6 +636,32 @@ mod tests {
             ..snap
         });
         assert_eq!((ids(&r).len(), current_id(&r)), (6, Some(2)));
+    }
+
+    #[test]
+    fn contexts_survive_snapshots_and_start_is_taken_once() {
+        let mut q = Queue::default();
+        q.replace(tracks(1..=3), 1);
+        q.set_contexts(vec![
+            Some(PlaybackContext::daily_mix(4, 0)),
+            None,
+            Some(PlaybackContext::daily_mix(4, 2)),
+        ]);
+        q.set_current_start(5_000);
+        assert_eq!(q.take_current_start(), 5_000);
+        assert_eq!(q.take_current_start(), 0);
+        let snap = q.snapshot();
+        assert_eq!(snap.contexts.len(), 3);
+        let mut r = Queue::default();
+        r.restore(snap);
+        assert_eq!(
+            r.at(2).unwrap().context.as_ref().map(|c| c.position),
+            Some(2)
+        );
+        assert!(r.at(1).unwrap().context.is_none());
+        // Queues without contexts save none.
+        q.replace(tracks(1..=2), 0);
+        assert!(q.snapshot().contexts.is_empty());
     }
 
     #[test]

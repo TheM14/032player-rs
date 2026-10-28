@@ -115,6 +115,16 @@ pub enum TrackList {
     Detail,
     /// Search results.
     Search,
+    /// Preview tracks of a home spotlight album tab.
+    Spotlight(crate::m032::SpotlightTab),
+    /// 接着听 on the home page (each row resumes at its position).
+    HomeResume,
+    /// 最近播放 on the home page.
+    HomeRecent,
+    /// 主题曲与插曲 on the home page.
+    HomeSongs,
+    /// The playback history page.
+    History,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -144,6 +154,8 @@ pub struct TrackItem {
     pub disc_number: i32,
     pub track_number: i32,
     pub favorite: bool,
+    /// Extra label of the row (the use on a work page, e.g. "OP1").
+    pub tag: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -221,6 +233,12 @@ pub enum DetailView {
         track_id: i64,
         title: String,
     },
+    /// Tracks: those collected on other albums, tagged with their use.
+    Work(crate::m032::WorkView),
+    /// No tracks.
+    Series(crate::m032::SeriesView),
+    /// Tracks: every row of the mix (see `rows`).
+    DailyMix(crate::m032::MixView),
 }
 
 // ---------------------------------------------------------------- rows
@@ -254,6 +272,7 @@ pub fn track_item(track: &Track) -> TrackItem {
         disc_number: track.disc_number,
         track_number: track.track_number,
         favorite: track.is_favorite,
+        tag: String::new(),
     }
 }
 

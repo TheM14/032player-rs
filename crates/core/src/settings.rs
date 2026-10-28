@@ -25,6 +25,44 @@ pub struct Settings {
     /// Stream a transcode instead of the original file (`None`: original,
     /// the bit-perfect default). Ignored when the server cannot.
     pub transcode: Option<api::Transcode>,
+    pub lyrics: LyricsSettings,
+}
+
+/// How translated lyrics show (`lyrics.translationDisplayMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TranslationMode {
+    /// The translation under each line.
+    #[default]
+    Bilingual,
+    /// The translation instead of the original (same timing).
+    Translated,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LyricsSettings {
+    /// `targetLanguage` of the server translation (zh-Hans / zh-Hant / en).
+    pub translation_language: String,
+    pub translation_mode: TranslationMode,
+    /// Translate as soon as lyrics load (server translation enabled).
+    pub auto_translate: bool,
+    /// Kana readings over kanji of Japanese lines.
+    pub furigana: bool,
+    /// A romaji line under Japanese lines.
+    pub romaji: bool,
+}
+
+impl Default for LyricsSettings {
+    fn default() -> Self {
+        Self {
+            translation_language: "zh-Hans".into(),
+            translation_mode: TranslationMode::Bilingual,
+            auto_translate: false,
+            furigana: false,
+            romaji: false,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -38,6 +76,7 @@ impl Default for Settings {
             shuffle: false,
             close_to_tray: false,
             transcode: None,
+            lyrics: LyricsSettings::default(),
         }
     }
 }
@@ -96,6 +135,13 @@ mod tests {
             shuffle: true,
             close_to_tray: true,
             transcode: Some(api::Transcode::Mp3(320)),
+            lyrics: LyricsSettings {
+                translation_language: "en".into(),
+                translation_mode: TranslationMode::Translated,
+                auto_translate: true,
+                furigana: true,
+                romaji: false,
+            },
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);

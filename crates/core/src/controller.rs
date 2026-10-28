@@ -3,6 +3,10 @@
 //! [`Event`]s to a sink. The UI never blocks on the network.
 
 mod library;
+mod lyrics;
+mod m032;
+
+pub use m032::PlayingSources;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,10 +26,14 @@ use crate::browse::{
 use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
+use crate::m032::{
+    AlbumPane, ChronicleView, HomeView, MixItem, RecordItem, Rotation, SeriesItem, SongItem,
+    WorkItem,
+};
 use crate::queue::{Queue, QueueSnapshot, Repeat, Step};
 use crate::reporter::{Reporter, ReporterMsg};
 use crate::secrets::{SecretStore, TokenKind, token_key};
-use crate::settings::Settings;
+use crate::settings::{LyricsSettings, Settings};
 use crate::storage::FileStorage;
 use session::KeyValueStorage;
 
@@ -194,6 +202,67 @@ pub enum Command {
         path: String,
         px: u32,
     },
+    /// Play just this row (接着听 rows start at their saved position).
+    PlayTrack(TrackList, usize),
+    /// The 032 home ([`Event::Home`] or [`Event::HomeUnavailable`]), its
+    /// 最近播放 and today's daily mixes.
+    LoadHome,
+    /// Works rotation: another type (`kind`, from the first batch) or the
+    /// next batch (`next`) of the shown one.
+    HomeWorks {
+        kind: Option<String>,
+        next: bool,
+    },
+    /// Next batch of 主题曲与插曲.
+    HomeSongsNext,
+    /// Albums of another year in 编年.
+    HomeChronicle(i32),
+    /// 换一张 on the 随机重温 spotlight tab.
+    HomeReroll,
+    /// 从 x 继续 on the 最近在听 spotlight tab.
+    ResumeListening,
+    /// Reload the works page.
+    QueryWorks(api::WorkListQuery),
+    /// Reload the series page (search text).
+    QuerySeries(String),
+    QueryHistory,
+    ClearHistory,
+    OpenWork(i64),
+    OpenSeries(i64),
+    OpenDailyMix(i64),
+    /// 1 like, -1 dislike (with reasons), 0 clears.
+    RateDailyMix {
+        id: i64,
+        value: i32,
+        reasons: Vec<String>,
+    },
+    /// 换一个: answered with [`Event::DailyMixReplaced`].
+    ReplaceDailyMix(i64),
+    SaveDailyMix(i64),
+    /// 不再推荐 a row of the open daily mix (or recommend it again).
+    BlockRecommendation {
+        index: usize,
+        blocked: bool,
+    },
+    /// Online lyrics search for the current track.
+    SearchLyrics {
+        name: String,
+        artist: String,
+    },
+    /// Show a search result's lyrics ([`Event::LyricsPreview`]).
+    PreviewLyrics(usize),
+    /// Use a search result as the current track's lyrics (every client).
+    ApplyLyrics(usize),
+    /// Drop the online lyrics of the current track.
+    ClearLyrics,
+    /// Translate (first time) or show / hide the translation.
+    ToggleTranslation,
+    /// Lyrics offset of the current track for this session (positive:
+    /// lyrics earlier).
+    SetLyricsOffset(i64),
+    /// Seek to a lyrics line.
+    SeekToLyric(usize),
+    SetLyricsSettings(LyricsSettings),
 }
 
 /// When playback stops by itself (the Electron sleep timer modes).
@@ -233,6 +302,12 @@ pub enum TrackSource {
     /// Every track of the artist in album order.
     Artist(i64),
     Playlist(i64),
+    /// Tracks linked to a work.
+    Work(i64),
+    /// Tracks of every member of a series.
+    Series(i64),
+    /// Playable tracks of a daily mix (playing it reports the mix).
+    DailyMix(i64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,6 +324,10 @@ enum Intent {
     Play {
         start: usize,
         shuffle: bool,
+        /// Playback contexts per track (daily mix); may be shorter.
+        contexts: Vec<Option<session::PlaybackContext>>,
+        /// The first entry starts here (接着听).
+        start_ms: i64,
     },
     At(QueuePosition),
     AddToPlaylist(i64),
@@ -256,6 +335,65 @@ enum Intent {
         name: String,
         description: String,
     },
+}
+
+impl Intent {
+    fn play_at(start: usize) -> Self {
+        Self::Play {
+            start,
+            shuffle: false,
+            contexts: Vec::new(),
+            start_ms: 0,
+        }
+    }
+
+    fn starting_at(self, ms: i64) -> Self {
+        match self {
+            Self::Play {
+                start,
+                shuffle,
+                contexts,
+                ..
+            } => Self::Play {
+                start,
+                shuffle,
+                contexts,
+                start_ms: ms,
+            },
+            other => other,
+        }
+    }
+
+    fn with_contexts(self, contexts: Vec<Option<session::PlaybackContext>>) -> Self {
+        match self {
+            Self::Play {
+                start,
+                shuffle,
+                start_ms,
+                ..
+            } => Self::Play {
+                start,
+                shuffle,
+                contexts,
+                start_ms,
+            },
+            other => other,
+        }
+    }
+
+    fn shuffled(self) -> Self {
+        match self {
+            Self::Play {
+                contexts, start_ms, ..
+            } => Self::Play {
+                start: 0,
+                shuffle: true,
+                contexts,
+                start_ms,
+            },
+            other => other,
+        }
+    }
 }
 
 /// Server abilities the UI adapts to.
@@ -266,6 +404,13 @@ pub struct ServerFeatures {
     pub playlist_artwork: bool,
     /// Transcode formats the server offers (`mp3`, `ogg`, `flac`).
     pub transcode: Vec<String>,
+    /// `/home`, the works pages, `/series`, daily mixes.
+    pub home: bool,
+    pub works: bool,
+    pub series: bool,
+    pub daily_mixes: bool,
+    /// Server lyrics translation (`lyricsTranslation`).
+    pub lyrics_translation: bool,
 }
 
 /// A queue row for the UI.
@@ -420,13 +565,96 @@ pub enum Event {
     Exclusive(bool),
     /// Lines of the current track (empty: none). `synced` false = plain text.
     Lyrics {
-        lines: Vec<String>,
+        lines: Vec<LyricRow>,
         synced: bool,
         source: Option<String>,
     },
     LyricsActive(Option<usize>),
+    /// State of the lyrics toolbar.
+    LyricsTools(LyricsTools),
+    /// Online lyrics search results, best first.
+    LyricsSearchResults(Vec<LyricsResultItem>),
+    /// Lines of a previewed search result (empty: none).
+    LyricsPreview(Vec<String>),
+    Home(Box<HomeView>),
+    /// The server has no home endpoint.
+    HomeUnavailable,
+    HomeWorks(Rotation<WorkItem>),
+    HomeSongs(Rotation<SongItem>),
+    HomeChronicle(ChronicleView),
+    /// A new pane for a spotlight tab (换一张).
+    HomeSpotlightPane(AlbumPane),
+    /// 最近播放 rows (`TrackList::HomeRecent`).
+    HomeRecent(Vec<RecordItem>),
+    /// Today's daily mixes.
+    DailyMixes {
+        generating: bool,
+        items: Vec<MixItem>,
+    },
+    /// 换一个 succeeded: leave the old mix's page for the new one.
+    DailyMixReplaced {
+        from: i64,
+        to: i64,
+    },
+    /// 不再推荐 changed on a row of the open daily mix.
+    MixRowBlocked {
+        index: usize,
+        blocked: bool,
+    },
+    WorksReset,
+    WorksAppended {
+        items: Vec<WorkItem>,
+        total: usize,
+    },
+    SeriesReset,
+    SeriesAppended {
+        items: Vec<SeriesItem>,
+        total: usize,
+    },
+    HistoryReset,
+    /// Rows of `TrackList::History`.
+    HistoryAppended {
+        items: Vec<RecordItem>,
+        total: usize,
+    },
+    /// Works / series / mix the current track belongs to.
+    PlayingSources(PlayingSources),
     /// Something the user should see (load failure, playback error).
     Notice(String),
+}
+
+/// A lyrics line as shown.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LyricRow {
+    pub text: String,
+    /// The translation under the original (bilingual).
+    pub translation: String,
+    /// Kana readings over the kanji of `text` (furigana on; empty otherwise).
+    pub ruby: Vec<::lyrics::japanese::Ruby>,
+    /// Romaji under Japanese lines (romaji on).
+    pub romaji: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LyricsTools {
+    pub has_lyrics: bool,
+    /// Online search / pick / clear (`lyricsOnline`).
+    pub can_search: bool,
+    /// Server translation (`lyricsTranslation`).
+    pub can_translate: bool,
+    pub translation_shown: bool,
+    pub translating: bool,
+    pub offset_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LyricsResultItem {
+    pub title: String,
+    pub artist: String,
+    /// "NetEase — 123 — 同步".
+    pub meta: String,
+    /// "98.00%".
+    pub score: String,
 }
 
 /// Messages from spawned tasks back into the loop.
@@ -467,6 +695,33 @@ enum Internal {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
     },
+    Translation {
+        track_id: i64,
+        lines: Result<Vec<String>, api::ApiError>,
+    },
+    LyricsResults {
+        track_id: i64,
+        results: Vec<api::LyricsSearchResult>,
+    },
+    LyricsPreview(u64, Vec<String>),
+    /// The track's lyrics source changed on the server: reload them.
+    LyricsChanged(i64),
+    /// Tracks of an expanded work / series.
+    SourceTracks(m032::SourceKey, std::collections::HashSet<i64>),
+    TrackWorks(i64, Vec<api::TrackWork>),
+    PollMixes(u64),
+    HistoryCleared,
+    MixChanged {
+        id: i64,
+        notice: Option<String>,
+        replaced_by: Option<i64>,
+    },
+    MixBlocked {
+        mix_id: i64,
+        index: usize,
+        blocked: bool,
+    },
+    Notice(String),
 }
 
 /// What a background request fills.
@@ -481,6 +736,17 @@ enum Target {
     Playlists,
     Detail,
     Search,
+    Home,
+    HomeRecent,
+    HomeWorks,
+    HomeSongs,
+    HomeChronicle,
+    HomeSpotlight,
+    DailyMixes,
+    Works,
+    SeriesList,
+    History,
+    LyricsPreview,
 }
 
 enum Loaded {
@@ -491,13 +757,25 @@ enum Loaded {
     FavoriteTracks(Vec<Track>),
     FavoriteArtists(Vec<ArtistItem>),
     Playlists(Vec<Playlist>),
-    Detail(DetailView, Vec<Track>),
+    /// The view, its tracks and their tags.
+    Detail(Box<DetailView>, Vec<Track>, Vec<String>),
     Search {
         query: String,
         artists: Vec<ArtistItem>,
         albums: Vec<AlbumItem>,
         tracks: Vec<Track>,
     },
+    Home(Box<api::Home>),
+    HomeUnavailable,
+    HomeRecent(Vec<Track>),
+    DailyMixes(api::DailyMixList),
+    HomeWorks(api::RotationPage<api::HomeWorkCard>),
+    HomeSongs(api::RotationPage<api::HomeSongRow>),
+    HomeChronicle(api::Chronicle),
+    HomeSpotlight(Box<api::HomeAlbumPane>),
+    WorksPage(Vec<WorkItem>, usize),
+    SeriesPage(Vec<SeriesItem>, usize),
+    HistoryPage(Vec<api::PlaybackRecord>, usize),
 }
 
 /// Handle to the running core. Dropping it does not stop the core; call
@@ -633,6 +911,9 @@ enum DetailKey {
     Artist(i64),
     Playlist(i64),
     Similar(i64),
+    Work(i64),
+    Series(i64),
+    DailyMix(i64),
 }
 
 /// Runs a blocking secret-store call off the async workers.
@@ -757,8 +1038,7 @@ struct Core {
     position_ms: i64,
     reported_step: i64,
     engine_duration_ms: i64,
-    lyrics: Option<lyrics::SyncedLyrics>,
-    active_line: Option<usize>,
+    lyr: lyrics::LyricsState,
     settings: Settings,
     /// Bumped per settings change; `saved_revision` is the last written.
     settings_revision: u64,
@@ -775,6 +1055,9 @@ struct Core {
     resume_at: Option<(u64, i64)>,
     /// Seek to this once the loading file is loaded (resumed position).
     pending_seek_ms: Option<i64>,
+    /// 接着听: the play starts at 0 for the server and then seeks here
+    /// (reported once the file is loaded), like the Electron client.
+    report_seek_ms: Option<i64>,
     /// Bumped per queue change; the debounced save writes the latest.
     queue_revision: u64,
     saved_queue_revision: u64,
@@ -796,6 +1079,14 @@ struct Core {
     /// Lossy transcodes cannot seek by range: the stream starts here and
     /// engine positions are relative to it.
     stream_offset_ms: i64,
+    /// The home page was loaded (partial reloads use its state).
+    home: Option<m032::HomeState>,
+    open_mix: Option<m032::OpenMix>,
+    /// Works / series expanded into tracks this session.
+    sources: m032::SourceTracks,
+    /// Works of a track (`/tracks/{id}/works`).
+    track_works: Option<(i64, Vec<api::TrackWork>)>,
+    playing_sources: PlayingSources,
 }
 
 impl Core {
@@ -825,8 +1116,7 @@ impl Core {
             position_ms: 0,
             reported_step: -1,
             engine_duration_ms: 0,
-            lyrics: None,
-            active_line: None,
+            lyr: lyrics::LyricsState::default(),
             settings,
             settings_revision: 0,
             saved_revision: 0,
@@ -836,6 +1126,7 @@ impl Core {
             started_uid: None,
             resume_at: None,
             pending_seek_ms: None,
+            report_seek_ms: None,
             queue_revision: 0,
             saved_queue_revision: 0,
             saved_position_step: -1,
@@ -851,6 +1142,11 @@ impl Core {
             playlists: Vec::new(),
             open_detail: None,
             stream_offset_ms: 0,
+            home: None,
+            open_mix: None,
+            sources: m032::SourceTracks::default(),
+            track_works: None,
+            playing_sources: PlayingSources::default(),
         }
     }
 
@@ -1008,22 +1304,10 @@ impl Core {
                     TrackSource::Track(list, _) => TrackSource::List(list),
                     other => other,
                 };
-                self.with_tracks(
-                    source,
-                    Intent::Play {
-                        start,
-                        shuffle: false,
-                    },
-                );
+                self.with_tracks(source, Intent::play_at(start));
             }
             Command::ShufflePlay(source) => {
-                self.with_tracks(
-                    source,
-                    Intent::Play {
-                        start: 0,
-                        shuffle: true,
-                    },
-                );
+                self.with_tracks(source, Intent::play_at(0).shuffled());
             }
             Command::ShuffleAll => self.shuffle_all(),
             Command::Enqueue { source, at } => self.with_tracks(source, Intent::At(at)),
@@ -1183,6 +1467,34 @@ impl Core {
                     self.stop_playback();
                 }
             }
+            Command::PlayTrack(list, index) => self.play_track(list, index),
+            Command::LoadHome => self.load_home(),
+            Command::HomeWorks { kind, next } => self.home_works(kind, next),
+            Command::HomeSongsNext => self.home_songs_next(),
+            Command::HomeChronicle(year) => self.home_chronicle(year),
+            Command::HomeReroll => self.home_reroll(),
+            Command::ResumeListening => self.resume_listening(),
+            Command::QueryWorks(query) => self.query_works(query),
+            Command::QuerySeries(search) => self.query_series(search),
+            Command::QueryHistory => self.query_history(),
+            Command::ClearHistory => self.clear_history(),
+            Command::OpenWork(id) => self.open_detail(DetailKey::Work(id)),
+            Command::OpenSeries(id) => self.open_detail(DetailKey::Series(id)),
+            Command::OpenDailyMix(id) => self.open_detail(DetailKey::DailyMix(id)),
+            Command::RateDailyMix { id, value, reasons } => self.rate_mix(id, value, reasons),
+            Command::ReplaceDailyMix(id) => self.replace_mix(id),
+            Command::SaveDailyMix(id) => self.save_mix(id),
+            Command::BlockRecommendation { index, blocked } => {
+                self.block_recommendation(index, blocked);
+            }
+            Command::SearchLyrics { name, artist } => self.search_lyrics(name, artist),
+            Command::PreviewLyrics(index) => self.preview_lyrics(index),
+            Command::ApplyLyrics(index) => self.apply_lyrics(index),
+            Command::ClearLyrics => self.clear_lyrics_source(),
+            Command::ToggleTranslation => self.toggle_translation(),
+            Command::SetLyricsOffset(ms) => self.set_lyrics_offset(ms),
+            Command::SeekToLyric(index) => self.seek_to_lyric(index),
+            Command::SetLyricsSettings(lyrics) => self.set_lyrics_settings(lyrics),
             Command::LoadImage { key, path, px } => {
                 let Some(library) = &self.library else { return };
                 let images = library.images.clone();
@@ -1238,7 +1550,7 @@ impl Core {
 
     fn adapter_track(&self) -> Option<AdapterTrack> {
         self.queue.current().map(|item| AdapterTrack {
-            context: None,
+            context: item.context.clone(),
             duration_millis: u64::try_from(item.track.duration_millis).unwrap_or(0),
             track_id: item.track.id,
             unique_id: item.uid.to_string(),
@@ -1308,13 +1620,11 @@ impl Core {
             .map(|item| self.now_playing(&item.track));
         self.emit(Event::NowPlaying(now));
         self.emit_position();
-        self.lyrics = None;
-        self.active_line = None;
-        self.emit(Event::Lyrics {
-            lines: Vec::new(),
-            synced: false,
-            source: None,
-        });
+        match self.queue.current().map(|i| i.track.id) {
+            Some(id) => self.load_lyrics(id),
+            None => self.clear_lyrics(),
+        }
+        self.update_playing_sources();
     }
 
     /// The transcode in use, if the server offers it.
@@ -1563,6 +1873,7 @@ impl Core {
         self.emit(Event::Paused(true));
         self.emit_position();
         self.load_lyrics(item.track.id);
+        self.update_playing_sources();
     }
 
     /// Keeps the engine's next file equal to the queue's automatic next
@@ -1611,10 +1922,20 @@ impl Core {
         let Some(item) = self.queue.current().cloned() else {
             return;
         };
+        // 接着听: the entry starts at its saved position (once).
+        let start_ms = if load {
+            self.queue.take_current_start()
+        } else {
+            0
+        };
         // A restored entry continues where it was left.
+        let restored =
+            matches!(self.resume_at, Some((uid, ms)) if uid == item.uid && ms > 0 && load);
         let resume_ms = match self.resume_at {
             Some((uid, ms)) if uid == item.uid && ms > 0 && load => Some(ms),
-            _ => None,
+            _ => (start_ms > 0
+                && (item.track.duration_millis <= 0 || start_ms < item.track.duration_millis))
+                .then_some(start_ms),
         };
         // Lossy transcodes start the stream there instead of seeking.
         let offset_ms = if self.lossy_transcode() {
@@ -1642,6 +1963,7 @@ impl Core {
         self.expected_path = Some(url);
         self.stream_offset_ms = offset_ms;
         self.pending_seek_ms = resume_ms.filter(|_| offset_ms == 0);
+        self.report_seek_ms = resume_ms.filter(|_| !restored);
         self.position_ms = resume_ms.unwrap_or(0);
         self.reported_step = self.position_ms / POSITION_STEP_MS;
         self.engine_duration_ms = 0;
@@ -1680,33 +2002,7 @@ impl Core {
         self.emit_position();
         self.save_position();
         self.load_lyrics(track.id);
-    }
-
-    /// Clears the lyrics and fetches those of `track_id`.
-    fn load_lyrics(&mut self, track_id: i64) {
-        let Some(library) = &self.library else { return };
-        let client = library.client.clone();
-        self.lyrics = None;
-        self.active_line = None;
-        self.emit(Event::Lyrics {
-            lines: Vec::new(),
-            synced: false,
-            source: None,
-        });
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            let lyrics = match client.lyrics(track_id).await {
-                Ok(lyrics) => lyrics,
-                Err(e) => {
-                    tracing::debug!("lyrics {track_id}: {e}");
-                    if let Some(msg) = unauthorized(&client, &e) {
-                        let _ = tx.send(msg);
-                    }
-                    None
-                }
-            };
-            let _ = tx.send(Internal::Lyrics { track_id, lyrics });
-        });
+        self.update_playing_sources();
     }
 
     fn duration_ms(&self) -> i64 {
@@ -1722,17 +2018,6 @@ impl Core {
             position_ms: self.position_ms,
             duration_ms: self.duration_ms(),
         });
-    }
-
-    fn update_active_line(&mut self) {
-        let active = self
-            .lyrics
-            .as_ref()
-            .and_then(|l| l.active_index(self.position_ms, 0));
-        if active != self.active_line {
-            self.active_line = active;
-            self.emit(Event::LyricsActive(active));
-        }
     }
 
     fn engine_event(&mut self, event: EngineEvent) {
@@ -1819,6 +2104,12 @@ impl Core {
                     if let Err(e) = self.engine.seek(ms as f64 / 1000.0) {
                         tracing::warn!("seeking to the resumed position: {e}");
                     }
+                }
+                if let Some(ms) = self.report_seek_ms.take()
+                    && let Some(r) = self.reporter.as_mut()
+                {
+                    #[allow(clippy::cast_precision_loss)]
+                    r.act(|a| a.on_seek(ms as f64 / 1000.0));
                 }
                 self.sync_preload();
             }
@@ -1954,33 +2245,46 @@ impl Core {
                     self.open_detail(key);
                 }
             }
-            Internal::Lyrics { track_id, lyrics } => {
-                if self.queue.current().map(|i| i.track.id) != Some(track_id) {
-                    return;
+            Internal::Lyrics { track_id, lyrics } => self.lyrics_loaded(track_id, lyrics),
+            Internal::Translation { track_id, lines } => self.translation_loaded(track_id, lines),
+            Internal::LyricsResults { track_id, results } => {
+                self.lyrics_results(track_id, results);
+            }
+            Internal::LyricsPreview(seq, lines) => self.lyrics_preview(seq, lines),
+            Internal::LyricsChanged(track_id) => self.lyrics_changed(track_id),
+            Internal::SourceTracks(key, ids) => {
+                self.sources.record(key, ids);
+                self.update_playing_sources();
+            }
+            Internal::TrackWorks(track_id, works) => {
+                if self
+                    .track_works
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == track_id)
+                {
+                    self.track_works = Some((track_id, works));
+                    self.update_playing_sources();
                 }
-                let Some(lyrics) = lyrics.filter(|l| !l.lines.is_empty()) else {
-                    return;
-                };
-                let lines = lyrics.lines.iter().map(|l| l.text.clone()).collect();
-                let source = lyrics.source_name.clone().or(lyrics.source.clone());
-                self.emit(Event::Lyrics {
-                    lines,
-                    synced: lyrics.synced,
-                    source,
-                });
-                if lyrics.synced {
-                    self.lyrics = Some(lyrics::SyncedLyrics::new(
-                        lyrics
-                            .lines
-                            .into_iter()
-                            .map(|l| lyrics::Line {
-                                time_ms: l.time_ms,
-                                text: l.text,
-                            })
-                            .collect(),
-                    ));
-                    self.active_line = None;
-                    self.update_active_line();
+            }
+            Internal::PollMixes(generation) => {
+                if generation == self.list_generation && self.home.is_some() {
+                    self.load_mixes();
+                }
+            }
+            Internal::HistoryCleared => self.history_cleared(),
+            Internal::MixChanged {
+                id,
+                notice,
+                replaced_by,
+            } => self.mix_changed(id, notice, replaced_by),
+            Internal::MixBlocked {
+                mix_id,
+                index,
+                blocked,
+            } => self.mix_blocked(mix_id, index, blocked),
+            Internal::Notice(text) => {
+                if self.library.is_some() {
+                    self.emit(Event::Notice(text));
                 }
             }
             Internal::AudioDeviceSet(device, result) => {
@@ -2065,9 +2369,11 @@ impl Core {
         self.sleep_generation += 1;
         self.position_ms = 0;
         self.engine_duration_ms = 0;
-        self.lyrics = None;
-        self.active_line = None;
         self.stream_offset_ms = 0;
+        self.home = None;
+        self.open_mix = None;
+        self.sources = m032::SourceTracks::default();
+        self.track_works = None;
         // Results of requests still running are dropped.
         self.latest.clear();
         self.track_filter = TrackFilter::default();
@@ -2093,11 +2399,8 @@ impl Core {
         self.emit(Event::NowPlaying(None));
         self.emit(Event::Paused(true));
         self.emit_position();
-        self.emit(Event::Lyrics {
-            lines: Vec::new(),
-            synced: false,
-            source: None,
-        });
+        self.clear_lyrics();
+        self.update_playing_sources();
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
         self.emit(Event::ArtistsReset);
@@ -2141,6 +2444,11 @@ impl Core {
                 .filter(|f| capabilities.can_transcode(f))
                 .map(str::to_owned)
                 .collect(),
+            home: capabilities.has(Feature::Home),
+            works: capabilities.has(Feature::Works),
+            series: capabilities.has(Feature::Series),
+            daily_mixes: capabilities.has(Feature::DailyMixes),
+            lyrics_translation: capabilities.has(Feature::LyricsTranslation),
         };
         self.library = Some(Library {
             images: Arc::new(Images::new(client.clone())),
