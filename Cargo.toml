@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+api = { path = "crates/api" }
+session = { path = "crates/session" }
+lyrics = { path = "crates/lyrics" }
+client-core = { path = "crates/core" }
+player = { path = "crates/player" }
+os = { path = "crates/os" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2", "json", "system-proxy"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+url = "2"
+wiremock = "0.6"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
