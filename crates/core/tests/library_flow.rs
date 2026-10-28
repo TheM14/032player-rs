@@ -210,6 +210,20 @@ impl Harness {
         self.core.as_ref().unwrap().send(command);
     }
 
+    /// Waits until the engine was asked for `call`; returns the calls so far.
+    async fn wait_call(&self, call: &str) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut calls = Vec::new();
+        loop {
+            calls.extend(self.engine.take());
+            if calls.iter().any(|c| c == call) {
+                return calls;
+            }
+            assert!(Instant::now() < deadline, "no {call}: {calls:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     fn engine_event(&self, event: EngineEvent) {
         self.core.as_ref().unwrap().engine_event(event);
     }
@@ -550,11 +564,10 @@ async fn lossy_transcode_seeks_by_restarting_the_stream() {
     let h = Harness::start(&server, settings).await;
     h.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
     h.wait("playing", |e| matches!(e, Event::NowPlaying(Some(_))));
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        h.engine.take(),
-        ["load /tracks/1/transcode.mp3?bitrate=320"]
-    );
+    let calls = h
+        .wait_call("load /tracks/1/transcode.mp3?bitrate=320")
+        .await;
+    assert_eq!(calls, ["load /tracks/1/transcode.mp3?bitrate=320"]);
     h.engine_event(EngineEvent::FileLoaded {
         path: Some(format!(
             "{}/api/v1/tracks/1/transcode.mp3?mediaToken=media&bitrate=320",
@@ -564,12 +577,8 @@ async fn lossy_transcode_seeks_by_restarting_the_stream() {
     h.send(Command::Seek {
         position_ms: 60_000,
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let calls = h.engine.take();
-    assert!(
-        calls.contains(&"load /tracks/1/transcode.mp3?bitrate=320&offsetMs=60000".to_owned()),
-        "{calls:?}"
-    );
+    h.wait_call("load /tracks/1/transcode.mp3?bitrate=320&offsetMs=60000")
+        .await;
     h.engine_event(EngineEvent::FileLoaded {
         path: Some(format!(
             "{}/api/v1/tracks/1/transcode.mp3?mediaToken=media&bitrate=320&offsetMs=60000",
