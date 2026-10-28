@@ -31,6 +31,9 @@ export component LoginView inherits Rectangle {
     in-out property <string> server;
     in-out property <string> api-token;
     in-out property <string> media-token;
+    // A token is saved for the server: an empty field reuses it.
+    in property <bool> api-token-saved;
+    in property <bool> media-token-saved;
     in property <string> error;
     in property <bool> busy;
     callback login(string, string, string);
@@ -72,6 +75,7 @@ export component LoginView inherits Rectangle {
 
             Field {
                 label: "API Token";
+                placeholder: root.api-token-saved ? "已保存，留空即沿用" : "";
                 password: true;
                 text <=> root.api-token;
                 accepted => {
@@ -81,6 +85,7 @@ export component LoginView inherits Rectangle {
 
             Field {
                 label: "媒体凭据";
+                placeholder: root.media-token-saved ? "已保存，留空即沿用" : "";
                 password: true;
                 text <=> root.media-token;
                 accepted => {

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use client_core::{Command, Commander, Event, LoginFailure, Rgba, format};
+use client_core::{Command, Commander, Event, LoginFailure, Rgba, SignOutReason, format};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
     VecModel,
@@ -21,7 +21,6 @@ struct Ui {
     lyrics: Rc<VecModel<LyricLine>>,
     now_cover_key: RefCell<Option<String>>,
     notice_timer: Timer,
-    on_logged_in: Box<dyn Fn(&str)>,
 }
 
 thread_local! {
@@ -37,8 +36,8 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
     }
 }
 
-/// Wires callbacks and models. `on_logged_in` gets the server URL.
-pub fn install(window: &AppWindow, commander: Commander, on_logged_in: impl Fn(&str) + 'static) {
+/// Wires callbacks and models.
+pub fn install(window: &AppWindow, commander: Commander) {
     let albums = AlbumGridModel::new(commander.clone());
     let tracks = Rc::new(VecModel::<TrackRow>::default());
     let lyrics = Rc::new(VecModel::<LyricLine>::default());
@@ -59,6 +58,8 @@ pub fn install(window: &AppWindow, commander: Commander, on_logged_in: impl Fn(&
             media_token: media_token.trim().to_owned(),
         });
     });
+    let c = commander.clone();
+    window.on_logout(move || c.send(Command::Logout));
 
     let grid = albums.clone();
     let weak = window.as_weak();
@@ -103,7 +104,6 @@ pub fn install(window: &AppWindow, commander: Commander, on_logged_in: impl Fn(&
         lyrics,
         now_cover_key: RefCell::default(),
         notice_timer: Timer::default(),
-        on_logged_in: Box::new(on_logged_in),
     });
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
 }
@@ -135,6 +135,28 @@ fn int(value: i64) -> i32 {
 /// Applies one core event on the UI thread.
 pub fn apply(event: Event) {
     with_ui(|ui, w| match event {
+        Event::SavedLogin(saved) => {
+            if !saved.server_url.is_empty() {
+                w.set_login_server(saved.server_url.into());
+            }
+            w.set_login_api_token_saved(saved.has_api_token);
+            w.set_login_media_token_saved(saved.has_media_token);
+            if saved.signing_in {
+                w.set_login_busy(true);
+                w.set_login_error(SharedString::new());
+            }
+        }
+        Event::SignedOut(reason) => {
+            w.set_logged_in(false);
+            w.set_login_busy(false);
+            w.set_login_api_token(SharedString::new());
+            w.set_login_media_token(SharedString::new());
+            w.set_login_error(match reason {
+                SignOutReason::User => SharedString::new(),
+                SignOutReason::Expired => "API Token 已失效，请重新输入".into(),
+            });
+            *ui.now_cover_key.borrow_mut() = None;
+        }
         Event::LoginFailed(failure) => {
             w.set_login_busy(false);
             w.set_login_error(login_message(&failure).into());
@@ -142,8 +164,7 @@ pub fn apply(event: Event) {
         Event::LoggedIn { server_url } => {
             w.set_login_busy(false);
             w.set_logged_in(true);
-            w.set_server_label(server_url.as_str().into());
-            (ui.on_logged_in)(&server_url);
+            w.set_server_label(server_url.into());
         }
         Event::AlbumsReset => {
             ui.albums.clear();

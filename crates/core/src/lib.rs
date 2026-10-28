@@ -7,13 +7,15 @@ pub mod format;
 mod images;
 mod queue;
 mod reporter;
+mod secrets;
 mod storage;
 
 pub use controller::{
     AlbumItem, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, NowPlaying,
-    TrackItem, start,
+    SavedLogin, SignOutReason, TrackItem, start,
 };
 pub use engine::{Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, decode, server_size};
 pub use queue::{Queue, QueueItem};
+pub use secrets::{MemorySecrets, SecretStore};
 pub use storage::FileStorage;

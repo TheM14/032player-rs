@@ -32,6 +32,7 @@ slint-build = "1.18"
 directories = "6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wiremock = "0.6"
+keyring = "4.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -217,7 +217,8 @@ fn main() {
     let inst = def.create().unwrap();
     inst.show().unwrap();
     set(&inst, "login-server", s("https://music.example.com"));
-    set(&inst, "login-error", s("API Token 无效"));
+    set(&inst, "login-error", s("API Token 已失效，请重新输入"));
+    set(&inst, "login-media-token-saved", Value::Bool(true));
     render(&window, size, &format!("{out}/login.png"));
     inst.hide().unwrap();
 

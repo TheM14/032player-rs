@@ -62,6 +62,17 @@
   `core` 缓存压缩字节（LRU 400），在 blocking 线程解码并缩放到显示尺寸，UI 只做 `SharedPixelBuffer` 拷贝；
   UI 侧最多保留 96 张解码封面，超出丢弃最早的，滚回来再从字节缓存解码。
 
+### 登录态
+
+- 服务器地址存 `data_dir/session.json`；API Token 和媒体凭据存系统凭据库（服务名 `032player`，
+  键 `api-token@{baseUrl}` / `media-token@{baseUrl}`）。`core` 定义 `SecretStore` trait，
+  `os::secrets::Keyring`（`keyring` 4：Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service，纯 Rust）由 `app` 注入。
+  凭据库调用可能阻塞，`core` 只在 `spawn_blocking` 里调用；打不开时只记日志，不保存。
+- 启动发 `Command::Restore`：两个凭据都在就自动登录。登录表单里留空的凭据取已保存值。
+- 已保存的凭据被服务端拒绝时删掉对应那个。会话中任一请求 401（列表、歌词、上报）：
+  删 API Token、保留媒体凭据，停止播放回到登录页。用户退出登录：两个都删。
+- 每次登录 / 退出递增 generation，旧会话的列表分页和上报定时器结果直接丢弃。
+
 ### api
 
 - `Client { base_url, api_token, media_token, http }`，方法按资源分组（albums、tracks、browse、

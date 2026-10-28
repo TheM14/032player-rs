@@ -14,7 +14,8 @@
 | 校验 `GET /api/v1/capabilities`，`apiRevision` 必须为 3 | `ctrl` `M032_API_REVISION` | M0 | [x] |
 | 媒体凭据校验：取 1 首曲目，Range `bytes=0-0` 请求流，401 即无效；空库跳过 | `ctrl` `verifyMediaToken` | M0 | [x] |
 | Bearer 请求；非 2xx 解析 `{error:{code,message}}` | `renderer/api/music032/music032-api.ts` | M0 | [x] |
-| 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [ ] |
+| 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [x] |
+| 登录态持久化：两个凭据存系统凭据库，启动自动登录；表单留空沿用已保存值；退出登录清空两者 | `auth.store.ts` `logout`、`edit-server-form.tsx` | M1 | [x] |
 | 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [x] |
 | 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / series，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [ ] |
 

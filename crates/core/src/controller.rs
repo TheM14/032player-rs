@@ -18,7 +18,9 @@ use crate::format;
 use crate::images::{Images, Rgba};
 use crate::queue::Queue;
 use crate::reporter::{Reporter, ReporterMsg};
+use crate::secrets::{SecretStore, TokenKind, token_key};
 use crate::storage::FileStorage;
+use session::KeyValueStorage;
 
 /// "Previous" restarts the track instead after this much playback.
 const RESTART_THRESHOLD_MS: i64 = 10_000;
@@ -26,19 +28,31 @@ const RESTART_THRESHOLD_MS: i64 = 10_000;
 const POSITION_STEP_MS: i64 = 250;
 const PAGE: u32 = api::MAX_PAGE_SIZE;
 
-#[derive(Clone, Debug)]
+/// Key of the last signed-in server in `session.json`.
+const SERVER_KEY: &str = "server";
+
+#[derive(Clone)]
 pub struct CoreConfig {
-    /// Where the playback resume snapshot lives.
+    /// Where the playback resume snapshot and `session.json` live.
     pub data_dir: PathBuf,
+    /// API token and media token per server.
+    pub secrets: Arc<dyn SecretStore>,
 }
 
 #[derive(Debug)]
 pub enum Command {
+    /// Announce the saved sign-in ([`Event::SavedLogin`]) and sign in with
+    /// it when both tokens are saved. Sent once at startup.
+    Restore,
+    /// Sign in; an empty token falls back to the one saved for the server.
+    /// On success the server and both tokens are saved.
     Login {
         server_url: String,
         api_token: String,
         media_token: String,
     },
+    /// Sign out and forget both saved tokens (the server stays prefilled).
+    Logout,
     /// Play the loaded track list from `index`.
     PlayTracks {
         index: usize,
@@ -116,12 +130,36 @@ pub struct NowPlaying {
     pub quality: Option<String>,
 }
 
+/// What the sign-in form can reuse.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedLogin {
+    /// Last signed-in server; empty when none.
+    pub server_url: String,
+    pub has_api_token: bool,
+    pub has_media_token: bool,
+    /// Signing in with the saved tokens now (`LoggedIn` / `LoginFailed` follows).
+    pub signing_in: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignOutReason {
+    /// The user signed out.
+    User,
+    /// The server rejected the API token (rotated): enter a new one; the
+    /// media token is kept.
+    Expired,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    SavedLogin(SavedLogin),
     LoginFailed(LoginFailure),
     LoggedIn {
         server_url: String,
     },
+    /// Back to the sign-in form; playback stopped and lists cleared.
+    /// A [`Event::SavedLogin`] with what is left saved follows.
+    SignedOut(SignOutReason),
     AlbumsReset,
     AlbumsAppended {
         items: Vec<AlbumItem>,
@@ -157,15 +195,24 @@ pub enum Event {
 
 /// Messages from spawned tasks back into the loop.
 enum Internal {
-    Reporter(ReporterMsg),
+    Reporter(u64, ReporterMsg),
     LoggedIn(Box<(Client, Capabilities)>),
     LoginFailed(LoginFailure),
+    /// A request with this API token got 401.
+    Unauthorized {
+        api_token: String,
+    },
+    AlbumsPage {
+        generation: u64,
+        items: Vec<AlbumItem>,
+        total: usize,
+    },
     TracksPage {
         generation: u64,
         tracks: Vec<Track>,
         total: usize,
     },
-    AlbumTracks(Result<Vec<Track>, String>),
+    AlbumTracks(Result<Vec<Track>, api::ApiError>),
     Lyrics {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
@@ -262,13 +309,17 @@ pub fn start(
     }
 }
 
-/// Bridges reporter messages into the internal channel.
-fn reporter_channel(internal: &UnboundedSender<Internal>) -> UnboundedSender<ReporterMsg> {
+/// Bridges reporter messages into the internal channel, tagged with the
+/// sign-in generation so a dropped reporter's timers are ignored.
+fn reporter_channel(
+    internal: &UnboundedSender<Internal>,
+    generation: u64,
+) -> UnboundedSender<ReporterMsg> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let internal = internal.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if internal.send(Internal::Reporter(msg)).is_err() {
+            if internal.send(Internal::Reporter(generation, msg)).is_err() {
                 break;
             }
         }
@@ -283,13 +334,116 @@ struct Library {
     tracks: Vec<Track>,
 }
 
+/// Runs a blocking secret-store call off the async workers.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(f).await.ok()
+}
+
+async fn read_token(secrets: &Arc<dyn SecretStore>, server: &str, kind: TokenKind) -> String {
+    let secrets = secrets.clone();
+    let key = token_key(server, kind);
+    match blocking(move || secrets.get(&key)).await {
+        Some(Ok(value)) => value.unwrap_or_default(),
+        Some(Err(e)) => {
+            tracing::warn!("reading saved {kind:?} token: {e}");
+            String::new()
+        }
+        None => String::new(),
+    }
+}
+
+/// Saves (`Some`) or deletes (`None`) a token.
+async fn write_token(
+    secrets: &Arc<dyn SecretStore>,
+    server: &str,
+    kind: TokenKind,
+    value: Option<String>,
+) {
+    let secrets = secrets.clone();
+    let key = token_key(server, kind);
+    let result = blocking(move || match value {
+        Some(value) => secrets.set(&key, &value),
+        None => secrets.delete(&key),
+    })
+    .await;
+    if let Some(Err(e)) = result {
+        tracing::warn!("saving {kind:?} token: {e}");
+    }
+}
+
+/// Signs in; empty tokens come from the store. Saves both tokens on
+/// success; forgets a saved token the server rejected.
+async fn sign_in(
+    secrets: Arc<dyn SecretStore>,
+    sink: Sink,
+    server_url: String,
+    api_token: String,
+    media_token: String,
+) -> Internal {
+    let Ok(server) = api::normalize_base_url(&server_url) else {
+        return Internal::LoginFailed(LoginFailure::InvalidUrl);
+    };
+    let api_saved = api_token.is_empty();
+    let api_token = if api_saved {
+        read_token(&secrets, &server, TokenKind::Api).await
+    } else {
+        api_token
+    };
+    let media_saved = media_token.is_empty();
+    let media_token = if media_saved {
+        read_token(&secrets, &server, TokenKind::Media).await
+    } else {
+        media_token
+    };
+    match api::authenticate(&server, &api_token, &media_token).await {
+        Ok(ok) => {
+            write_token(&secrets, &server, TokenKind::Api, Some(api_token)).await;
+            write_token(&secrets, &server, TokenKind::Media, Some(media_token)).await;
+            Internal::LoggedIn(Box::new(ok))
+        }
+        Err(e) => {
+            let failure = LoginFailure::from(e);
+            let rejected = match failure {
+                LoginFailure::ApiTokenInvalid if api_saved && !api_token.is_empty() => {
+                    Some(TokenKind::Api)
+                }
+                LoginFailure::MediaTokenInvalid if media_saved && !media_token.is_empty() => {
+                    Some(TokenKind::Media)
+                }
+                _ => None,
+            };
+            if let Some(kind) = rejected {
+                write_token(&secrets, &server, kind, None).await;
+                sink(Event::SavedLogin(SavedLogin {
+                    server_url: server,
+                    has_api_token: kind != TokenKind::Api && !api_token.is_empty(),
+                    has_media_token: kind != TokenKind::Media && !media_token.is_empty(),
+                    signing_in: false,
+                }));
+            }
+            Internal::LoginFailed(failure)
+        }
+    }
+}
+
+/// The message to send when `e` means the API token was rejected.
+fn unauthorized(client: &Client, e: &api::ApiError) -> Option<Internal> {
+    e.is_unauthorized().then(|| Internal::Unauthorized {
+        api_token: client.api_token().to_owned(),
+    })
+}
+
 struct Core {
     engine: Arc<dyn Engine>,
     config: CoreConfig,
     sink: Sink,
     internal: UnboundedSender<Internal>,
+    /// `session.json`: the last signed-in server.
+    session_file: FileStorage,
     library: Option<Library>,
     reporter: Option<Reporter>,
+    /// Bumped on every sign-in and sign-out; results of older background
+    /// work (list pages, reporter timers) are dropped.
     list_generation: u64,
     queue: Queue,
     /// Nothing loaded in the engine (before the first play, after the end
@@ -313,11 +467,13 @@ impl Core {
         sink: Sink,
         internal: UnboundedSender<Internal>,
     ) -> Self {
+        let session_file = FileStorage::open(config.data_dir.join("session.json"));
         Self {
             engine,
             config,
             sink,
             internal,
+            session_file,
             library: None,
             reporter: None,
             list_generation: 0,
@@ -362,20 +518,50 @@ impl Core {
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::Restore => {
+                let server = self.session_file.get(SERVER_KEY).unwrap_or_default();
+                if server.is_empty() {
+                    self.emit(Event::SavedLogin(SavedLogin::default()));
+                    return;
+                }
+                let secrets = self.config.secrets.clone();
+                let sink = self.sink.clone();
+                let tx = self.internal.clone();
+                tokio::spawn(async move {
+                    let api = read_token(&secrets, &server, TokenKind::Api).await;
+                    let media = read_token(&secrets, &server, TokenKind::Media).await;
+                    let signing_in = !api.is_empty() && !media.is_empty();
+                    sink(Event::SavedLogin(SavedLogin {
+                        server_url: server.clone(),
+                        has_api_token: !api.is_empty(),
+                        has_media_token: !media.is_empty(),
+                        signing_in,
+                    }));
+                    if signing_in {
+                        // Empty tokens: sign_in reads (and may forget) the saved ones.
+                        let msg =
+                            sign_in(secrets, sink, server, String::new(), String::new()).await;
+                        let _ = tx.send(msg);
+                    }
+                });
+            }
             Command::Login {
                 server_url,
                 api_token,
                 media_token,
             } => {
+                if self.library.is_some() {
+                    return;
+                }
+                let secrets = self.config.secrets.clone();
+                let sink = self.sink.clone();
                 let tx = self.internal.clone();
                 tokio::spawn(async move {
-                    let msg = match api::authenticate(&server_url, &api_token, &media_token).await {
-                        Ok(ok) => Internal::LoggedIn(Box::new(ok)),
-                        Err(e) => Internal::LoginFailed(e.into()),
-                    };
+                    let msg = sign_in(secrets, sink, server_url, api_token, media_token).await;
                     let _ = tx.send(msg);
                 });
             }
+            Command::Logout => self.sign_out(SignOutReason::User),
             Command::PlayTracks { index } => {
                 let Some(library) = &self.library else { return };
                 let tracks = library.tracks.clone();
@@ -393,9 +579,7 @@ impl Core {
                         album_id: Some(album_id),
                         ..TrackListQuery::default()
                     };
-                    let result = fetch_all_tracks(&client, browse, &query)
-                        .await
-                        .map_err(|e| e.to_string());
+                    let result = fetch_all_tracks(&client, browse, &query).await;
                     let _ = tx.send(Internal::AlbumTracks(result));
                 });
             }
@@ -545,6 +729,9 @@ impl Core {
                 Ok(lyrics) => lyrics,
                 Err(e) => {
                     tracing::debug!("lyrics {track_id}: {e}");
+                    if let Some(msg) = unauthorized(&client, &e) {
+                        let _ = tx.send(msg);
+                    }
                     None
                 }
             };
@@ -677,15 +864,40 @@ impl Core {
 
     fn internal(&mut self, msg: Internal) {
         match msg {
-            Internal::Reporter(msg) => {
-                if let Some(r) = self.reporter.as_mut() {
+            Internal::Reporter(generation, msg) => {
+                if generation != self.list_generation {
+                    return;
+                }
+                if let ReporterMsg::Unauthorized(api_token) = msg {
+                    self.internal(Internal::Unauthorized { api_token });
+                } else if let Some(r) = self.reporter.as_mut() {
                     r.handle(msg);
                 }
             }
             Internal::LoginFailed(failure) => self.emit(Event::LoginFailed(failure)),
             Internal::LoggedIn(ok) => {
                 let (client, capabilities) = *ok;
-                self.logged_in(client, capabilities);
+                if self.library.is_none() {
+                    self.logged_in(client, capabilities);
+                }
+            }
+            Internal::Unauthorized { api_token } => {
+                if self
+                    .library
+                    .as_ref()
+                    .is_some_and(|l| l.client.api_token() == api_token)
+                {
+                    self.sign_out(SignOutReason::Expired);
+                }
+            }
+            Internal::AlbumsPage {
+                generation,
+                items,
+                total,
+            } => {
+                if generation == self.list_generation {
+                    self.emit(Event::AlbumsAppended { items, total });
+                }
             }
             Internal::TracksPage {
                 generation,
@@ -707,7 +919,13 @@ impl Core {
                     self.play_current(true);
                 }
             }
-            Internal::AlbumTracks(Err(e)) => self.emit(Event::Notice(format!("加载专辑失败：{e}"))),
+            Internal::AlbumTracks(Err(e)) => {
+                if e.is_unauthorized() {
+                    self.sign_out(SignOutReason::Expired);
+                } else {
+                    self.emit(Event::Notice(format!("加载专辑失败：{e}")));
+                }
+            }
             Internal::Lyrics { track_id, lyrics } => {
                 if self.queue.current().map(|i| i.track.id) != Some(track_id) {
                     return;
@@ -741,9 +959,68 @@ impl Core {
         }
     }
 
+    /// Stops playback, drops the signed-in state and forgets the rejected
+    /// (expired) or all (user) saved tokens.
+    fn sign_out(&mut self, reason: SignOutReason) {
+        let Some(library) = self.library.take() else {
+            return;
+        };
+        self.list_generation += 1;
+        if let Some(mut reporter) = self.reporter.take()
+            && !self.idle
+        {
+            // Ends the server-side session; with an expired token this
+            // is rejected and the server times the session out.
+            reporter.act(|a| a.on_status(AdapterStatus::Stopped));
+        }
+        let _ = self.engine.stop();
+        self.queue = Queue::default();
+        self.idle = true;
+        self.loading = false;
+        self.paused = true;
+        self.position_ms = 0;
+        self.engine_duration_ms = 0;
+        self.lyrics = None;
+        self.active_line = None;
+
+        let server = library.client.base_url().to_owned();
+        let secrets = self.config.secrets.clone();
+        let has_media_token = reason == SignOutReason::Expired;
+        {
+            let server = server.clone();
+            tokio::spawn(async move {
+                write_token(&secrets, &server, TokenKind::Api, None).await;
+                if !has_media_token {
+                    write_token(&secrets, &server, TokenKind::Media, None).await;
+                }
+            });
+        }
+
+        self.emit(Event::NowPlaying(None));
+        self.emit(Event::Paused(true));
+        self.emit_position();
+        self.emit(Event::Lyrics {
+            lines: Vec::new(),
+            synced: false,
+            source: None,
+        });
+        self.emit(Event::AlbumsReset);
+        self.emit(Event::TracksReset);
+        self.emit(Event::SignedOut(reason));
+        self.emit(Event::SavedLogin(SavedLogin {
+            server_url: server,
+            has_api_token: false,
+            has_media_token,
+            signing_in: false,
+        }));
+    }
+
     fn logged_in(&mut self, client: Client, capabilities: Capabilities) {
+        self.session_file.set(SERVER_KEY, client.base_url());
+        self.list_generation += 1;
+        let generation = self.list_generation;
         let storage = FileStorage::open(self.config.data_dir.join("playback.json"));
-        let reporter_tx = reporter_channel(&self.internal);
+        let reporter_tx = reporter_channel(&self.internal, generation);
         self.reporter = Some(Reporter::new(
             client.clone(),
             &capabilities,
@@ -761,12 +1038,9 @@ impl Core {
             server_url: client.base_url().to_owned(),
         });
 
-        self.list_generation += 1;
-        let generation = self.list_generation;
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
 
-        let sink = self.sink.clone();
         let albums_client = client.clone();
         let tx = self.internal.clone();
         tokio::spawn(async move {
@@ -782,14 +1056,20 @@ impl Core {
                         let n = u32::try_from(page.items.len()).unwrap_or(u32::MAX);
                         let total = usize::try_from(page.total).unwrap_or(0);
                         let items = page.items.iter().map(album_item).collect();
-                        sink(Event::AlbumsAppended { items, total });
+                        let msg = Internal::AlbumsPage {
+                            generation,
+                            items,
+                            total,
+                        };
                         offset += n;
-                        if n == 0 || i64::from(offset) >= page.total {
+                        if tx.send(msg).is_err() || n == 0 || i64::from(offset) >= page.total {
                             break;
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Internal::Notice(format!("加载专辑失败：{e}")));
+                        let msg = unauthorized(&albums_client, &e)
+                            .unwrap_or_else(|| Internal::Notice(format!("加载专辑失败：{e}")));
+                        let _ = tx.send(msg);
                         break;
                     }
                 }
@@ -821,7 +1101,9 @@ impl Core {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Internal::Notice(format!("加载曲目失败：{e}")));
+                        let msg = unauthorized(&client, &e)
+                            .unwrap_or_else(|| Internal::Notice(format!("加载曲目失败：{e}")));
+                        let _ = tx.send(msg);
                         break;
                     }
                 }

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use client_core::{CoreConfig, Engine, EngineEvent};
+use client_core::{Command, CoreConfig, Engine, EngineEvent, SecretStore};
 use slint::ComponentHandle;
 
 /// Code generated from `ui/*.slint`.
@@ -29,6 +29,23 @@ fn data_dir() -> PathBuf {
         || std::env::temp_dir().join("032player"),
         |d| d.data_dir().to_path_buf(),
     )
+}
+
+/// Tokens in the system credential store. The store opens lazily on the
+/// first call (off the UI thread); if it is missing, every call fails and
+/// the core logs it, so tokens are simply not remembered.
+struct SystemSecrets(os::secrets::Keyring);
+
+impl SecretStore for SystemSecrets {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.0.set(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.delete(key)
+    }
 }
 
 fn env(name: &str) -> String {
@@ -70,6 +87,7 @@ fn main() -> Result<(), slint::PlatformError> {
         engine.clone(),
         CoreConfig {
             data_dir: data_dir.clone(),
+            secrets: Arc::new(SystemSecrets(os::secrets::Keyring)),
         },
         |event| {
             let _ = slint::invoke_from_event_loop(move || ui::apply(event));
@@ -77,31 +95,23 @@ fn main() -> Result<(), slint::PlatformError> {
     );
     let _ = forward.set(Box::new(core.engine_sender()));
 
-    let server_file = data_dir.join("last_server.txt");
-    ui::install(&window, core.commander(), {
-        let server_file = server_file.clone();
-        move |url| {
-            let _ = std::fs::create_dir_all(server_file.parent().unwrap_or(&server_file));
-            let _ = std::fs::write(&server_file, url);
-        }
-    });
+    ui::install(&window, core.commander());
 
-    // M0: tokens come from the environment (keyring storage is M1).
-    let server = Some(env("M032_SERVER_URL"))
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::fs::read_to_string(&server_file).ok())
-        .unwrap_or_default();
-    window.set_login_server(server.trim().into());
-    window.set_login_api_token(env("M032_API_TOKEN").into());
-    window.set_login_media_token(env("M032_MEDIA_TOKEN").into());
-    if !window.get_login_server().is_empty()
-        && !window.get_login_api_token().is_empty()
-        && !window.get_login_media_token().is_empty()
-    {
+    // Development: a complete set of M032_* variables signs in with them;
+    // otherwise the saved sign-in is restored.
+    let (server, api_token, media_token) = (
+        env("M032_SERVER_URL"),
+        env("M032_API_TOKEN"),
+        env("M032_MEDIA_TOKEN"),
+    );
+    if server.is_empty() || api_token.is_empty() || media_token.is_empty() {
+        core.send(Command::Restore);
+    } else {
+        window.set_login_server(server.into());
         window.invoke_login(
             window.get_login_server(),
-            window.get_login_api_token(),
-            window.get_login_media_token(),
+            api_token.into(),
+            media_token.into(),
         );
     }
     if let Some(msg) = engine_error {

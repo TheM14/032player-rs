@@ -3,7 +3,9 @@
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use client_core::{Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, LoginFailure};
+use client_core::{
+    Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, LoginFailure, MemorySecrets,
+};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -151,7 +153,11 @@ async fn login_play_auto_advance_and_report() {
     let data_dir = std::env::temp_dir().join(format!("032player-core-{}", std::process::id()));
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
-    let core = client_core::start(engine.clone(), CoreConfig { data_dir }, move |e| {
+    let config = CoreConfig {
+        data_dir,
+        secrets: Arc::new(MemorySecrets::default()),
+    };
+    let core = client_core::start(engine.clone(), config, move |e| {
         let _ = tx.lock().unwrap().send(e);
     });
     let events = Events(rx);
@@ -278,6 +284,7 @@ async fn login_failures_are_reported() {
         Arc::new(FakeEngine::default()),
         CoreConfig {
             data_dir: std::env::temp_dir(),
+            secrets: Arc::new(MemorySecrets::default()),
         },
         move |e| {
             let _ = tx.lock().unwrap().send(e);

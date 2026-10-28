@@ -17,6 +17,8 @@ use tokio::task::{AbortHandle, JoinHandle};
 pub(crate) enum ReporterMsg {
     Timer(TimerId),
     Outcome(DeliveryId, TransportOutcome),
+    /// The server rejected this API token (handled by the core loop).
+    Unauthorized(String),
 }
 
 struct TokioScheduler {
@@ -110,6 +112,7 @@ impl Reporter {
         match msg {
             ReporterMsg::Timer(id) => session.on_timer(id),
             ReporterMsg::Outcome(id, outcome) => session.handle_outcome(id, outcome),
+            ReporterMsg::Unauthorized(_) => return,
         }
         self.drive();
     }
@@ -119,8 +122,12 @@ impl Reporter {
             let client = self.client.clone();
             let reply = self.tx.clone();
             let task = tokio::spawn(async move {
+                let mut rejected = false;
                 let outcome = match client.post_playback_event(&tx.body, tx.keepalive).await {
-                    Ok((status, json)) => TransportOutcome::response(status, json),
+                    Ok((status, json)) => {
+                        rejected = status == 401;
+                        TransportOutcome::response(status, json)
+                    }
                     Err(e) => {
                         tracing::debug!("playback event failed: {e}");
                         TransportOutcome::NetworkError
@@ -128,6 +135,10 @@ impl Reporter {
                 };
                 if !tx.keepalive {
                     let _ = reply.send(ReporterMsg::Outcome(tx.id, outcome));
+                    if rejected {
+                        let token = client.api_token().to_owned();
+                        let _ = reply.send(ReporterMsg::Unauthorized(token));
+                    }
                 }
             });
             if tx.keepalive {
