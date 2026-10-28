@@ -34,7 +34,7 @@
 | 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序未做 |
 | 随机、单曲 / 列表循环 | 同上 | M1 | [x] |
 | 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [ ] |
-| 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [ ] |
+| 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [x] |
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [ ] |
 | Auto DJ（如保留） | `features/player/auto-dj/` | 待定 | [ ] |
 | 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [ ] |

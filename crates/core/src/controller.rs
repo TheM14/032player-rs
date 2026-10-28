@@ -29,6 +29,8 @@ const RESTART_THRESHOLD_MS: i64 = 10_000;
 const POSITION_STEP_MS: i64 = 250;
 const PAGE: u32 = api::MAX_PAGE_SIZE;
 
+/// The timed sleep timer counts down in steps of this many ms of playback.
+const SLEEP_TICK_MS: i64 = 1_000;
 /// Settings changes are written this long after the last one (volume drags).
 const SETTINGS_SAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -109,6 +111,8 @@ pub enum Command {
     SetExclusive(bool),
     SetShowLyrics(bool),
     SetCloseToTray(bool),
+    /// Start (`Some`) or cancel the sleep timer.
+    SetSleepTimer(Option<SleepTimer>),
     /// Load artwork `path` for display at `px` physical pixels (long side);
     /// answered with [`Event::Image`] carrying `key`.
     LoadImage {
@@ -116,6 +120,32 @@ pub enum Command {
         path: String,
         px: u32,
     },
+}
+
+/// When playback stops by itself (the Electron sleep timer modes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SleepTimer {
+    /// At the next change of track (the current one ends or is skipped).
+    EndOfTrack,
+    /// After the last track of the current album.
+    EndOfAlbum,
+    /// After this many minutes of playback.
+    Minutes(u32),
+}
+
+/// The running sleep timer, for the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SleepStatus {
+    pub timer: SleepTimer,
+    /// Playback time left (`Minutes` only).
+    pub remaining_ms: Option<i64>,
+}
+
+struct Sleep {
+    timer: SleepTimer,
+    remaining_ms: i64,
+    /// `EndOfAlbum`: the album to finish.
+    album_id: Option<i64>,
 }
 
 /// Tracks to add to the queue.
@@ -266,6 +296,7 @@ pub enum Event {
     QueuePosition(Option<usize>),
     Repeat(Repeat),
     Shuffle(bool),
+    SleepTimer(Option<SleepStatus>),
     Position {
         position_ms: i64,
         duration_ms: i64,
@@ -312,6 +343,7 @@ enum Internal {
     ExclusiveSet(bool, Result<(), String>),
     SaveSettings(u64),
     SaveQueue(u64),
+    SleepTick(u64),
     Lyrics {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
@@ -577,6 +609,9 @@ struct Core {
     queue_revision: u64,
     saved_queue_revision: u64,
     saved_position_step: i64,
+    sleep: Option<Sleep>,
+    /// Bumped per sleep timer start / cancel; stale ticks are ignored.
+    sleep_generation: u64,
 }
 
 impl Core {
@@ -620,6 +655,8 @@ impl Core {
             queue_revision: 0,
             saved_queue_revision: 0,
             saved_position_step: -1,
+            sleep: None,
+            sleep_generation: 0,
         }
     }
 
@@ -875,6 +912,7 @@ impl Core {
             }
             Command::SetShowLyrics(show) => self.update_settings(|s| s.show_lyrics = show),
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
+            Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {
                 if !self.idle {
                     self.stop_playback();
@@ -944,6 +982,14 @@ impl Core {
             None => {}
             Some(Step::Play(pos)) if Some(pos) == self.queue.position() && !self.idle => {
                 self.seek(0);
+            }
+            Some(Step::Play(pos)) if self.stops_at_track_change() => {
+                // "End of track" stops at the next change of track, skips included.
+                self.stop_playback();
+                self.queue.go(pos);
+                self.show_current_stopped();
+                self.emit_queue_position();
+                self.set_sleep_timer(None);
             }
             Some(Step::Play(pos)) => {
                 self.queue.go(pos);
@@ -1078,6 +1124,70 @@ impl Core {
         self.schedule_queue_save();
     }
 
+    fn set_sleep_timer(&mut self, timer: Option<SleepTimer>) {
+        self.sleep_generation += 1;
+        self.sleep = timer.map(|timer| Sleep {
+            timer,
+            remaining_ms: match timer {
+                SleepTimer::Minutes(m) => i64::from(m) * 60_000,
+                _ => 0,
+            },
+            album_id: self.queue.current().map(|i| i.track.album_id),
+        });
+        if let Some(SleepTimer::Minutes(_)) = timer {
+            let generation = self.sleep_generation;
+            let tx = self.internal.clone();
+            tokio::spawn(async move {
+                let mut tick =
+                    tokio::time::interval(Duration::from_millis(SLEEP_TICK_MS.unsigned_abs()));
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    if tx.send(Internal::SleepTick(generation)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        self.emit_sleep();
+        // Whether the engine may continue into the next file changed.
+        self.sync_preload();
+    }
+
+    fn emit_sleep(&self) {
+        let status = self.sleep.as_ref().map(|s| SleepStatus {
+            timer: s.timer,
+            remaining_ms: matches!(s.timer, SleepTimer::Minutes(_)).then_some(s.remaining_ms),
+        });
+        self.emit(Event::SleepTimer(status));
+    }
+
+    fn stops_at_track_change(&self) -> bool {
+        self.sleep
+            .as_ref()
+            .is_some_and(|s| s.timer == SleepTimer::EndOfTrack)
+    }
+
+    /// Playback stops when the current file ends (sleep timer).
+    fn pause_at_end(&self) -> bool {
+        let Some(sleep) = &self.sleep else {
+            return false;
+        };
+        match sleep.timer {
+            SleepTimer::EndOfTrack => true,
+            SleepTimer::EndOfAlbum => {
+                let next_album = match self.queue.auto_next(self.settings.repeat) {
+                    Some(Step::Play(pos)) => self.queue.at(pos).map(|i| i.track.album_id),
+                    _ => None,
+                };
+                // Last track of the album: the next one (if any) is elsewhere.
+                // Repeat-one replays the same track and so never ends the album.
+                self.settings.repeat != Repeat::One && next_album != sleep.album_id
+            }
+            SleepTimer::Minutes(_) => false,
+        }
+    }
+
     fn schedule_queue_save(&mut self) {
         self.queue_revision += 1;
         let revision = self.queue_revision;
@@ -1157,6 +1267,8 @@ impl Core {
         }
         let Some(library) = &self.library else { return };
         let next = match self.queue.auto_next(self.settings.repeat) {
+            // The sleep timer stops after this file: the engine must not go on.
+            _ if self.pause_at_end() => None,
             Some(Step::Play(pos)) => self.queue.at(pos),
             _ => None,
         };
@@ -1214,6 +1326,14 @@ impl Core {
         self.reported_step = self.position_ms / POSITION_STEP_MS;
         self.engine_duration_ms = 0;
         let position_ms = self.position_ms;
+
+        if let Some(sleep) = &self.sleep
+            && sleep.timer == SleepTimer::EndOfAlbum
+            && sleep.album_id != Some(item.track.album_id)
+        {
+            // Moved on to another album: the timer no longer applies.
+            self.set_sleep_timer(None);
+        }
 
         // The same entry again without a user action: a repeat-one pass.
         let repeated = !user_navigated && self.started_uid == Some(item.uid);
@@ -1387,6 +1507,14 @@ impl Core {
                         return;
                     }
                     match self.queue.auto_next(self.settings.repeat) {
+                        Some(Step::Play(pos)) if self.pause_at_end() => {
+                            // Sleep timer: on to the next entry, stopped.
+                            self.stop_playback();
+                            self.queue.go(pos);
+                            self.show_current_stopped();
+                            self.emit_queue_position();
+                            self.set_sleep_timer(None);
+                        }
                         Some(Step::Play(pos)) => {
                             let gapless = self.preloaded.is_some()
                                 && self.queue.at(pos).map(|i| i.uid) == self.preloaded;
@@ -1539,6 +1667,27 @@ impl Core {
                 }
                 self.emit(Event::Exclusive(self.settings.exclusive));
             }
+            Internal::SleepTick(generation) => {
+                if generation != self.sleep_generation {
+                    return;
+                }
+                let playing = !self.idle && !self.paused;
+                let Some(sleep) = self.sleep.as_mut() else {
+                    return;
+                };
+                if !playing {
+                    return;
+                }
+                sleep.remaining_ms -= SLEEP_TICK_MS;
+                if sleep.remaining_ms > 0 {
+                    self.emit_sleep();
+                    return;
+                }
+                self.set_sleep_timer(None);
+                if let Err(e) = self.engine.set_paused(true) {
+                    self.emit(Event::Notice(e));
+                }
+            }
             Internal::SaveQueue(revision) => {
                 if revision != self.queue_revision {
                     return;
@@ -1580,6 +1729,8 @@ impl Core {
         self.started_uid = None;
         self.resume_at = None;
         self.pending_seek_ms = None;
+        self.sleep = None;
+        self.sleep_generation += 1;
         self.position_ms = 0;
         self.engine_duration_ms = 0;
         self.lyrics = None;
@@ -1612,6 +1763,7 @@ impl Core {
             items: Vec::new(),
             current: None,
         });
+        self.emit(Event::SleepTimer(None));
         self.emit(Event::SignedOut(reason));
         self.emit(Event::SavedLogin(SavedLogin {
             server_url: server,

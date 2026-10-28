@@ -59,7 +59,7 @@ export component ValueBar inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep }
 
 // Vector icons (no icon font dependency). Transport icons are filled,
 // the others are drawn with a stroke in the same color.
@@ -67,7 +67,8 @@ export component Icon inherits Path {
     in property <IconKind> kind;
     in property <color> color: Theme.text;
     property <bool> stroked: root.kind == IconKind.shuffle || root.kind == IconKind.repeat
-        || root.kind == IconKind.repeat-one || root.kind == IconKind.queue || root.kind == IconKind.close;
+        || root.kind == IconKind.repeat-one || root.kind == IconKind.queue || root.kind == IconKind.close
+        || root.kind == IconKind.sleep;
     viewbox-width: 24;
     viewbox-height: 24;
     fill: root.stroked ? transparent : root.color;
@@ -82,6 +83,7 @@ export component Icon inherits Path {
         : root.kind == IconKind.repeat-one ? "M 4 12 L 4 10 C 4 8 5 7 7 7 L 20 7 M 17 4 L 20 7 L 17 10 M 20 12 L 20 14 C 20 16 19 17 17 17 L 4 17 M 7 14 L 4 17 L 7 20"
         : root.kind == IconKind.queue ? "M 4 6 L 17 6 M 4 11 L 17 11 M 4 16 L 11 16 M 15 14 L 15 20 L 20 17 Z"
         : root.kind == IconKind.close ? "M 6 6 L 18 18 M 18 6 L 6 18"
+        : root.kind == IconKind.sleep ? "M 19 14.5 A 7.5 7.5 0 1 1 9.5 5 A 6 6 0 0 0 19 14.5 Z"
         : "M 4 6 L 20 6 L 20 8 L 4 8 Z M 4 11 L 16 11 L 16 13 L 4 13 Z M 4 16 L 18 16 L 18 18 L 4 18 Z";
 }
 

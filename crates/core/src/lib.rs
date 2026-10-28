@@ -13,7 +13,8 @@ mod storage;
 
 pub use controller::{
     AlbumItem, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, NowPlaying,
-    QueueEntry, QueuePosition, SavedLogin, SignOutReason, TrackItem, TrackSource, start,
+    QueueEntry, QueuePosition, SavedLogin, SignOutReason, SleepStatus, SleepTimer, TrackItem,
+    TrackSource, start,
 };
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, decode, server_size};

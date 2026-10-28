@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use client_core::{
     AudioDevice, Command, Commander, Event, LoginFailure, QueuePosition, Repeat, Rgba, Settings,
-    SignOutReason, TrackSource, format,
+    SignOutReason, SleepTimer, TrackSource, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -190,6 +190,16 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         if let Ok(uid) = u64::try_from(uid) {
             c.send(Command::RemoveFromQueue(uid));
         }
+    });
+    let c = commander.clone();
+    window.on_set_sleep(move |mode, minutes| {
+        let timer = match mode {
+            1 => Some(SleepTimer::EndOfTrack),
+            2 => Some(SleepTimer::EndOfAlbum),
+            3 => u32::try_from(minutes).ok().map(SleepTimer::Minutes),
+            _ => None,
+        };
+        c.send(Command::SetSleepTimer(timer));
     });
     let c = commander.clone();
     window.on_clear_queue(move || c.send(Command::ClearQueue));
@@ -435,6 +445,20 @@ pub fn apply(event: Event) {
         Event::QueuePosition(current) => w.set_queue_current(row_index(current)),
         Event::Repeat(repeat) => w.set_repeat(repeat_index(repeat)),
         Event::Shuffle(shuffle) => w.set_shuffle(shuffle),
+        Event::SleepTimer(status) => {
+            w.set_sleep_active(status.is_some());
+            let label = match status {
+                None => String::new(),
+                Some(s) => match (s.timer, s.remaining_ms) {
+                    (SleepTimer::EndOfTrack, _) => "本曲".into(),
+                    (SleepTimer::EndOfAlbum, _) => "本专辑".into(),
+                    (SleepTimer::Minutes(_), remaining) => {
+                        format::duration(remaining.unwrap_or(0).max(0))
+                    }
+                },
+            };
+            w.set_sleep_label(label.into());
+        }
         Event::AudioDevices(devices) => ui.set_devices(w, devices),
         Event::AudioDevice(device) => {
             *ui.selected_device.borrow_mut() = device;

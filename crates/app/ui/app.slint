@@ -86,6 +86,9 @@ export component AppWindow inherits Window {
     callback clear-queue();
     callback toggle-shuffle();
     callback cycle-repeat();
+    in property <bool> sleep-active;
+    in property <string> sleep-label;
+    callback set-sleep(int, int);
 
     // Now playing.
     in property <bool> has-track;
@@ -303,6 +306,11 @@ export component AppWindow inherits Window {
             queue-open: root.show-queue;
             shuffle: root.shuffle;
             repeat: root.repeat;
+            sleep-active: root.sleep-active;
+            sleep-label: root.sleep-label;
+            set-sleep(mode, minutes) => {
+                root.set-sleep(mode, minutes);
+            }
             toggle-queue => {
                 root.show-queue = !root.show-queue;
             }

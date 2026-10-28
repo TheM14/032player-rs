@@ -601,6 +601,11 @@ export component PlayerBar inherits Rectangle {
     in property <bool> shuffle;
     // 0 off, 1 all, 2 one.
     in property <int> repeat;
+    in property <bool> sleep-active;
+    // Remaining time or the mode, next to the button.
+    in property <string> sleep-label;
+    // (0 off, 1 end of track, 2 end of album, 3 minutes; minutes)
+    callback set-sleep(int, int);
     callback toggle-pause();
     callback toggle-queue();
     callback toggle-shuffle();
@@ -751,11 +756,28 @@ export component PlayerBar inherits Rectangle {
             }
         }
 
-        // Volume + lyrics.
+        // Sleep timer, queue, lyrics, volume.
         HorizontalLayout {
             width: 30%;
             alignment: end;
             spacing: 12px;
+            HorizontalLayout {
+                spacing: 2px;
+                sleep-button := IconButton {
+                    kind: IconKind.sleep;
+                    active: root.sleep-active;
+                    y: (parent.height - self.height) / 2;
+                    clicked => {
+                        sleep-menu.show();
+                    }
+                }
+                if root.sleep-active: Text {
+                    text: root.sleep-label;
+                    color: Theme.accent;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
             IconButton {
                 kind: IconKind.queue;
                 active: root.queue-open;
@@ -781,6 +803,61 @@ export component PlayerBar inherits Rectangle {
                 }
                 committed(v) => {
                     root.volume-changed(v * 100);
+                }
+            }
+        }
+    }
+
+    sleep-menu := PopupWindow {
+        x: root.width - 380px;
+        y: -self.height - 8px;
+        width: 180px;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                Text {
+                    text: "睡眠定时";
+                    color: Theme.text-faint;
+                    font-size: 11px;
+                    height: 24px;
+                    vertical-alignment: center;
+                    x: 10px;
+                }
+                for option in [
+                    { label: "本曲结束后", mode: 1, minutes: 0 },
+                    { label: "本专辑结束后", mode: 2, minutes: 0 },
+                    { label: "5 分钟", mode: 3, minutes: 5 },
+                    { label: "10 分钟", mode: 3, minutes: 10 },
+                    { label: "15 分钟", mode: 3, minutes: 15 },
+                    { label: "30 分钟", mode: 3, minutes: 30 },
+                    { label: "45 分钟", mode: 3, minutes: 45 },
+                    { label: "1 小时", mode: 3, minutes: 60 },
+                    { label: "2 小时", mode: 3, minutes: 120 },
+                    { label: "3 小时", mode: 3, minutes: 180 },
+                    { label: "4 小时", mode: 3, minutes: 240 },
+                    { label: "关闭定时", mode: 0, minutes: 0 },
+                ]: Rectangle {
+                    height: 30px;
+                    border-radius: 4px;
+                    visible: option.mode != 0 || root.sleep-active;
+                    background: item-area.has-hover ? Theme.surface-hover : transparent;
+                    Text {
+                        x: 10px;
+                        text: option.label;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                    item-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.set-sleep(option.mode, option.minutes);
+                        }
+                    }
                 }
             }
         }

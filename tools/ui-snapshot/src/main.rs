@@ -283,6 +283,8 @@ fn main() {
     set(&inst, "show-queue", Value::Bool(true));
     set(&inst, "shuffle", Value::Bool(true));
     set(&inst, "repeat", Value::Number(2.0));
+    set(&inst, "sleep-active", Value::Bool(true));
+    set(&inst, "sleep-label", s("29:41"));
     render(&window, size, &format!("{out}/queue.png"));
     set(&inst, "show-queue", Value::Bool(false));
 

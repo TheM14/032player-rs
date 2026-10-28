@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use client_core::{
     AudioDevice, Command, CoreConfig, CoreHandle, Engine, EngineEnd, EngineEvent, Event,
-    MemorySecrets, QueuePosition, Repeat, Settings, TrackSource,
+    MemorySecrets, QueuePosition, Repeat, Settings, SleepTimer, TrackSource,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -73,6 +73,7 @@ impl Engine for FakeEngine {
 fn track(id: i64) -> Value {
     json!({
         "id": id, "title": format!("曲{id}"), "artist": "歌手", "album": "专辑",
+        "albumId": if id <= 2 { 10 } else { 20 },
         "durationMillis": 240000, "streamUrl": format!("/api/v1/tracks/{id}/stream"),
     })
 }
@@ -124,7 +125,11 @@ struct Harness {
 
 impl Harness {
     async fn start(server: &MockServer) -> Self {
-        let data_dir = std::env::temp_dir().join(format!("032player-queue-{}", std::process::id()));
+        // Tests run in parallel: one directory each.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let data_dir =
+            std::env::temp_dir().join(format!("032player-queue-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
         let h = Self::start_in(server, data_dir).await;
         h.wait_tracks();
@@ -409,4 +414,52 @@ async fn restart_restores_the_queue_and_resumes_the_chain() {
     assert_eq!(resumed["positionMillis"], 30_000);
     h.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sleep_timer_stops_at_the_end_of_the_track_or_album() {
+    let server = server().await;
+    let h = Harness::start(&server).await;
+
+    h.send(Command::PlayTracks { index: 0 });
+    h.wait_playing(1);
+    h.loaded(1);
+    assert_eq!(h.calls().await, ["load 1", "clear", "append 2"]);
+
+    // End of track: the preload goes, so the engine stops after this file.
+    h.send(Command::SetSleepTimer(Some(SleepTimer::EndOfTrack)));
+    h.wait("timer", |e| matches!(e, Event::SleepTimer(Some(_))));
+    assert_eq!(h.calls().await, ["clear"]);
+    h.eof();
+    h.wait("stopped", |e| *e == Event::Paused(true));
+    h.wait_playing(2);
+    h.wait("timer done", |e| *e == Event::SleepTimer(None));
+    assert_eq!(h.calls().await, ["stop"]);
+
+    // End of album: track 2 is the last of album 10, track 3 is album 20.
+    h.send(Command::TogglePause);
+    h.wait("playing", |e| *e == Event::Paused(false));
+    h.loaded(2);
+    assert_eq!(h.calls().await, ["load 2", "clear", "append 3"]);
+    h.send(Command::SetSleepTimer(Some(SleepTimer::EndOfAlbum)));
+    h.wait("timer", |e| matches!(e, Event::SleepTimer(Some(_))));
+    assert_eq!(h.calls().await, ["clear"]);
+    h.eof();
+    h.wait("stopped", |e| *e == Event::Paused(true));
+    h.wait_playing(3);
+    h.wait("timer done", |e| *e == Event::SleepTimer(None));
+
+    // Cancelling brings the preload back.
+    h.send(Command::TogglePause);
+    h.wait("playing", |e| *e == Event::Paused(false));
+    h.loaded(3);
+    h.calls().await;
+    h.send(Command::SetSleepTimer(Some(SleepTimer::Minutes(30))));
+    h.wait(
+        "timed",
+        |e| matches!(e, Event::SleepTimer(Some(s)) if s.remaining_ms == Some(1_800_000)),
+    );
+    h.send(Command::SetSleepTimer(None));
+    h.wait("cancelled", |e| *e == Event::SleepTimer(None));
+    h.shutdown().await;
 }
