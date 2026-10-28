@@ -1,5 +1,8 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! 032player: native desktop client for 032 Music Server.
+//!
+//! The console stays visible in every build during M0 so logs (startup
+//! timing, errors) can be collected; packaged builds hide it in M4 with
+//! `windows_subsystem = "windows"`.
 
 mod albums;
 mod engine;

@@ -48,8 +48,7 @@
 - [x] 输出设备列表 / 切换，独占模式切换（回读校验 + 回滚，对照 `audio-exclusive.ts`）
 - [x] `build.rs`：Windows 自动下载固定版本 mpv-dev（SourceForge 永久镜像，sha256 校验），生成 `mpv.lib`，复制 `libmpv-2.dll`；`MPV_LIB_DIR` / `MPV_DEV_URL` 可覆盖
 - [x] 容器内 `cargo check --target x86_64-pc-windows-msvc` 验证下载 / 解压 / 缓存
-- [ ] MSVC 链接 `mpv.lib`（由 `libmpv.dll.a` 复制而来）可用 **[Win]**
-  （CI 上链接器已找到 `mpv.lib` 并链接通过，但目前没有代码实际调用 mpv 函数，还不能算完全验证）
+- [x] MSVC 链接 `mpv.lib`（由 `libmpv.dll.a` 复制而来）可用（CI 构建 app 通过）
 - [ ] 实际播放、seek、独占模式切换 **[Win]**
 
 ### 6. core + app
