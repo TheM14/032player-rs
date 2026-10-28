@@ -49,10 +49,18 @@
 ### 线程模型
 
 - UI 线程只做渲染和事件分发。
-- `core` 在 tokio 运行时上跑，持有全部状态；UI 通过命令通道发请求，`core` 通过
-  `slint::invoke_from_event_loop` 推送状态更新。
-- 播放进度：`player` 观察 mpv 的 `time-pos`，`core` 节流后只更新进度相关的少数属性，
+- `core` 在自己线程上的 tokio 运行时里跑一个循环，持有全部状态：
+  UI 发 `Command`（`Commander` 可克隆），引擎信号以 `EngineEvent` 进来，后台任务结果走内部通道；
+  状态变化以 `Event` 推给 sink，`app` 在 sink 里用 `slint::invoke_from_event_loop` 切回 UI 线程。
+  `core` 不依赖 Slint，UI 侧状态放在 UI 线程的 thread_local 里。
+- 播放进度：`player` 观察 mpv 的 `time-pos`，`core` 按 250 ms 步长节流后只更新进度相关的少数属性，
   不触发整页重建（这正是 Electron 版的痛点之一）。
+- 切歌时序：`loadfile replace` 之后、新文件 `FileLoaded` 之前，上一首遗留的进度 / 时长 / EOF 一律丢弃。
+- 列表：登录后后台分页（500 / 页）全量拉取专辑和曲目，逐页追加到模型；ListView 只实例化可见行。
+- 封面：专辑网格是自定义 Model，`row_data` 只对可见行调用，在那里才发封面请求；
+  请求尺寸 = 卡片逻辑尺寸 x 缩放比例，向上取最接近的服务端尺寸（256 / 512 / 768 / ...）；
+  `core` 缓存压缩字节（LRU 400），在 blocking 线程解码并缩放到显示尺寸，UI 只做 `SharedPixelBuffer` 拷贝；
+  UI 侧最多保留 96 张解码封面，超出丢弃最早的，滚回来再从字节缓存解码。
 
 ### api
 

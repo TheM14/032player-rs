@@ -27,7 +27,18 @@ cargo run -p app                                         # 需要 libmpv
 
 Windows 首次构建会自动下载 libmpv（约 30 MB，sha256 校验，缓存在 `target/libmpv/`）。
 已有 libmpv 时设置 `MPV_LIB_DIR` 指向含 `mpv.lib` / `libmpv-2.dll` 的目录即可跳过下载。
-Linux 需要系统 libmpv（如 `libmpv-dev`）。
+Linux 需要系统 libmpv 和 fontconfig 开发包（如 `libmpv-dev`、`libfontconfig1-dev`）。
+
+M0 阶段 Token 还没有持久化（M1 存系统凭据库），可以用环境变量预填登录页，三项都有时自动登录：
+
+```powershell
+$env:M032_SERVER_URL = "https://music.example.com"
+$env:M032_API_TOKEN = "..."
+$env:M032_MEDIA_TOKEN = "..."
+cargo run -p app --release
+```
+
+日志级别用 `RUST_LOG` 控制（默认 `info`）。
 
 ## 许可
 

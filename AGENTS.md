@@ -31,7 +31,11 @@
 - 代理所在容器：aarch64 Linux，无 sudo，无 libmpv，无显示器。可用 rustup 装到 `~`。
   - 工具链已装在 `~/.cargo`，新 shell 先 `source ~/.cargo/env`。
   - 能做：`cargo check`、`cargo test`（无界面、无音频的 crate）、`cargo clippy`。
-  - 已装 `x86_64-pc-windows-msvc` 标准库：`cargo check --target x86_64-pc-windows-msvc` 可检查 Windows 专属代码（不链接）。
+  - 已装 `x86_64-pc-windows-msvc` 标准库：`cargo check -p player --target x86_64-pc-windows-msvc` 可检查 Windows 专属代码（不链接）。
+    依赖 reqwest 的 crate 做不了（aws-lc 需要 MSVC 编译 C），交给 CI 的 Windows job。
+  - fontconfig / freetype 开发文件从 deb 解压在 `~/sysroot`，`~/.cargo/config.toml` 的 `[env]` 已设好 `PKG_CONFIG_*`，Slint 可编译链接。
+  - 界面检查：`cargo run --manifest-path tools/ui-snapshot/Cargo.toml -- /tmp` 用软件渲染器把
+    `crates/app/ui/app.slint` 填假数据渲染成 PNG（登录页、专辑、曲目），再用 read 工具查看。改了 `.slint` 后要同步更新假数据。
   - 不能做：运行 UI、实际播放。`player` crate 只做编译检查（`cargo check` 不链接 libmpv）。
 - 用户的主力平台是 Windows，UI 和播放在用户机器上 `cargo run` 验证，结果（截图 / 日志）由用户回传。
 - 无界面 crate 必须能在没有 libmpv 和显示环境的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app`；
