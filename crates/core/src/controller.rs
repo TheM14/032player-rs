@@ -2,17 +2,23 @@
 //! from the UI and [`EngineEvent`]s from the audio engine, and pushes
 //! [`Event`]s to a sink. The UI never blocks on the network.
 
+mod library;
+
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::{
-    AlbumListQuery, AlbumSort, AuthError, Capabilities, Client, Feature, SortOrder, Track,
-    TrackListQuery, TrackSort,
+    AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, RandomSeeds, Track, Transcode,
 };
 use session::{AdapterStatus, AdapterTrack};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
+use crate::browse::{
+    AlbumFilter, AlbumItem, ArtistFilter, ArtistItem, DetailView, PlaylistFilter, PlaylistItem,
+    TrackFilter, TrackItem, TrackList,
+};
 use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
@@ -76,13 +82,14 @@ pub enum Command {
     },
     /// Sign out and forget both saved tokens (the server stays prefilled).
     Logout,
-    /// Play the loaded track list from `index`.
-    PlayTracks {
-        index: usize,
-    },
-    PlayAlbum {
-        album_id: i64,
-    },
+    /// Replace the queue with `source` and play it (a list row plays the
+    /// whole list from that row).
+    Play(TrackSource),
+    /// Like `Play`, in random order (the shuffle mode is not changed).
+    ShufflePlay(TrackSource),
+    /// Play random tracks of the library ("随机播放全部"), within the
+    /// year range of the tracks page.
+    ShuffleAll,
     /// Insert tracks after the current entry or at the end of the queue.
     Enqueue {
         source: TrackSource,
@@ -90,6 +97,73 @@ pub enum Command {
     },
     PlayQueueItem(u64),
     RemoveFromQueue(u64),
+    /// Drag and drop in the queue: move to this play-order position.
+    MoveQueueItem {
+        uid: u64,
+        to: usize,
+    },
+    /// Reload the albums page (`favorites`: the favorites page) with a filter.
+    QueryAlbums {
+        favorites: bool,
+        filter: AlbumFilter,
+    },
+    QueryTracks {
+        favorites: bool,
+        filter: TrackFilter,
+    },
+    QueryArtists {
+        favorites: bool,
+        filter: ArtistFilter,
+    },
+    QueryPlaylists(PlaylistFilter),
+    /// Answered with [`Event::Detail`].
+    OpenAlbum(i64),
+    OpenArtist(i64),
+    OpenPlaylist(i64),
+    /// Tracks similar to a list row.
+    OpenSimilar(TrackList, usize),
+    /// Answered with [`Event::SearchResults`].
+    Search(String),
+    /// Answered with [`Event::Favorite`].
+    SetFavorite {
+        kind: FavoriteKind,
+        id: i64,
+        favorite: bool,
+    },
+    /// New playlist, optionally with tracks.
+    CreatePlaylist {
+        name: String,
+        description: String,
+        tracks: Option<TrackSource>,
+    },
+    UpdatePlaylist {
+        id: i64,
+        name: String,
+        description: String,
+    },
+    DeletePlaylist(i64),
+    AddToPlaylist {
+        playlist_id: i64,
+        source: TrackSource,
+    },
+    /// Remove the row `index` of the open playlist.
+    RemoveFromPlaylist {
+        playlist_id: i64,
+        index: usize,
+    },
+    /// Move a row of the open playlist.
+    MovePlaylistItem {
+        playlist_id: i64,
+        from: usize,
+        to: usize,
+    },
+    /// Upload (`Some`, image file bytes) or reset the playlist artwork.
+    SetPlaylistArtwork {
+        playlist_id: i64,
+        image: Option<Vec<u8>>,
+    },
+    /// Stream a transcode (`None`: the original file).
+    SetTranscode(Option<Transcode>),
     /// Stops playback and empties the queue.
     ClearQueue,
     SetRepeat(Repeat),
@@ -148,12 +222,17 @@ struct Sleep {
     album_id: Option<i64>,
 }
 
-/// Tracks to add to the queue.
+/// Tracks to play, queue or add to a playlist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackSource {
-    /// One row of the loaded track list.
-    Library(usize),
+    /// One row of a track list (`Play`: the whole list from that row).
+    Track(TrackList, usize),
+    /// A whole track list.
+    List(TrackList),
     Album(i64),
+    /// Every track of the artist in album order.
+    Artist(i64),
+    Playlist(i64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,17 +242,30 @@ pub enum QueuePosition {
     Last,
 }
 
-/// What to do with fetched album tracks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Enqueue {
-    Play,
+/// What to do with fetched tracks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Intent {
+    /// Replace the queue and play from this index.
+    Play {
+        start: usize,
+        shuffle: bool,
+    },
     At(QueuePosition),
+    AddToPlaylist(i64),
+    NewPlaylist {
+        name: String,
+        description: String,
+    },
 }
 
-impl From<QueuePosition> for Enqueue {
-    fn from(at: QueuePosition) -> Self {
-        Self::At(at)
-    }
+/// Server abilities the UI adapts to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerFeatures {
+    /// `/browse/*`: sort order, random, year ranges.
+    pub browse: bool,
+    pub playlist_artwork: bool,
+    /// Transcode formats the server offers (`mp3`, `ogg`, `flac`).
+    pub transcode: Vec<String>,
 }
 
 /// A queue row for the UI.
@@ -211,29 +303,15 @@ impl From<AuthError> for LoginFailure {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct AlbumItem {
-    pub id: i64,
-    pub title: String,
-    pub artist: String,
-    pub year: i32,
-    pub artwork: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct TrackItem {
-    pub id: i64,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub duration: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct NowPlaying {
     pub track_id: i64,
     pub title: String,
     pub artist: String,
+    /// 0: unknown.
+    pub artist_id: i64,
     pub album: String,
+    pub album_id: i64,
+    pub favorite: bool,
     pub artwork: String,
     /// Absolute artwork URL (with the media token) for the system media
     /// controls.
@@ -268,6 +346,7 @@ pub enum Event {
     LoginFailed(LoginFailure),
     LoggedIn {
         server_url: String,
+        features: ServerFeatures,
     },
     /// Back to the sign-in form; playback stopped and lists cleared.
     /// A [`Event::SavedLogin`] with what is left saved follows.
@@ -281,6 +360,37 @@ pub enum Event {
     TracksAppended {
         items: Vec<TrackItem>,
         total: usize,
+    },
+    ArtistsReset,
+    ArtistsAppended {
+        items: Vec<ArtistItem>,
+        total: usize,
+    },
+    FavoriteAlbums(Vec<AlbumItem>),
+    FavoriteTracks(Vec<TrackItem>),
+    FavoriteArtists(Vec<ArtistItem>),
+    /// The playlists page (searched and sorted).
+    Playlists(Vec<PlaylistItem>),
+    /// Every playlist by name, for "add to playlist" menus.
+    PlaylistChoices(Vec<PlaylistItem>),
+    /// The playlist is gone (leave its page).
+    PlaylistDeleted(i64),
+    /// The opened (or refreshed) detail page; `tracks` is [`TrackList::Detail`].
+    Detail {
+        view: DetailView,
+        tracks: Vec<TrackItem>,
+    },
+    SearchResults {
+        query: String,
+        artists: Vec<ArtistItem>,
+        albums: Vec<AlbumItem>,
+        tracks: Vec<TrackItem>,
+    },
+    /// A favorite flag changed on the server.
+    Favorite {
+        kind: FavoriteKind,
+        id: i64,
+        favorite: bool,
     },
     Image {
         key: String,
@@ -328,17 +438,26 @@ enum Internal {
     Unauthorized {
         api_token: String,
     },
-    AlbumsPage {
-        generation: u64,
-        items: Vec<AlbumItem>,
-        total: usize,
+    /// A list or page result tagged with its request (`seq`); only the
+    /// latest request of each [`Target`] is applied.
+    Loaded(Target, u64, Loaded),
+    /// A request failed; `what` prefixes the notice.
+    Failed {
+        api_token: String,
+        what: &'static str,
+        error: api::ApiError,
     },
-    TracksPage {
-        generation: u64,
-        tracks: Vec<Track>,
-        total: usize,
+    Fetched(Result<Vec<Track>, api::ApiError>, Intent),
+    FavoriteSet {
+        kind: FavoriteKind,
+        id: i64,
+        favorite: bool,
     },
-    AlbumTracks(Result<Vec<Track>, api::ApiError>, Enqueue),
+    /// A playlist edit finished: reload the playlists (and the open one).
+    PlaylistsChanged {
+        notice: Option<String>,
+        deleted: Option<i64>,
+    },
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
     SaveSettings(u64),
@@ -348,7 +467,37 @@ enum Internal {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
     },
-    Notice(String),
+}
+
+/// What a background request fills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Target {
+    Albums,
+    Tracks,
+    Artists,
+    FavoriteAlbums,
+    FavoriteTracks,
+    FavoriteArtists,
+    Playlists,
+    Detail,
+    Search,
+}
+
+enum Loaded {
+    AlbumsPage(Vec<AlbumItem>, usize),
+    TracksPage(Vec<Track>, usize),
+    ArtistsPage(Vec<ArtistItem>, usize),
+    FavoriteAlbums(Vec<AlbumItem>),
+    FavoriteTracks(Vec<Track>),
+    FavoriteArtists(Vec<ArtistItem>),
+    Playlists(Vec<Playlist>),
+    Detail(DetailView, Vec<Track>),
+    Search {
+        query: String,
+        artists: Vec<ArtistItem>,
+        albums: Vec<AlbumItem>,
+        tracks: Vec<Track>,
+    },
 }
 
 /// Handle to the running core. Dropping it does not stop the core; call
@@ -462,7 +611,28 @@ struct Library {
     client: Client,
     capabilities: Capabilities,
     images: Arc<Images>,
-    tracks: Vec<Track>,
+    /// Rows of the playable track lists.
+    lists: HashMap<TrackList, Vec<Track>>,
+    seeds: Arc<Mutex<RandomSeeds>>,
+}
+
+impl Library {
+    fn list(&self, list: TrackList) -> &[Track] {
+        self.lists.get(&list).map_or(&[], Vec::as_slice)
+    }
+
+    fn browse(&self) -> bool {
+        self.capabilities.has(Feature::Browse)
+    }
+}
+
+/// The open detail page, refreshed after edits and favorites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DetailKey {
+    Album(i64),
+    Artist(i64),
+    Playlist(i64),
+    Similar(i64),
 }
 
 /// Runs a blocking secret-store call off the async workers.
@@ -612,6 +782,20 @@ struct Core {
     sleep: Option<Sleep>,
     /// Bumped per sleep timer start / cancel; stale ticks are ignored.
     sleep_generation: u64,
+    /// Request counter; `latest` holds the newest request per target.
+    seq: u64,
+    latest: HashMap<Target, u64>,
+    /// Filters of the loaded lists (reloaded after favorite changes).
+    track_filter: TrackFilter,
+    favorite_albums: Option<AlbumFilter>,
+    favorite_tracks: Option<TrackFilter>,
+    favorite_artists: Option<ArtistFilter>,
+    playlist_filter: PlaylistFilter,
+    playlists: Vec<Playlist>,
+    open_detail: Option<DetailKey>,
+    /// Lossy transcodes cannot seek by range: the stream starts here and
+    /// engine positions are relative to it.
+    stream_offset_ms: i64,
 }
 
 impl Core {
@@ -657,6 +841,16 @@ impl Core {
             saved_position_step: -1,
             sleep: None,
             sleep_generation: 0,
+            seq: 0,
+            latest: HashMap::new(),
+            track_filter: TrackFilter::default(),
+            favorite_albums: None,
+            favorite_tracks: None,
+            favorite_artists: None,
+            playlist_filter: PlaylistFilter::default(),
+            playlists: Vec::new(),
+            open_detail: None,
+            stream_offset_ms: 0,
         }
     }
 
@@ -674,7 +868,10 @@ impl Core {
             track_id: track.id,
             title: track.title.clone(),
             artist: track.artist.clone(),
+            artist_id: crate::browse::track_item(track).artist_id,
             album: track.album.clone(),
+            album_id: track.album_id,
+            favorite: track.is_favorite,
             artwork: track.artwork_url.clone(),
             artwork_url,
             duration_ms: track.duration_millis,
@@ -801,26 +998,94 @@ impl Core {
                 });
             }
             Command::Logout => self.sign_out(SignOutReason::User),
-            Command::PlayTracks { index } => {
-                let Some(library) = &self.library else { return };
-                let tracks = library.tracks.clone();
-                if self.queue.replace(tracks, index).is_some() {
-                    self.play_current(true);
-                }
-                self.queue_changed();
+            Command::Play(source) => {
+                let start = match source {
+                    TrackSource::Track(_, index) => index,
+                    _ => 0,
+                };
+                // A row plays its whole list from there.
+                let source = match source {
+                    TrackSource::Track(list, _) => TrackSource::List(list),
+                    other => other,
+                };
+                self.with_tracks(
+                    source,
+                    Intent::Play {
+                        start,
+                        shuffle: false,
+                    },
+                );
             }
-            Command::PlayAlbum { album_id } => self.fetch_album(album_id, Enqueue::Play),
-            Command::Enqueue { source, at } => match source {
-                TrackSource::Library(index) => {
-                    let Some(track) = self.library.as_ref().and_then(|l| l.tracks.get(index))
-                    else {
-                        return;
-                    };
-                    let track = track.clone();
-                    self.enqueue(vec![track], at);
+            Command::ShufflePlay(source) => {
+                self.with_tracks(
+                    source,
+                    Intent::Play {
+                        start: 0,
+                        shuffle: true,
+                    },
+                );
+            }
+            Command::ShuffleAll => self.shuffle_all(),
+            Command::Enqueue { source, at } => self.with_tracks(source, Intent::At(at)),
+            Command::MoveQueueItem { uid, to } => {
+                if self.queue.move_to(uid, to) {
+                    self.queue_changed();
                 }
-                TrackSource::Album(album_id) => self.fetch_album(album_id, at.into()),
-            },
+            }
+            Command::QueryAlbums { favorites, filter } => self.query_albums(favorites, filter),
+            Command::QueryTracks { favorites, filter } => self.query_tracks(favorites, filter),
+            Command::QueryArtists { favorites, filter } => self.query_artists(favorites, filter),
+            Command::QueryPlaylists(filter) => {
+                self.playlist_filter = filter;
+                self.emit_playlists();
+            }
+            Command::OpenAlbum(id) => self.open_detail(DetailKey::Album(id)),
+            Command::OpenArtist(id) => self.open_detail(DetailKey::Artist(id)),
+            Command::OpenPlaylist(id) => self.open_detail(DetailKey::Playlist(id)),
+            Command::OpenSimilar(list, index) => {
+                let id = self
+                    .library
+                    .as_ref()
+                    .and_then(|l| l.list(list).get(index))
+                    .map(|t| t.id);
+                if let Some(id) = id {
+                    self.open_detail(DetailKey::Similar(id));
+                }
+            }
+            Command::Search(query) => self.search(query),
+            Command::SetFavorite { kind, id, favorite } => self.set_favorite(kind, id, favorite),
+            Command::CreatePlaylist {
+                name,
+                description,
+                tracks,
+            } => self.create_playlist(name, description, tracks),
+            Command::UpdatePlaylist {
+                id,
+                name,
+                description,
+            } => self.update_playlist(id, name, description),
+            Command::DeletePlaylist(id) => self.delete_playlist(id),
+            Command::AddToPlaylist {
+                playlist_id,
+                source,
+            } => self.add_to_playlist(playlist_id, source),
+            Command::RemoveFromPlaylist { playlist_id, index } => {
+                self.remove_from_playlist(playlist_id, index);
+            }
+            Command::MovePlaylistItem {
+                playlist_id,
+                from,
+                to,
+            } => self.move_playlist_item(playlist_id, from, to),
+            Command::SetPlaylistArtwork { playlist_id, image } => {
+                self.set_playlist_artwork(playlist_id, image);
+            }
+            Command::SetTranscode(transcode) => {
+                self.update_settings(|s| s.transcode = transcode);
+                // The next file (and the preload) uses the new stream.
+                self.preloaded = None;
+                self.sync_preload();
+            }
             Command::PlayQueueItem(uid) => {
                 if self.queue.go_to_uid(uid).is_some() {
                     self.play_current(true);
@@ -954,7 +1219,12 @@ impl Core {
         }
         #[allow(clippy::cast_precision_loss)]
         let seconds = position_ms as f64 / 1000.0;
-        if let Err(e) = self.engine.seek(seconds) {
+        if self.lossy_transcode() {
+            // No byte ranges: restart the stream at the new position.
+            if !self.reload_at(position_ms) {
+                return;
+            }
+        } else if let Err(e) = self.engine.seek(seconds) {
             self.emit(Event::Notice(e));
             return;
         }
@@ -1047,19 +1317,56 @@ impl Core {
         });
     }
 
-    fn fetch_album(&mut self, album_id: i64, intent: Enqueue) {
-        let Some(library) = &self.library else { return };
-        let client = library.client.clone();
-        let browse = library.capabilities.has(Feature::Browse);
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            let query = TrackListQuery {
-                album_id: Some(album_id),
-                ..TrackListQuery::default()
-            };
-            let result = fetch_all_tracks(&client, browse, &query).await;
-            let _ = tx.send(Internal::AlbumTracks(result, intent));
-        });
+    /// The transcode in use, if the server offers it.
+    fn transcode(&self) -> Option<Transcode> {
+        let transcode = self.settings.transcode?;
+        let library = self.library.as_ref()?;
+        library
+            .capabilities
+            .can_transcode(transcode.format())
+            .then_some(transcode)
+    }
+
+    /// MP3 / Opus transcodes are generated live and cannot seek by range.
+    fn lossy_transcode(&self) -> bool {
+        matches!(
+            self.transcode(),
+            Some(Transcode::Mp3(_) | Transcode::Ogg(_))
+        )
+    }
+
+    /// Stream URL of a track, starting at `offset_ms` (lossy transcodes).
+    fn track_url(&self, track_id: i64, offset_ms: i64) -> Option<String> {
+        let library = self.library.as_ref()?;
+        Some(
+            match self.transcode() {
+                Some(t) => library.client.transcode_url(track_id, t, offset_ms),
+                None => library.client.stream_url(track_id),
+            }
+            .to_string(),
+        )
+    }
+
+    /// Restarts the current lossy transcode at `position_ms`.
+    fn reload_at(&mut self, position_ms: i64) -> bool {
+        let Some(id) = self.queue.current().map(|i| i.track.id) else {
+            return false;
+        };
+        let Some(url) = self.track_url(id, position_ms) else {
+            return false;
+        };
+        if let Err(e) = self.engine.load(&url) {
+            self.emit(Event::Notice(e));
+            return false;
+        }
+        if self.paused {
+            let _ = self.engine.set_paused(true);
+        }
+        self.loading = true;
+        self.preloaded = None;
+        self.expected_path = Some(url);
+        self.stream_offset_ms = position_ms;
+        true
     }
 
     fn enqueue(&mut self, tracks: Vec<Track>, at: QueuePosition) {
@@ -1265,14 +1572,18 @@ impl Core {
             // Done once the current file has loaded.
             return;
         }
-        let Some(library) = &self.library else { return };
+        if self.library.is_none() {
+            return;
+        }
         let next = match self.queue.auto_next(self.settings.repeat) {
             // The sleep timer stops after this file: the engine must not go on.
             _ if self.pause_at_end() => None,
             Some(Step::Play(pos)) => self.queue.at(pos),
             _ => None,
         };
-        let want = next.map(|item| (item.uid, library.client.stream_url(item.track.id)));
+        let want = next
+            .map(|item| (item.uid, item.track.id))
+            .and_then(|(uid, id)| Some((uid, self.track_url(id, 0)?)));
         if want.as_ref().map(|(uid, _)| *uid) == self.preloaded {
             return;
         }
@@ -1282,7 +1593,7 @@ impl Core {
             return;
         }
         if let Some((uid, url)) = want {
-            match self.engine.append(url.as_str()) {
+            match self.engine.append(&url) {
                 Ok(()) => self.preloaded = Some(uid),
                 Err(e) => tracing::warn!("preloading the next file: {e}"),
             }
@@ -1300,28 +1611,37 @@ impl Core {
         let Some(item) = self.queue.current().cloned() else {
             return;
         };
-        let Some(library) = &self.library else { return };
-        let url = library.client.stream_url(item.track.id);
+        // A restored entry continues where it was left.
+        let resume_ms = match self.resume_at {
+            Some((uid, ms)) if uid == item.uid && ms > 0 && load => Some(ms),
+            _ => None,
+        };
+        // Lossy transcodes start the stream there instead of seeking.
+        let offset_ms = if self.lossy_transcode() {
+            resume_ms.unwrap_or(0)
+        } else {
+            0
+        };
+        let Some(url) = self.track_url(item.track.id, offset_ms) else {
+            return;
+        };
         if load
             && let Err(e) = self
                 .engine
-                .load(url.as_str())
+                .load(&url)
                 .and_then(|()| self.engine.set_paused(false))
         {
             self.emit(Event::Notice(e));
             return;
         }
+        self.resume_at = None;
         self.idle = false;
         self.loading = true;
         self.paused = false;
         self.preloaded = None;
-        self.expected_path = Some(url.to_string());
-        // A restored entry continues where it was left.
-        let resume_ms = match self.resume_at.take() {
-            Some((uid, ms)) if uid == item.uid && ms > 0 && load => Some(ms),
-            _ => None,
-        };
-        self.pending_seek_ms = resume_ms;
+        self.expected_path = Some(url);
+        self.stream_offset_ms = offset_ms;
+        self.pending_seek_ms = resume_ms.filter(|_| offset_ms == 0);
         self.position_ms = resume_ms.unwrap_or(0);
         self.reported_step = self.position_ms / POSITION_STEP_MS;
         self.engine_duration_ms = 0;
@@ -1422,7 +1742,9 @@ impl Core {
                     return;
                 }
                 #[allow(clippy::cast_possible_truncation)]
-                let ms = (seconds * 1000.0).round() as i64;
+                let ms = (seconds * 1000.0).round() as i64 + self.stream_offset_ms;
+                #[allow(clippy::cast_precision_loss)]
+                let seconds = ms as f64 / 1000.0;
                 self.position_ms = ms.max(0);
                 let save_step = self.position_ms / POSITION_SAVE_STEP_MS;
                 if save_step != self.saved_position_step {
@@ -1583,42 +1905,53 @@ impl Core {
                     self.sign_out(SignOutReason::Expired);
                 }
             }
-            Internal::AlbumsPage {
-                generation,
-                items,
-                total,
+            Internal::Loaded(target, seq, loaded) => {
+                if self.latest.get(&target) == Some(&seq) {
+                    self.loaded(loaded);
+                }
+            }
+            Internal::Failed {
+                api_token,
+                what,
+                error,
             } => {
-                if generation == self.list_generation {
-                    self.emit(Event::AlbumsAppended { items, total });
+                if error.is_unauthorized() {
+                    self.internal(Internal::Unauthorized { api_token });
+                } else if self
+                    .library
+                    .as_ref()
+                    .is_some_and(|l| l.client.api_token() == api_token)
+                {
+                    self.emit(Event::Notice(format!("{what}失败：{error}")));
                 }
             }
-            Internal::TracksPage {
-                generation,
-                tracks,
-                total,
-            } => {
-                if generation != self.list_generation {
-                    return;
-                }
-                let Some(library) = self.library.as_mut() else {
-                    return;
-                };
-                let items = tracks.iter().map(track_item).collect();
-                library.tracks.extend(tracks);
-                self.emit(Event::TracksAppended { items, total });
-            }
-            Internal::AlbumTracks(Ok(tracks), Enqueue::Play) => {
-                if self.queue.replace(tracks, 0).is_some() {
-                    self.play_current(true);
-                }
-                self.queue_changed();
-            }
-            Internal::AlbumTracks(Ok(tracks), Enqueue::At(at)) => self.enqueue(tracks, at),
-            Internal::AlbumTracks(Err(e), _) => {
+            Internal::Fetched(Ok(tracks), intent) => self.fetched(tracks, intent),
+            Internal::Fetched(Err(e), _) => {
                 if e.is_unauthorized() {
                     self.sign_out(SignOutReason::Expired);
-                } else {
-                    self.emit(Event::Notice(format!("加载专辑失败：{e}")));
+                } else if self.library.is_some() {
+                    self.emit(Event::Notice(format!("加载曲目失败：{e}")));
+                }
+            }
+            Internal::FavoriteSet { kind, id, favorite } => {
+                self.favorite_set(kind, id, favorite);
+            }
+            Internal::PlaylistsChanged { notice, deleted } => {
+                if self.library.is_none() {
+                    return;
+                }
+                if let Some(notice) = notice {
+                    self.emit(Event::Notice(notice));
+                }
+                if let Some(id) = deleted {
+                    if self.open_detail == Some(DetailKey::Playlist(id)) {
+                        self.open_detail = None;
+                    }
+                    self.emit(Event::PlaylistDeleted(id));
+                }
+                self.load_playlists();
+                if let Some(key @ DetailKey::Playlist(_)) = self.open_detail {
+                    self.open_detail(key);
                 }
             }
             Internal::Lyrics { track_id, lyrics } => {
@@ -1650,7 +1983,6 @@ impl Core {
                     self.update_active_line();
                 }
             }
-            Internal::Notice(text) => self.emit(Event::Notice(text)),
             Internal::AudioDeviceSet(device, result) => {
                 self.output_busy = false;
                 match result {
@@ -1735,6 +2067,15 @@ impl Core {
         self.engine_duration_ms = 0;
         self.lyrics = None;
         self.active_line = None;
+        self.stream_offset_ms = 0;
+        // Results of requests still running are dropped.
+        self.latest.clear();
+        self.track_filter = TrackFilter::default();
+        self.favorite_albums = None;
+        self.favorite_tracks = None;
+        self.favorite_artists = None;
+        self.playlists.clear();
+        self.open_detail = None;
 
         let server = library.client.base_url().to_owned();
         let secrets = self.config.secrets.clone();
@@ -1759,6 +2100,12 @@ impl Core {
         });
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
+        self.emit(Event::ArtistsReset);
+        self.emit(Event::FavoriteAlbums(Vec::new()));
+        self.emit(Event::FavoriteTracks(Vec::new()));
+        self.emit(Event::FavoriteArtists(Vec::new()));
+        self.emit(Event::Playlists(Vec::new()));
+        self.emit(Event::PlaylistChoices(Vec::new()));
         self.emit(Event::Queue {
             items: Vec::new(),
             current: None,
@@ -1786,105 +2133,31 @@ impl Core {
             reporter_tx,
         ));
         let browse = capabilities.has(Feature::Browse);
+        let features = ServerFeatures {
+            browse,
+            playlist_artwork: capabilities.has(Feature::PlaylistArtwork),
+            transcode: ["mp3", "ogg", "flac"]
+                .into_iter()
+                .filter(|f| capabilities.can_transcode(f))
+                .map(str::to_owned)
+                .collect(),
+        };
         self.library = Some(Library {
             images: Arc::new(Images::new(client.clone())),
             client: client.clone(),
             capabilities,
-            tracks: Vec::new(),
+            lists: HashMap::new(),
+            seeds: Arc::new(Mutex::new(RandomSeeds::new())),
         });
         self.emit(Event::LoggedIn {
             server_url: client.base_url().to_owned(),
+            features,
         });
 
-        self.emit(Event::AlbumsReset);
-        self.emit(Event::TracksReset);
         self.restore_queue();
-
-        let albums_client = client.clone();
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            let query = AlbumListQuery {
-                sort: Some(AlbumSort::Added),
-                order: Some(SortOrder::Desc),
-                ..AlbumListQuery::default()
-            };
-            let mut offset = 0u32;
-            loop {
-                match albums_client.albums(browse, &query, offset, PAGE).await {
-                    Ok(page) => {
-                        let n = u32::try_from(page.items.len()).unwrap_or(u32::MAX);
-                        let total = usize::try_from(page.total).unwrap_or(0);
-                        let items = page.items.iter().map(album_item).collect();
-                        let msg = Internal::AlbumsPage {
-                            generation,
-                            items,
-                            total,
-                        };
-                        offset += n;
-                        if tx.send(msg).is_err() || n == 0 || i64::from(offset) >= page.total {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let msg = unauthorized(&albums_client, &e)
-                            .unwrap_or_else(|| Internal::Notice(format!("加载专辑失败：{e}")));
-                        let _ = tx.send(msg);
-                        break;
-                    }
-                }
-            }
-        });
-
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            let query = TrackListQuery {
-                sort: Some(TrackSort::Added),
-                order: Some(SortOrder::Desc),
-                ..TrackListQuery::default()
-            };
-            let mut offset = 0u32;
-            loop {
-                match client.tracks(browse, &query, offset, PAGE).await {
-                    Ok(page) => {
-                        let n = u32::try_from(page.items.len()).unwrap_or(u32::MAX);
-                        let total = usize::try_from(page.total).unwrap_or(0);
-                        let done = n == 0 || i64::from(offset + n) >= page.total;
-                        offset += n;
-                        let msg = Internal::TracksPage {
-                            generation,
-                            tracks: page.items,
-                            total,
-                        };
-                        if tx.send(msg).is_err() || done {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        let msg = unauthorized(&client, &e)
-                            .unwrap_or_else(|| Internal::Notice(format!("加载曲目失败：{e}")));
-                        let _ = tx.send(msg);
-                        break;
-                    }
-                }
-            }
-        });
-    }
-}
-
-async fn fetch_all_tracks(
-    client: &Client,
-    browse: bool,
-    query: &TrackListQuery,
-) -> Result<Vec<Track>, api::ApiError> {
-    let mut out = Vec::new();
-    loop {
-        let offset = u32::try_from(out.len()).unwrap_or(u32::MAX);
-        let page = client.tracks(browse, query, offset, PAGE).await?;
-        let n = page.items.len();
-        out.extend(page.items);
-        if n == 0 || i64::try_from(out.len()).unwrap_or(i64::MAX) >= page.total {
-            return Ok(out);
-        }
+        self.query_albums(false, AlbumFilter::default());
+        self.query_tracks(false, TrackFilter::initial(browse));
+        self.load_playlists();
     }
 }
 
@@ -1898,25 +2171,5 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         tracing::warn!("writing {}: {e}", path.display());
-    }
-}
-
-fn album_item(album: &api::Album) -> AlbumItem {
-    AlbumItem {
-        id: album.id,
-        title: album.title.clone(),
-        artist: album.artist.clone(),
-        year: album.year,
-        artwork: album.artwork_url.clone(),
-    }
-}
-
-fn track_item(track: &Track) -> TrackItem {
-    TrackItem {
-        id: track.id,
-        title: track.title.clone(),
-        artist: track.artist.clone(),
-        album: track.album.clone(),
-        duration: format::duration(track.duration_millis),
     }
 }

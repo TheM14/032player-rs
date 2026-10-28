@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use client_core::{
     AudioDevice, Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, LoginFailure,
-    MemorySecrets, Settings,
+    MemorySecrets, Settings, TrackList, TrackSource,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -206,7 +206,7 @@ async fn login_play_auto_advance_and_report() {
         }
     }
 
-    core.send(Command::PlayTracks { index: 0 });
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
     let now = events.wait("now playing", |e| matches!(e, Event::NowPlaying(Some(_))));
     let Event::NowPlaying(Some(now)) = now else {
         unreachable!()

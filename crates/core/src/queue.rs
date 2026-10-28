@@ -289,6 +289,38 @@ impl Queue {
         Some(was_current)
     }
 
+    /// Moves the entry `uid` to play-order position `to` (drag and drop);
+    /// the current entry stays current. Returns whether anything moved.
+    /// Shuffled, only the play order changes; otherwise the queue order.
+    pub fn move_to(&mut self, uid: u64, to: usize) -> bool {
+        let Some(from) = self.order.iter().position(|&i| self.items[i].uid == uid) else {
+            return false;
+        };
+        let to = to.min(self.order.len() - 1);
+        if from == to {
+            return false;
+        }
+        let current = self.current().map(|i| i.uid);
+        if self.shuffle {
+            let entry = self.order.remove(from);
+            self.order.insert(to, entry);
+        } else {
+            let entry = self.items.remove(from);
+            self.items.insert(to, entry);
+        }
+        self.pos = current.and_then(|u| self.order.iter().position(|&i| self.items[i].uid == u));
+        true
+    }
+
+    /// Updates the favorite flag of every entry of `track_id`.
+    pub fn set_favorite(&mut self, track_id: i64, favorite: bool) {
+        for item in &mut self.items {
+            if item.track.id == track_id {
+                item.track.is_favorite = favorite;
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.order.clear();
@@ -362,6 +394,36 @@ mod tests {
         match step(q)? {
             Step::Play(p) | Step::Stop(p) => q.go(p).map(|i| i.track.id),
         }
+    }
+
+    #[test]
+    fn move_keeps_the_current_entry() {
+        let mut q = Queue::with_seed(3);
+        q.replace(tracks(1..=5), 1);
+        let uid_of = |q: &Queue, id: i64| q.in_play_order().find(|i| i.track.id == id).unwrap().uid;
+        let uid = uid_of(&q, 5);
+        assert!(q.move_to(uid, 0));
+        assert_eq!(ids(&q), [5, 1, 2, 3, 4]);
+        assert_eq!(current_id(&q), Some(2));
+        assert_eq!(q.position(), Some(2));
+        // Moving the current entry follows it.
+        let uid = uid_of(&q, 2);
+        assert!(q.move_to(uid, 99));
+        assert_eq!(ids(&q), [5, 1, 3, 4, 2]);
+        assert_eq!(q.position(), Some(4));
+        assert!(!q.move_to(uid, 4));
+        assert!(!q.move_to(12345, 0));
+
+        // Shuffled: only the play order changes; turning shuffle off goes
+        // back to the queue order.
+        q.set_shuffle(true);
+        let order = ids(&q);
+        let last = *order.last().unwrap();
+        assert!(q.move_to(uid_of(&q, last), 1));
+        assert_eq!(ids(&q)[1], last);
+        assert_eq!(current_id(&q), Some(2));
+        q.set_shuffle(false);
+        assert_eq!(ids(&q), [5, 1, 3, 4, 2]);
     }
 
     #[test]

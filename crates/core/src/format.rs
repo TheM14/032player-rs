@@ -24,6 +24,47 @@ pub fn audio_quality(track: &Track) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" / "))
 }
 
+/// Album quality (`getAlbumAudioQuality`): the shared label when every
+/// track matches, otherwise "最高 " + the best track's label (bit depth,
+/// then sample rate, then bitrate).
+pub fn album_quality(tracks: &[Track]) -> Option<String> {
+    let rank = |t: &Track| {
+        (
+            t.bit_depth.unwrap_or(0),
+            t.sample_rate.unwrap_or(0),
+            t.bitrate_kbps.unwrap_or(0),
+        )
+    };
+    let mut labels = std::collections::HashSet::new();
+    let mut best: Option<&Track> = None;
+    for track in tracks {
+        let Some(label) = audio_quality(track) else {
+            continue;
+        };
+        labels.insert(label);
+        if best.is_none_or(|b| rank(track) > rank(b)) {
+            best = Some(track);
+        }
+    }
+    let quality = audio_quality(best?)?;
+    Some(if labels.len() > 1 {
+        format!("最高 {quality}")
+    } else {
+        quality
+    })
+}
+
+/// "1 小时 5 分钟" / "42 分钟" for totals (album, playlist).
+pub fn total_duration(millis: i64) -> String {
+    let minutes = (millis.max(0) + 30_000) / 60_000;
+    let (h, m) = (minutes / 60, minutes % 60);
+    match (h, m) {
+        (0, m) => format!("{m} 分钟"),
+        (h, 0) => format!("{h} 小时"),
+        (h, m) => format!("{h} 小时 {m} 分钟"),
+    }
+}
+
 /// `Number(x.toFixed(1))`: one decimal, trailing ".0" dropped.
 fn trim_decimal(value: f64) -> String {
     let s = format!("{value:.1}");
@@ -68,6 +109,28 @@ mod tests {
             Some("MP3 / 320kbps / 44.1kHz")
         );
         assert_eq!(audio_quality(&Track::default()), None);
+    }
+
+    #[test]
+    fn album_quality_is_shared_or_up_to_the_best() {
+        let t = |depth, rate| Track {
+            codec: Some("flac".into()),
+            bit_depth: Some(depth),
+            sample_rate: Some(rate),
+            ..Track::default()
+        };
+        assert_eq!(
+            album_quality(&[t(16, 44_100), t(16, 44_100)]).as_deref(),
+            Some("FLAC / 16bit / 44.1kHz")
+        );
+        assert_eq!(
+            album_quality(&[t(16, 96_000), t(24, 48_000), Track::default()]).as_deref(),
+            Some("最高 FLAC / 24bit / 48kHz")
+        );
+        assert_eq!(album_quality(&[Track::default()]), None);
+        assert_eq!(total_duration(42 * 60_000), "42 分钟");
+        assert_eq!(total_duration(65 * 60_000 + 10_000), "1 小时 5 分钟");
+        assert_eq!(total_duration(120 * 60_000), "2 小时");
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub struct Settings {
     pub shuffle: bool,
     /// Closing the window hides it to the tray (Windows).
     pub close_to_tray: bool,
+    /// Stream a transcode instead of the original file (`None`: original,
+    /// the bit-perfect default). Ignored when the server cannot.
+    pub transcode: Option<api::Transcode>,
 }
 
 impl Default for Settings {
@@ -34,6 +37,7 @@ impl Default for Settings {
             repeat: Repeat::Off,
             shuffle: false,
             close_to_tray: false,
+            transcode: None,
         }
     }
 }
@@ -91,6 +95,7 @@ mod tests {
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
+            transcode: Some(api::Transcode::Mp3(320)),
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
