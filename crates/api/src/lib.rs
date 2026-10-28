@@ -2,6 +2,7 @@
 
 mod client;
 mod error;
+mod m032;
 mod query;
 mod types;
 
@@ -10,6 +11,7 @@ pub use client::{
     authenticate_client, normalize_base_url,
 };
 pub use error::{ApiError, AuthError};
+pub use m032::*;
 pub use query::{
     AlbumListQuery, AlbumSort, ArtistListQuery, ArtistRole, ArtistSort, Query, RandomSeeds,
     SortOrder, TrackListQuery, TrackSort, seed_key,

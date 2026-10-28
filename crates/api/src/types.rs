@@ -287,7 +287,12 @@ pub enum Feature {
     DailyMixes,
     PlaybackContext,
     Series,
+    SeriesTracks,
     Home,
+    Works,
+    WorkPosters,
+    /// `GET /works/{id}` carries `series` (else a missing field means nothing).
+    WorkSeriesInfo,
 }
 
 impl Feature {
@@ -302,7 +307,11 @@ impl Feature {
             Self::DailyMixes => "dailyMixes",
             Self::PlaybackContext => "playbackContext",
             Self::Series => "series",
+            Self::SeriesTracks => "seriesTracks",
             Self::Home => "home",
+            Self::Works => "works",
+            Self::WorkPosters => "workPosters",
+            Self::WorkSeriesInfo => "workSeriesInfo",
         }
     }
 }
