@@ -6,7 +6,7 @@
 ## 当前状态（2026-10-28）
 
 - **M4 进行中**：用户看过 M1-M3，基本功能可用；M4 先做界面细节和能力与 Electron 版对齐，再做主题 / 打包 / i18n。任务见下方"M4 - 对齐与打磨"。
-  P0 五项的主体已完成（未提交），ui-snapshot 检查过（`home-*.png`、`queue*.png`、`artist.png`、`album-works*.png`），等用户按"M4 验证清单"验证。
+  P0 五项的主体已完成并提交（`5fd3e29`），preview 包已更新（`032player-windows-x64-5fd3e29.zip`），ui-snapshot 检查过（`home-*.png`、`queue*.png`、`artist.png`、`album-works*.png`），等用户按"M4 验证清单"验证。
 - **M3 代码完成**，已提交（`466003b`），preview 包已更新（`032player-windows-x64-466003b.zip`，约 75 MB）（主页、作品、系列、每日推荐、播放记录、正在播放标识、歌词搜索 / 纠正 / 翻译 / 偏移 / 点击跳转、
   假名注音 / 罗马音）。界面用 ui-snapshot 检查过；等用户按"M3 验证清单"验证。
 - **M2 代码完成**（曲库浏览：列表排序 / 筛选 / 随机 seed、专辑 / 艺人 / 歌单详情、收藏、搜索、歌单增删改 / 排序 / 封面、相似歌曲、
@@ -16,7 +16,7 @@
   等用户按下方"M1 验证清单"在 Windows 上一次性验证。
 - M0：用户实测播放正常、封面清晰、没有阻断性问题；测量数据（内存、冷启动、滚动）还没收到，可以和 M1 一起测。
 - 测试包：Actions 里手动运行 **Package** 工作流，产物在 Release `preview`（便携 zip：exe + `libmpv-2.dll`，静态 CRT）。
-  当前 preview 是 `main` 的 `466003b`（M3）。注意 `preview` 只有一个：从任何分支运行 Package 都会覆盖它（每次运行的 Actions 构件仍保留 90 天）。
+  当前 preview 是 `main` 的 `5fd3e29`（M4 P0）。注意 `preview` 只有一个：从任何分支运行 Package 都会覆盖它（每次运行的 Actions 构件仍保留 90 天）。
 - M1 有意没做的（记在各小节）：最小化到托盘、Linux 托盘。
 - 已知缺口（按里程碑排期）：歌词翻译、歌词面板手动滚动 / 点击跳转（M3）；主页、作品、系列、播放记录（M3）。
 
