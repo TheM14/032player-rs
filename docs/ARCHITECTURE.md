@@ -34,6 +34,7 @@
 | 播放 | `libmpv2` | Windows 随包带 `libmpv-2.dll` |
 | 媒体控制 | `souvlaki` | SMTC / MPRIS / macOS 一套 API |
 | 托盘 | `tray-icon` | |
+| 文件对话框 | `rfd`（Linux 走 xdg-portal，不依赖 GTK） | 歌单封面 |
 | 凭据存储 | `keyring` | API Token、媒体凭据 |
 | 设置 / 状态 | `serde` + TOML / JSON 文件，`directories` 定位 | |
 | 缓存 | 磁盘图片缓存 + 内存 LRU（`lru` 或 `moka`） | |
@@ -64,6 +65,20 @@
   请求尺寸 = 卡片逻辑尺寸 x 缩放比例，向上取最接近的服务端尺寸（256 / 512 / 768 / ...）；
   `core` 缓存压缩字节（LRU 400），在 blocking 线程解码并缩放到显示尺寸，UI 只做 `SharedPixelBuffer` 拷贝；
   UI 侧最多保留 96 张解码封面，超出丢弃最早的，滚回来再从字节缓存解码。
+
+### 曲库浏览（M2）
+
+- `core::browse`：列表筛选（`AlbumFilter` 等）、UI 用的行 / 详情视图类型，以及收藏和歌单在客户端的筛选排序（`/favorites/*`、`/playlists` 只分页）。
+- `core/src/controller/library.rs`：`Core` 上的列表查询、详情、搜索、收藏、歌单编辑。请求在 tokio 任务里跑，结果以
+  `Internal::Loaded(target, seq, ..)` 回到循环；每个目标（专辑页、曲目页、艺人页、三个收藏页、歌单、详情、搜索）只应用最新序号的结果，
+  退出登录时清空序号表，旧会话的结果全部丢弃。
+- 可播放的曲目列表按 `TrackList`（曲目页 / 收藏 / 详情 / 搜索）存在 `core`，UI 只传"哪个列表的第几行"；
+  专辑、艺人、歌单作为 `TrackSource` 由 `core` 取曲目。
+- 随机排序：`api::RandomSeeds` 按查询（不含分页）记 seed，分页加载时每页取同一个 seed，重新从 offset 0 加载换新 seed。
+- UI：一个通用卡片网格模型（`app/src/cards.rs`，专辑 / 艺人 / 歌单共用，可见行才请求封面），曲目列表共用一个组件；
+  导航历史在 `app/src/ui.rs`，详情页进入时向 `core` 发 `Open*`，返回时重新请求。
+- 转码：`settings.json` `transcode`，服务端支持才生效。MP3 / Opus 实时转码不支持 Range，拖动进度时带 `offsetMs` 重新加载，
+  `core` 记住偏移，引擎回报的时间加上偏移才是播放位置。
 
 ### 登录态
 

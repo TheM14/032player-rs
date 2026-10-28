@@ -24,18 +24,18 @@
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
 | 原始文件流 `/api/v1/tracks/{id}/stream`（bit-perfect 前提） | `ctrl` `getStreamUrl` | M0 | [x] |
-| 可选转码 `/api/v1/tracks/{id}/transcode.{format}` | 同上 | M2 | [ ] |
+| 可选转码 `/api/v1/tracks/{id}/transcode.{format}` | 同上 | M2 | [x] 有损格式拖动进度时带 `offsetMs` 重新请求 |
 | mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [ ] |
 | 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [x] 设置页 |
 | 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
 | 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [x] |
 | 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [x] mpv `append` |
 | 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |
-| 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序未做 |
+| 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序在 M2 完成 |
 | 随机、单曲 / 列表循环 | 同上 | M1 | [x] |
 | 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [ ] |
 | 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [x] |
-| 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [ ] |
+| 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [x] 100 首 |
 | Auto DJ（如保留） | `features/player/auto-dj/` | 待定 | [ ] |
 | 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [ ] |
 | 全屏播放器（原图封面不带 `size`，`size=0` 会被拒） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [ ] |
@@ -58,27 +58,27 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 专辑列表：`/browse/albums`（sort、order、yearFrom/yearTo、random+seed）；无 browse 回退 `/albums` | `ctrl` `getAlbumList`、`MUSIC032_CHANGES.md` 列表接口 | M0 / M2 | [ ] |
-| 曲目列表：`/browse/tracks`（sort 含 album/added/duration/random） | `ctrl` `getSongList` | M0 / M2 | [ ] |
-| 艺人列表：`/browse/artists` / `/artists` | `ctrl` `getArtistList` | M2 | [ ] |
-| random seed：按查询（不含分页）记忆，offset 0 换新 seed，最多记 50 个 | `ctrl` | M2 | [ ] |
-| 各列表支持的排序项 | `features/shared/components/list-sort-by-dropdown.tsx` `MUSIC032` | M2 | [ ] |
-| 筛选：收藏、艺人、年份区间 | `features/shared/components/list-filters.tsx` | M2 | [ ] |
-| 专辑详情（`trackCount` 超出嵌入曲目时用 `/tracks?album=` 分页补齐）、专辑音质汇总 | `ctrl` `getAlbumDetail` | M2 | [ ] |
-| 艺人详情、作品集、热门歌曲 | `ctrl` `getAlbumArtistDetail` / `artistDiscography` / `getTopSongs` | M2 | [ ] |
-| 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [ ] |
-| 搜索 | `ctrl` `search` | M2 | [ ] |
-| 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [ ] |
+| 专辑列表：`/browse/albums`（sort、order、yearFrom/yearTo、random+seed）；无 browse 回退 `/albums` | `ctrl` `getAlbumList`、`MUSIC032_CHANGES.md` 列表接口 | M0 / M2 | [x] |
+| 曲目列表：`/browse/tracks`（sort 含 album/added/duration/random） | `ctrl` `getSongList` | M0 / M2 | [x] |
+| 艺人列表：`/browse/artists` / `/artists` | `ctrl` `getArtistList` | M2 | [x] |
+| random seed：按查询（不含分页）记忆，offset 0 换新 seed，最多记 50 个 | `ctrl` | M2 | [x] |
+| 各列表支持的排序项 | `features/shared/components/list-sort-by-dropdown.tsx` `MUSIC032` | M2 | [x] |
+| 筛选：收藏、艺人、年份区间 | `features/shared/components/list-filters.tsx` | M2 | [x] 收藏走收藏页；艺人筛选从艺人页进入 |
+| 专辑详情（`trackCount` 超出嵌入曲目时用 `/tracks?album=` 分页补齐）、专辑音质汇总 | `ctrl` `getAlbumDetail` | M2 | [x] |
+| 艺人详情、作品集、热门歌曲 | `ctrl` `getAlbumArtistDetail` / `artistDiscography` / `getTopSongs` | M2 | [x] |
+| 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [x] |
+| 搜索 | `ctrl` `search` | M2 | [x] |
+| 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [x] |
 | 封面 / 艺人图 / 作品海报（2:3）URL，按尺寸请求 | `ctrl` `getImageUrl` | M0 | [x] |
 
 ## 歌单
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 列表（`durationMillis`，未知时隐藏时长）、详情、曲目 | `ctrl` `getPlaylist*` | M2 | [ ] |
-| 新建、改名、删除 | `ctrl` `createPlaylist` / `updatePlaylist` / `deletePlaylist` | M2 | [ ] |
-| 添加 `items/append`、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [ ] |
-| 封面上传 / 删除（`features.playlistArtwork`） | `ctrl` `uploadPlaylistImage` | M2 | [ ] |
+| 列表（`durationMillis`，未知时隐藏时长）、详情、曲目 | `ctrl` `getPlaylist*` | M2 | [x] |
+| 新建、改名、删除 | `ctrl` `createPlaylist` / `updatePlaylist` / `deletePlaylist` | M2 | [x] |
+| 添加 `items/append`、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [x] 替换只在 api（UI 用不到） |
+| 封面上传 / 删除（`features.playlistArtwork`） | `ctrl` `uploadPlaylistImage` | M2 | [x] |
 | 同一首歌只出现一次（服务端跳过重复） | `MUSIC032_CHANGES.md` | - | - |
 
 ## 032 专属页面
@@ -123,7 +123,7 @@
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
 | 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4 | [ ] |
-| 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [ ] |
+| 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [x] 主页、作品、系列、播放记录在 M3 |
 | zh-Hans / zh-Hant / en | `i18n/locales/` | M4 | [ ] |
 
 ## 待定（默认不做，见 PLAN.md）
