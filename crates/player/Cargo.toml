@@ -1,0 +1,21 @@
+[package]
+name = "player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+libmpv2 = { version = "6", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["util"] }
+sha2 = "0.11"
+ureq = "3"
+
+[lints]
+workspace = true
