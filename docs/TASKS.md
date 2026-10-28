@@ -9,8 +9,8 @@
 
 - [x] 容器内装 Rust stable（rustup，`~/.cargo`），clippy + rustfmt
 - [x] GitHub 仓库 `lux032/032player-rs`（private），remote `origin`
-- [ ] 首次提交并推送（等用户确认）
-- [ ] CI 首次跑通（推送后看 Actions） **[Win]**（windows job）
+- [x] 首次提交并推送
+- [x] CI 首次跑通（Linux + Windows job 均通过，Windows 上 libmpv 下载成功）
 
 ### 1. Workspace 骨架
 
@@ -49,6 +49,7 @@
 - [x] `build.rs`：Windows 自动下载固定版本 mpv-dev（SourceForge 永久镜像，sha256 校验），生成 `mpv.lib`，复制 `libmpv-2.dll`；`MPV_LIB_DIR` / `MPV_DEV_URL` 可覆盖
 - [x] 容器内 `cargo check --target x86_64-pc-windows-msvc` 验证下载 / 解压 / 缓存
 - [ ] MSVC 链接 `mpv.lib`（由 `libmpv.dll.a` 复制而来）可用 **[Win]**
+  （CI 上链接器已找到 `mpv.lib` 并链接通过，但目前没有代码实际调用 mpv 函数，还不能算完全验证）
 - [ ] 实际播放、seek、独占模式切换 **[Win]**
 
 ### 6. core + app
