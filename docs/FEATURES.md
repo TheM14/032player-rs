@@ -104,7 +104,7 @@
 | 翻译 `POST /tracks/{id}/lyrics/translation {targetLanguage}`；`translation_disabled` 时刷新能力位 | `features/lyrics/api/lyric-translate.ts` | M3 | [x] `translation_disabled` 后本次会话隐藏翻译 |
 | 显示方式：bilingual / translated | `features/lyrics/utils/translation-display-modes.ts` | M3 | [x] 另有自动翻译、目标语言 |
 | 偏移（仅当前会话） | - | M3 | [x] 按曲目 |
-| 假名注音、罗马音（原在主进程 kuromoji） | `main/features/core/lyrics/furigana.ts` | M3 | [x] lindera + 内嵌 IPADIC，wana_kana |
+| 假名注音、罗马音（原在主进程 kuromoji） | `main/features/core/lyrics/furigana.ts` | - | 删除（M4，用户决定不要；去掉 lindera 词典，包更小） |
 | 中文行用中文字体 | 提交 ec619cb0 | M3 | [ ] |
 
 ## 系统集成

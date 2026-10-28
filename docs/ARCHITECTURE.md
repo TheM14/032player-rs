@@ -10,7 +10,7 @@
   crates/
     api/                # 032 HTTP 客户端 + 类型（无 UI、无 mpv）
     session/            # 播放上报状态机（纯逻辑，可注入时钟 / 传输 / 存储）
-    lyrics/             # LRC / 逐字解析、翻译显示合并、注音 / 罗马音
+    lyrics/             # 歌词时间轴（当前行定位）
     core/               # 包名 client-core（`core` 与标准库冲突）。队列、设置、登录态、图片缓存，
                         # 串起 api + session；播放器通过 trait 注入
     player/             # libmpv 封装（只有这里依赖 libmpv）
@@ -99,8 +99,9 @@
   作品 / 系列海报和主页货架复用 `CardGridModel`（卡片 kind 3 / 4 为 2:3 海报）；主页小行、聚焦卡、每日推荐封面用按图片 key 回填的绑定
   （`ui/m032.rs` `bind_image`，按组在换数据时丢弃）。主页货架用左右翻页按钮，不嵌套 Flickable。
 - 「在网页中打开」：`os::browser::open_url`（`open` crate）。
-- 假名注音 / 罗马音：`lyrics::japanese`（lindera 分词，词典第一次用时加载，几毫秒）；core 在开关打开时按行算一次并缓存，结果随
-  `LyricRow::ruby` / `romaji` 推给 UI，歌词面板按段排版（读音在上）。
+- 字体：`app/src/fonts.rs` 把内嵌的 Inter + Noto Sans JP（与 Electron 版同一套，`assets/fonts`）注册到 Slint 共享的 fontique 集合，
+  设为 sans-serif / system-ui 的字体栈（需要 slint 的 `unstable-fontique-011` 特性；先 `BackendSelector::select()`，再注册，再建窗口）。ui-snapshot 用同一个文件。
+- 主页聚焦卡背景：`core::backdrop` 把封面缩小、模糊、提饱和度成小图，Slint 拉伸铺底（Slint 没有模糊滤镜）。
 
 ### 登录态
 
