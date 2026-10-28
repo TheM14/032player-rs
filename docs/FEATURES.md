@@ -28,7 +28,7 @@
 | mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [ ] |
 | 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [x] 设置页 |
 | 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
-| 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [ ] |
+| 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [x] |
 | 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [x] mpv `append` |
 | 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |
 | 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序未做 |
@@ -46,11 +46,12 @@
 |------|------|--------|------|
 | 会话状态机：start / pause / resume / seek / buffering / heartbeat / end，seq，重试 | `renderer/api/music032/music032-playback-session.ts` | M0 | [x] |
 | 播放器信号适配层 | `renderer/api/music032/music032-playback-adapter.ts` | M1 | [x] |
-| 接线：`POST /api/v1/playback/events` | `features/player/hooks/use-music032-playback-reporter.ts` | M1 | [ ] |
-| 会话恢复快照、resume_invalid 持久化（应用重启可续） | session 文件头注释 | M1 | [ ] |
-| clientKind：capabilities `playback.clientKinds` 含 `desktop` 时报 `desktop`，会话内固定 | `MUSIC032_CHANGES.md` 播放上报接线 | M1 | [ ] |
+| 接线：`POST /api/v1/playback/events` | `features/player/hooks/use-music032-playback-reporter.ts` | M1 | [x] |
+| 会话恢复快照、resume_invalid 持久化（应用重启可续） | session 文件头注释 | M1 | [x] |
+| 重启恢复队列和播放位置（停止状态，播放时从原位置继续） | `player.store.ts` `partialize`、`use-queue-restore.ts` | M1 | [x] |
+| clientKind：capabilities `playback.clientKinds` 含 `desktop` 时报 `desktop`，会话内固定 | `MUSIC032_CHANGES.md` 播放上报接线 | M1 | [x] |
 | 每日推荐 context 只在全新 start 发送；加入队列的曲目不带 context | `MUSIC032_CHANGES.md` 每日推荐 | M3 | [ ] |
-| 退出时尽力发送 `client_closed` | 同上 | M1 | [ ] |
+| 退出时尽力发送 `client_closed` | 同上 | M1 | [x] |
 | 测试：移植 `scripts/music032/playback-reporter.test.mjs` | - | M0 | [x] |
 
 ## 曲库

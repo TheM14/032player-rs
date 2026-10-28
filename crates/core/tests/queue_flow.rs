@@ -124,15 +124,28 @@ struct Harness {
 
 impl Harness {
     async fn start(server: &MockServer) -> Self {
-        let engine = Arc::new(FakeEngine::default());
         let data_dir = std::env::temp_dir().join(format!("032player-queue-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
+        let h = Self::start_in(server, data_dir).await;
+        h.wait_tracks();
+        h
+    }
+
+    fn wait_tracks(&self) {
+        self.wait("tracks", |e| {
+            matches!(e, Event::TracksAppended { total: 3, .. })
+        });
+    }
+
+    /// Starts in `data_dir` as is (a restart keeps it).
+    async fn start_in(server: &MockServer, data_dir: std::path::PathBuf) -> Self {
+        let engine = Arc::new(FakeEngine::default());
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         let config = CoreConfig {
+            settings: Settings::load(&data_dir),
             data_dir,
             secrets: Arc::new(MemorySecrets::default()),
-            settings: Settings::default(),
         };
         let core = client_core::start(engine.clone(), config, move |e| {
             let _ = tx.lock().unwrap().send(e);
@@ -148,9 +161,7 @@ impl Harness {
             api_token: "api".into(),
             media_token: "media".into(),
         });
-        h.wait("tracks", |e| {
-            matches!(e, Event::TracksAppended { total: 3, .. })
-        });
+        h.wait("login", |e| matches!(e, Event::LoggedIn { .. }));
         h
     }
 
@@ -223,6 +234,17 @@ impl Harness {
 
 fn titles(ids: &[i64]) -> Vec<String> {
     ids.iter().map(|id| format!("曲{id}")).collect()
+}
+
+async fn playback_bodies(server: &MockServer) -> Vec<Value> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/playback/events")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect()
 }
 
 async fn playback_events(server: &MockServer) -> Vec<String> {
@@ -310,4 +332,62 @@ async fn gapless_queue_editing_and_repeat() {
         ["start:1", "end:1", "start:2", "end:2", "start:2"]
     );
     h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_restores_the_queue_and_resumes_the_chain() {
+    let server = server().await;
+    let dir = std::env::temp_dir().join(format!("032player-restore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let h = Harness::start_in(&server, dir.clone()).await;
+    h.wait_tracks();
+    h.send(Command::SetShuffle(true));
+    h.wait("shuffle", |e| *e == Event::Shuffle(true));
+    assert_eq!(h.wait_queue(), (Vec::new(), None));
+    h.send(Command::PlayTracks { index: 1 });
+    h.wait_playing(2);
+    let (order, current) = h.wait_queue();
+    assert_eq!((order[0].as_str(), current), ("曲2", Some(0)));
+    h.loaded(2);
+    h.engine(EngineEvent::TimePos(30.0));
+    h.engine(EngineEvent::Paused(true));
+    h.wait("paused", |e| *e == Event::Paused(true));
+    h.engine.take();
+    h.shutdown().await;
+    let first = playback_bodies(&server).await;
+    let session_id = first[0]["sessionId"].as_str().unwrap().to_owned();
+    assert_eq!(first.last().unwrap()["endReason"], "client_closed");
+
+    // Restart: same queue (same shuffled order), stopped at 0:30.
+    let h = Harness::start_in(&server, dir.clone()).await;
+    assert_eq!(h.wait_queue(), (order, Some(0)));
+    h.wait_playing(2);
+    h.wait("position", |e| {
+        matches!(
+            e,
+            Event::Position {
+                position_ms: 30_000,
+                ..
+            }
+        )
+    });
+    assert!(h.calls().await.is_empty(), "restoring does not play");
+
+    // Play continues at the saved position and resumes the reported chain.
+    h.send(Command::TogglePause);
+    h.wait("playing", |e| *e == Event::Paused(false));
+    assert_eq!(h.calls().await, ["load 2"]);
+    h.loaded(2);
+    let calls = h.calls().await;
+    assert_eq!(calls[0], "seek 30");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let all = playback_bodies(&server).await;
+    let resumed = &all[first.len()];
+    assert_eq!(resumed["type"], "start");
+    assert_eq!(resumed["trackId"], 2);
+    assert_eq!(resumed["resumedFromSessionId"], session_id.as_str());
+    assert_eq!(resumed["positionMillis"], 30_000);
+    h.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
 }

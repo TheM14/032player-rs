@@ -32,6 +32,19 @@ impl Repeat {
     }
 }
 
+/// The queue as saved between runs (uids are not kept).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct QueueSnapshot {
+    /// Entries in queue order.
+    pub tracks: Vec<Track>,
+    /// Play order (positions into `tracks`).
+    pub order: Vec<usize>,
+    /// Current position in the play order.
+    pub position: Option<usize>,
+    pub shuffle: bool,
+}
+
 /// Where a move through the queue lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -155,6 +168,42 @@ impl Queue {
     pub fn go_to_uid(&mut self, uid: u64) -> Option<&QueueItem> {
         let pos = self.order.iter().position(|&i| self.items[i].uid == uid)?;
         self.go(pos)
+    }
+
+    pub fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            tracks: self.items.iter().map(|i| i.track.clone()).collect(),
+            order: self.order.clone(),
+            position: self.pos,
+            shuffle: self.shuffle,
+        }
+    }
+
+    /// Replaces the queue with a saved one. A play order that does not fit
+    /// the entries, or was saved with the other shuffle mode, is rebuilt
+    /// around the saved current entry.
+    pub fn restore(&mut self, snapshot: QueueSnapshot) {
+        let QueueSnapshot {
+            tracks,
+            order,
+            position,
+            shuffle,
+        } = snapshot;
+        self.items = self.wrap(tracks);
+        let n = self.items.len();
+        let mut seen = vec![false; n];
+        let valid = order.len() == n
+            && order
+                .iter()
+                .all(|&i| i < n && !std::mem::replace(&mut seen[i], true));
+        let position = position.filter(|&p| p < n);
+        if valid && shuffle == self.shuffle {
+            self.order = order;
+            self.pos = position;
+        } else {
+            let current = position.map(|p| if valid { order[p] } else { p });
+            self.rebuild_order(current);
+        }
     }
 
     // ------------------------------------------------------------ editing
@@ -452,6 +501,35 @@ mod tests {
         assert_eq!(current_id(&q), Some(1));
         q.clear();
         assert!(q.is_empty() && q.current().is_none());
+    }
+
+    #[test]
+    fn snapshot_round_trip() {
+        let mut q = Queue::with_seed(9);
+        q.replace(tracks(1..=6), 2);
+        q.set_shuffle(true);
+        walk(&mut q, |q| q.auto_next(Repeat::Off));
+        let snap = q.snapshot();
+
+        let mut r = Queue::with_seed(1);
+        r.set_shuffle(true);
+        r.restore(snap.clone());
+        assert_eq!((ids(&r), current_id(&r)), (ids(&q), current_id(&q)));
+
+        // Restored with shuffle off: queue order, same current entry.
+        let mut r = Queue::default();
+        r.restore(snap.clone());
+        assert_eq!(ids(&r), (1..=6).collect::<Vec<_>>());
+        assert_eq!(current_id(&r), current_id(&q));
+
+        // A broken order falls back to queue order.
+        let mut r = Queue::default();
+        r.restore(QueueSnapshot {
+            order: vec![0, 0, 1],
+            position: Some(1),
+            ..snap
+        });
+        assert_eq!((ids(&r).len(), current_id(&r)), (6, Some(2)));
     }
 
     #[test]

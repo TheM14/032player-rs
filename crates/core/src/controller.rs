@@ -16,7 +16,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
-use crate::queue::{Queue, Repeat, Step};
+use crate::queue::{Queue, QueueSnapshot, Repeat, Step};
 use crate::reporter::{Reporter, ReporterMsg};
 use crate::secrets::{SecretStore, TokenKind, token_key};
 use crate::settings::Settings;
@@ -34,6 +34,20 @@ const SETTINGS_SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// Key of the last signed-in server in `session.json`.
 const SERVER_KEY: &str = "server";
+/// Playback position (ms) of the saved queue's current entry, in `session.json`.
+const POSITION_KEY: &str = "positionMs";
+/// The queue file is written this long after the last change.
+const QUEUE_SAVE_DELAY: Duration = Duration::from_secs(1);
+/// While playing, the position is saved every this many ms.
+const POSITION_SAVE_STEP_MS: i64 = 10_000;
+const QUEUE_FILE: &str = "queue.json";
+
+/// `queue.json`: the queue of one server.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedQueue {
+    server: String,
+    queue: QueueSnapshot,
+}
 
 #[derive(Clone)]
 pub struct CoreConfig {
@@ -291,6 +305,7 @@ enum Internal {
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
     SaveSettings(u64),
+    SaveQueue(u64),
     Lyrics {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
@@ -548,6 +563,14 @@ struct Core {
     expected_path: Option<String>,
     /// Entry of the last started play (repeat-one passes start it again).
     started_uid: Option<u64>,
+    /// Restored queue entry and the position to continue it at.
+    resume_at: Option<(u64, i64)>,
+    /// Seek to this once the loading file is loaded (resumed position).
+    pending_seek_ms: Option<i64>,
+    /// Bumped per queue change; the debounced save writes the latest.
+    queue_revision: u64,
+    saved_queue_revision: u64,
+    saved_position_step: i64,
 }
 
 impl Core {
@@ -586,6 +609,11 @@ impl Core {
             preloaded: None,
             expected_path: None,
             started_uid: None,
+            resume_at: None,
+            pending_seek_ms: None,
+            queue_revision: 0,
+            saved_queue_revision: 0,
+            saved_position_step: -1,
         }
     }
 
@@ -652,6 +680,12 @@ impl Core {
             }
         }
         self.save_settings();
+        self.save_position();
+        if self.queue_revision != self.saved_queue_revision
+            && let Some((path, bytes)) = self.queue_file()
+        {
+            write_atomic(&path, &bytes);
+        }
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.close(Duration::from_secs(2)).await;
         }
@@ -836,10 +870,20 @@ impl Core {
     // ------------------------------------------------------------ playback
 
     fn seek(&mut self, position_ms: i64) {
+        let position_ms = position_ms.max(0);
+        if self.idle
+            && let Some((uid, _)) = self.resume_at
+        {
+            // Restored, not started yet: move where playing will start.
+            self.resume_at = Some((uid, position_ms));
+            self.position_ms = position_ms;
+            self.emit_position();
+            self.update_active_line();
+            return;
+        }
         if self.idle || self.queue.current().is_none() {
             return;
         }
-        let position_ms = position_ms.max(0);
         #[allow(clippy::cast_precision_loss)]
         let seconds = position_ms as f64 / 1000.0;
         if let Err(e) = self.engine.seek(seconds) {
@@ -899,6 +943,8 @@ impl Core {
         self.preloaded = None;
         self.expected_path = None;
         self.position_ms = 0;
+        self.pending_seek_ms = None;
+        self.save_position();
         self.emit(Event::Paused(true));
         self.emit_position();
     }
@@ -991,10 +1037,82 @@ impl Core {
             current: self.queue.position(),
         });
         self.sync_preload();
+        self.schedule_queue_save();
     }
 
-    fn emit_queue_position(&self) {
+    fn emit_queue_position(&mut self) {
         self.emit(Event::QueuePosition(self.queue.position()));
+        self.schedule_queue_save();
+    }
+
+    fn schedule_queue_save(&mut self) {
+        self.queue_revision += 1;
+        let revision = self.queue_revision;
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(QUEUE_SAVE_DELAY).await;
+            let _ = tx.send(Internal::SaveQueue(revision));
+        });
+    }
+
+    /// `queue.json` path and contents for the signed-in server.
+    fn queue_file(&self) -> Option<(PathBuf, Vec<u8>)> {
+        let library = self.library.as_ref()?;
+        let saved = SavedQueue {
+            server: library.client.base_url().to_owned(),
+            queue: self.queue.snapshot(),
+        };
+        let bytes = serde_json::to_vec(&saved).ok()?;
+        Some((self.config.data_dir.join(QUEUE_FILE), bytes))
+    }
+
+    fn save_position(&mut self) {
+        if self.library.is_some() {
+            self.session_file
+                .set(POSITION_KEY, &self.position_ms.max(0).to_string());
+        }
+    }
+
+    /// Brings back the queue saved for this server, stopped at the saved
+    /// position; playing it resumes the persisted reporting chain.
+    fn restore_queue(&mut self) {
+        let Some(library) = &self.library else { return };
+        let path = self.config.data_dir.join(QUEUE_FILE);
+        let Some(saved) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SavedQueue>(&b).ok())
+        else {
+            return;
+        };
+        if saved.server != library.client.base_url() || saved.queue.tracks.is_empty() {
+            return;
+        }
+        self.queue.restore(saved.queue);
+        self.queue_changed();
+        let Some(item) = self.queue.current().cloned() else {
+            return;
+        };
+        let position_ms = self
+            .session_file
+            .get(POSITION_KEY)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+            .clamp(0, item.track.duration_millis.max(0));
+        self.resume_at = Some((item.uid, position_ms));
+        self.position_ms = position_ms;
+        let adapter_track = self.adapter_track();
+        if let Some(r) = self.reporter.as_mut() {
+            r.act(|a| {
+                a.on_queue_restored();
+                a.on_track_change(adapter_track);
+            });
+            #[allow(clippy::cast_precision_loss)]
+            r.act(|a| a.on_progress(position_ms as f64 / 1000.0));
+        }
+        self.emit(Event::NowPlaying(Some(now_playing(&item.track))));
+        self.emit(Event::Paused(true));
+        self.emit_position();
+        self.load_lyrics(item.track.id);
     }
 
     /// Keeps the engine's next file equal to the queue's automatic next
@@ -1039,7 +1157,6 @@ impl Core {
         };
         let Some(library) = &self.library else { return };
         let url = library.client.stream_url(item.track.id);
-        let client = library.client.clone();
         if load
             && let Err(e) = self
                 .engine
@@ -1054,9 +1171,16 @@ impl Core {
         self.paused = false;
         self.preloaded = None;
         self.expected_path = Some(url.to_string());
-        self.position_ms = 0;
-        self.reported_step = 0;
+        // A restored entry continues where it was left.
+        let resume_ms = match self.resume_at.take() {
+            Some((uid, ms)) if uid == item.uid && ms > 0 && load => Some(ms),
+            _ => None,
+        };
+        self.pending_seek_ms = resume_ms;
+        self.position_ms = resume_ms.unwrap_or(0);
+        self.reported_step = self.position_ms / POSITION_STEP_MS;
         self.engine_duration_ms = 0;
+        let position_ms = self.position_ms;
 
         // The same entry again without a user action: a repeat-one pass.
         let repeated = !user_navigated && self.started_uid == Some(item.uid);
@@ -1067,7 +1191,8 @@ impl Core {
                 if repeated {
                     a.on_repeated();
                 }
-                a.on_progress(0.0);
+                #[allow(clippy::cast_precision_loss)]
+                a.on_progress(position_ms as f64 / 1000.0);
                 a.on_track_change(adapter_track);
                 if user_navigated {
                     a.on_user_navigate();
@@ -1080,7 +1205,14 @@ impl Core {
         self.emit(Event::NowPlaying(Some(now_playing(track))));
         self.emit(Event::Paused(false));
         self.emit_position();
+        self.save_position();
+        self.load_lyrics(track.id);
+    }
 
+    /// Clears the lyrics and fetches those of `track_id`.
+    fn load_lyrics(&mut self, track_id: i64) {
+        let Some(library) = &self.library else { return };
+        let client = library.client.clone();
         self.lyrics = None;
         self.active_line = None;
         self.emit(Event::Lyrics {
@@ -1089,7 +1221,6 @@ impl Core {
             source: None,
         });
         let tx = self.internal.clone();
-        let track_id = track.id;
         tokio::spawn(async move {
             let lyrics = match client.lyrics(track_id).await {
                 Ok(lyrics) => lyrics,
@@ -1140,6 +1271,11 @@ impl Core {
                 #[allow(clippy::cast_possible_truncation)]
                 let ms = (seconds * 1000.0).round() as i64;
                 self.position_ms = ms.max(0);
+                let save_step = self.position_ms / POSITION_SAVE_STEP_MS;
+                if save_step != self.saved_position_step {
+                    self.saved_position_step = save_step;
+                    self.save_position();
+                }
                 let step = self.position_ms / POSITION_STEP_MS;
                 if step != self.reported_step {
                     self.reported_step = step;
@@ -1172,6 +1308,9 @@ impl Core {
                     };
                     r.act(|a| a.on_status(status));
                 }
+                if paused {
+                    self.save_position();
+                }
                 self.emit(Event::Paused(paused));
             }
             EngineEvent::Buffering(buffering) => {
@@ -1200,6 +1339,12 @@ impl Core {
                     return;
                 }
                 self.loading = false;
+                if let Some(ms) = self.pending_seek_ms.take() {
+                    #[allow(clippy::cast_precision_loss)]
+                    if let Err(e) = self.engine.seek(ms as f64 / 1000.0) {
+                        tracing::warn!("seeking to the resumed position: {e}");
+                    }
+                }
                 self.sync_preload();
             }
             EngineEvent::EndFile { reason, error } => match reason {
@@ -1361,6 +1506,15 @@ impl Core {
                 }
                 self.emit(Event::Exclusive(self.settings.exclusive));
             }
+            Internal::SaveQueue(revision) => {
+                if revision != self.queue_revision {
+                    return;
+                }
+                if let Some((path, bytes)) = self.queue_file() {
+                    self.saved_queue_revision = revision;
+                    tokio::task::spawn_blocking(move || write_atomic(&path, &bytes));
+                }
+            }
             Internal::SaveSettings(revision) => {
                 if revision == self.settings_revision {
                     self.save_settings();
@@ -1391,6 +1545,8 @@ impl Core {
         self.preloaded = None;
         self.expected_path = None;
         self.started_uid = None;
+        self.resume_at = None;
+        self.pending_seek_ms = None;
         self.position_ms = 0;
         self.engine_duration_ms = 0;
         self.lyrics = None;
@@ -1457,6 +1613,7 @@ impl Core {
 
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
+        self.restore_queue();
 
         let albums_client = client.clone();
         let tx = self.internal.clone();
@@ -1543,6 +1700,19 @@ async fn fetch_all_tracks(
         if n == 0 || i64::try_from(out.len()).unwrap_or(i64::MAX) >= page.total {
             return Ok(out);
         }
+    }
+}
+
+/// Writes via a temp file and rename, so a crash never leaves half a file.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("tmp");
+    let result = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!("writing {}: {e}", path.display());
     }
 }
 
