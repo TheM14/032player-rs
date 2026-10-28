@@ -2,18 +2,23 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon } from "controls.slint";
 
+// `badge`: relation on an artist page; `artist-id` 0 = none.
 export struct AlbumCard {
     id: int,
     title: string,
     artist: string,
     year: string,
     cover: image,
+    artist-id: int,
+    favorite: bool,
+    badge: string,
 }
 
 export struct AlbumRow {
     items: [AlbumCard],
 }
 
+// `index`: row in its list; `number`: album track number ("1-03").
 export struct TrackRow {
     id: int,
     index: int,
@@ -21,6 +26,10 @@ export struct TrackRow {
     artist: string,
     album: string,
     duration: string,
+    album-id: int,
+    artist-id: int,
+    favorite: bool,
+    number: string,
 }
 
 export struct LyricLine {
@@ -32,6 +41,11 @@ export struct QueueRow {
     title: string,
     artist: string,
     duration: string,
+}
+
+export struct PlaylistChoice {
+    id: int,
+    name: string,
 }
 
 export component LoginView inherits Rectangle {
@@ -117,12 +131,18 @@ export component LoginView inherits Rectangle {
     }
 }
 
-component AlbumCardView inherits Rectangle {
+// Album / artist / playlist card. Clicking opens it; the round button plays.
+export component CardView inherits Rectangle {
     in property <AlbumCard> card;
+    // 0 album, 1 artist, 2 playlist.
+    in property <int> kind;
     in property <length> size: 168px;
-    callback clicked();
-    // true: play next, false: add to the end of the queue.
-    callback enqueue(bool);
+    in property <[PlaylistChoice]> playlists;
+    // (action, argument): see `card-action` in app.slint.
+    callback action(string, int);
+    // The pointer is on the round play button (bottom right of the cover).
+    property <bool> over-play: area.has-hover && area.mouse-x >= root.size - 52px && area.mouse-x <= root.size - 12px
+        && area.mouse-y >= root.size - 52px && area.mouse-y <= root.size - 12px;
     width: root.size;
     height: root.size + 62px;
 
@@ -133,9 +153,15 @@ component AlbumCardView inherits Rectangle {
         Rectangle {
             width: root.size;
             height: root.size;
-            border-radius: Theme.radius;
+            border-radius: root.kind == 1 ? root.size / 2 : Theme.radius;
             background: Theme.raised;
             clip: true;
+
+            if root.kind == 1 && root.card.cover.width == 0: Text {
+                text: root.card.title == "" ? "?" : "♪";
+                color: Theme.text-faint;
+                font-size: root.size / 3;
+            }
 
             Image {
                 source: root.card.cover;
@@ -155,12 +181,26 @@ component AlbumCardView inherits Rectangle {
                 width: 40px;
                 height: 40px;
                 border-radius: 20px;
-                background: Theme.accent;
+                background: root.over-play ? Theme.accent.brighter(15%) : Theme.accent;
                 Icon {
                     kind: IconKind.play;
                     width: 16px;
                     height: 16px;
                     color: #ffffff;
+                }
+            }
+
+            if root.card.badge != "": Rectangle {
+                x: 8px;
+                y: 8px;
+                width: badge-text.preferred-width + 12px;
+                height: 20px;
+                border-radius: 4px;
+                background: #000000a0;
+                badge-text := Text {
+                    text: root.card.badge;
+                    color: #ffffff;
+                    font-size: 11px;
                 }
             }
         }
@@ -171,14 +211,16 @@ component AlbumCardView inherits Rectangle {
             font-weight: 600;
             overflow: elide;
             width: root.size;
+            horizontal-alignment: root.kind == 1 ? center : left;
         }
 
         Text {
-            text: root.card.year == "" ? root.card.artist : root.card.artist + " · " + root.card.year;
+            text: root.card.year == "" ? root.card.artist : root.card.artist == "" ? root.card.year : root.card.artist + " · " + root.card.year;
             color: Theme.text-dim;
             font-size: 12px;
             overflow: elide;
             width: root.size;
+            horizontal-alignment: root.kind == 1 ? center : left;
         }
     }
 
@@ -187,19 +229,58 @@ component AlbumCardView inherits Rectangle {
             MenuItem {
                 title: "播放";
                 activated => {
-                    root.clicked();
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "随机播放";
+                activated => {
+                    root.action("shuffle", 0);
                 }
             }
             MenuItem {
                 title: "下一首播放";
                 activated => {
-                    root.enqueue(true);
+                    root.action("next", 0);
                 }
             }
             MenuItem {
                 title: "添加到队列末尾";
                 activated => {
-                    root.enqueue(false);
+                    root.action("last", 0);
+                }
+            }
+            if root.kind != 2: Menu {
+                title: "添加到歌单";
+                MenuItem {
+                    title: "新建歌单…";
+                    activated => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                for p in root.playlists: MenuItem {
+                    title: p.name;
+                    activated => {
+                        root.action("add", p.id);
+                    }
+                }
+            }
+            if root.kind != 2: MenuItem {
+                title: root.card.favorite ? "取消收藏" : "收藏";
+                activated => {
+                    root.action("favorite", root.card.favorite ? 0 : 1);
+                }
+            }
+            if root.kind == 0 && root.card.artist-id > 0: MenuItem {
+                title: "转到艺人";
+                activated => {
+                    root.action("artist", root.card.artist-id);
+                }
+            }
+            if root.kind == 2: MenuItem {
+                title: "删除歌单";
+                activated => {
+                    root.action("delete", 0);
                 }
             }
         }
@@ -207,20 +288,24 @@ component AlbumCardView inherits Rectangle {
         area := TouchArea {
             mouse-cursor: pointer;
             clicked => {
-                root.clicked();
+                root.action(root.over-play ? "play" : "open", 0);
             }
         }
     }
 }
 
-export component AlbumGrid inherits Rectangle {
+// Virtualized grid of cards; the rows come from a Rust model that chunks
+// the items by `columns` and loads covers for visible rows only.
+export component CardGrid inherits Rectangle {
     in property <[AlbumRow]> rows;
-    in property <int> loaded;
-    in property <int> total;
+    in property <int> kind;
+    in property <[PlaylistChoice]> playlists;
+    in property <string> empty-text: "没有内容";
+    in property <bool> loading;
     // Columns and the card size (logical) whenever the layout changes.
     callback layout-changed(int, length);
-    callback play-album(int);
-    callback enqueue-album(int, bool);
+    // (action, card id, argument)
+    callback action(string, int, int);
     // Cards at least 160px with 24px gaps and 32px side padding; the
     // columns then share the width.
     out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
@@ -232,91 +317,245 @@ export component AlbumGrid inherits Rectangle {
         root.layout-changed(root.columns, root.card-size);
     }
 
-    VerticalLayout {
-        HorizontalLayout {
+    if root.rows.length == 0: Text {
+        text: root.loading ? "加载中…" : root.empty-text;
+        color: Theme.text-faint;
+    }
+
+    ListView {
+        for row in root.rows: HorizontalLayout {
             padding-left: 32px;
             padding-right: 32px;
-            padding-top: 24px;
-            padding-bottom: 12px;
-            Text {
-                text: "专辑";
-                color: Theme.text;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            Text {
-                text: root.total == 0 ? "" : root.loaded < root.total ? root.loaded + " / " + root.total : root.total + " 张";
-                color: Theme.text-dim;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
-
-        ListView {
-            for row in root.rows: HorizontalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
-                spacing: 24px;
-                alignment: start;
-                height: root.card-size + 86px;
-                for card in row.items: AlbumCardView {
-                    card: card;
-                    size: root.card-size;
-                    clicked => {
-                        root.play-album(card.id);
-                    }
-                    enqueue(next) => {
-                        root.enqueue-album(card.id, next);
-                    }
+            spacing: 24px;
+            alignment: start;
+            height: root.card-size + 86px;
+            for card in row.items: CardView {
+                card: card;
+                kind: root.kind;
+                size: root.card-size;
+                playlists: root.playlists;
+                action(what, arg) => {
+                    root.action(what, card.id, arg);
                 }
             }
         }
     }
 }
 
+// Column widths shared by the track header and rows.
+export global TrackColumns {
+    out property <length> number: 48px;
+    out property <length> heart: 28px;
+    out property <length> duration: 56px;
+}
+
+// One track row. `mode`: 0 list, 1 album (track numbers, no album
+// column), 2 playlist (removable, draggable).
+export component TrackRowView inherits Rectangle {
+    in property <TrackRow> track;
+    in property <int> mode;
+    in property <bool> playing;
+    in property <[PlaylistChoice]> playlists;
+    in property <length> title-w;
+    in property <length> artist-w;
+    in property <length> album-w;
+    // Drop marker above (-1) / below (1) the row while dragging.
+    in property <int> drop-mark;
+    // (action, argument)
+    callback action(string, int);
+    // Drag in progress: rows moved from the press point (playlist mode).
+    callback drag(int);
+    callback drop();
+    property <length> press-y;
+    property <bool> dragging;
+    height: 36px;
+    background: root.dragging ? Theme.accent-dim : row-area.has-hover ? Theme.surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 32px;
+        spacing: 16px;
+        Text {
+            text: root.mode == 1 ? root.track.number : root.track.index + 1;
+            width: TrackColumns.number;
+            color: root.playing ? Theme.accent : Theme.text-faint;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.track.title;
+            width: root.title-w;
+            color: root.playing ? Theme.accent : Theme.text;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.track.artist;
+            width: root.artist-w;
+            color: Theme.text-dim;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.mode != 1: Text {
+            text: root.track.album;
+            width: root.album-w;
+            color: Theme.text-dim;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: TrackColumns.heart;
+            Icon {
+                visible: root.track.favorite || row-area.has-hover || heart-area.has-hover;
+                kind: root.track.favorite ? IconKind.heart : IconKind.heart-outline;
+                width: 14px;
+                height: 14px;
+                color: root.track.favorite ? Theme.accent : heart-area.has-hover ? Theme.text : Theme.text-faint;
+            }
+            heart-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("favorite", root.track.favorite ? 0 : 1);
+                }
+            }
+        }
+        Text {
+            text: root.track.duration;
+            width: TrackColumns.duration;
+            color: Theme.text-dim;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.drop-mark != 0: Rectangle {
+        y: root.drop-mark < 0 ? 0 : parent.height - 2px;
+        height: 2px;
+        background: Theme.accent;
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "播放";
+                activated => {
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                activated => {
+                    root.action("next", 0);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                activated => {
+                    root.action("last", 0);
+                }
+            }
+            Menu {
+                title: "添加到歌单";
+                MenuItem {
+                    title: "新建歌单…";
+                    activated => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                for p in root.playlists: MenuItem {
+                    title: p.name;
+                    activated => {
+                        root.action("add", p.id);
+                    }
+                }
+            }
+            MenuItem {
+                title: root.track.favorite ? "取消收藏" : "收藏";
+                activated => {
+                    root.action("favorite", root.track.favorite ? 0 : 1);
+                }
+            }
+            MenuItem {
+                title: "相似歌曲";
+                activated => {
+                    root.action("similar", 0);
+                }
+            }
+            if root.track.album-id > 0: MenuItem {
+                title: "转到专辑";
+                activated => {
+                    root.action("album", root.track.album-id);
+                }
+            }
+            if root.track.artist-id > 0: MenuItem {
+                title: "转到艺人";
+                activated => {
+                    root.action("artist", root.track.artist-id);
+                }
+            }
+            if root.mode == 2: MenuItem {
+                title: "从歌单移除";
+                activated => {
+                    root.action("remove", 0);
+                }
+            }
+        }
+
+        row-area := TouchArea {
+            double-clicked => {
+                root.action("play", 0);
+            }
+            pointer-event(e) => {
+                if root.mode == 2 && e.button == PointerEventButton.left {
+                    if e.kind == PointerEventKind.down {
+                        root.press-y = self.mouse-y;
+                    }
+                    if e.kind == PointerEventKind.up && root.dragging {
+                        root.dragging = false;
+                        root.drop();
+                    }
+                }
+            }
+            moved => {
+                if root.mode == 2 && self.pressed && (root.dragging || abs(self.mouse-y - root.press-y) > 6px) {
+                    root.dragging = true;
+                    root.drag(round((self.mouse-y - root.press-y) / root.height));
+                }
+            }
+        }
+    }
+}
+
+// Track list with a column header. `mode` as in `TrackRowView`.
 export component TrackList inherits Rectangle {
-    in property <[TrackRow]> tracks;
-    in property <int> total;
+    in property <[TrackRow]> rows;
+    in property <int> mode;
     in property <int> playing-id: -1;
-    callback play-track(int);
-    callback enqueue-track(int, bool);
-    // 32px side padding, # 48px, duration 56px, 4 gaps of 16px.
-    property <length> flex: max(0px, self.width - 64px - 48px - 56px - 64px);
-    property <length> title-w: root.flex * 0.42;
-    property <length> artist-w: root.flex * 0.24;
+    in property <[PlaylistChoice]> playlists;
+    in property <string> empty-text: "没有曲目";
+    in property <bool> loading;
+    // (action, row index, argument)
+    callback action(string, int, int);
+    // 32px side padding, fixed columns, 5 gaps of 16px.
+    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px);
+    property <length> title-w: root.mode == 1 ? root.flex * 0.62 : root.flex * 0.42;
+    property <length> artist-w: root.mode == 1 ? root.flex * 0.38 - 16px : root.flex * 0.24;
     property <length> album-w: root.flex * 0.34;
+    // Playlist drag and drop: dragged row and where it would land.
+    property <int> drag-from: -1;
+    property <int> drop-at: -1;
 
     VerticalLayout {
         HorizontalLayout {
             padding-left: 32px;
             padding-right: 32px;
-            padding-top: 24px;
-            padding-bottom: 12px;
-            Text {
-                text: "曲目";
-                color: Theme.text;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            Text {
-                text: root.total == 0 ? "" : root.tracks.length < root.total ? root.tracks.length + " / " + root.total : root.total + " 首";
-                color: Theme.text-dim;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
-
-        // Column header.
-        HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
             height: 28px;
             spacing: 16px;
-            Text { text: "#"; width: 48px; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
+            Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
             Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
             Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            Text { text: "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            Text { text: "时长"; width: 56px; color: Theme.text-faint; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
+            if root.mode != 1: Text { text: "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
+            Rectangle { width: TrackColumns.heart; }
+            Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
         }
 
         Rectangle {
@@ -324,78 +563,38 @@ export component TrackList inherits Rectangle {
             background: Theme.border;
         }
 
-        ListView {
-            for track in root.tracks: Rectangle {
-                height: 36px;
-                background: row-area.has-hover ? Theme.surface-hover : transparent;
+        if root.rows.length == 0: Rectangle {
+            vertical-stretch: 1;
+            Text {
+                text: root.loading ? "加载中…" : root.empty-text;
+                color: Theme.text-faint;
+            }
+        }
 
-                HorizontalLayout {
-                    padding-left: 32px;
-                    padding-right: 32px;
-                    spacing: 16px;
-                    Text {
-                        text: track.index + 1;
-                        width: 48px;
-                        color: (track.id == root.playing-id) ? Theme.accent : Theme.text-faint;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: track.title;
-                        width: root.title-w;
-                        color: (track.id == root.playing-id) ? Theme.accent : Theme.text;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: track.artist;
-                        width: root.artist-w;
-                        color: Theme.text-dim;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: track.album;
-                        width: root.album-w;
-                        color: Theme.text-dim;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        text: track.duration;
-                        width: 56px;
-                        color: Theme.text-dim;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                    }
+        if root.rows.length > 0: ListView {
+            vertical-stretch: 1;
+            for track[i] in root.rows: TrackRowView {
+                track: track;
+                mode: root.mode;
+                playing: track.id == root.playing-id;
+                playlists: root.playlists;
+                title-w: root.title-w;
+                artist-w: root.artist-w;
+                album-w: root.album-w;
+                drop-mark: root.drag-from < 0 || root.drop-at != i || root.drop-at == root.drag-from ? 0 : root.drop-at < root.drag-from ? -1 : 1;
+                action(what, arg) => {
+                    root.action(what, track.index, arg);
                 }
-
-                ContextMenuArea {
-                    Menu {
-                        MenuItem {
-                            title: "播放";
-                            activated => {
-                                root.play-track(track.index);
-                            }
-                        }
-                        MenuItem {
-                            title: "下一首播放";
-                            activated => {
-                                root.enqueue-track(track.index, true);
-                            }
-                        }
-                        MenuItem {
-                            title: "添加到队列末尾";
-                            activated => {
-                                root.enqueue-track(track.index, false);
-                            }
-                        }
+                drag(offset) => {
+                    root.drag-from = i;
+                    root.drop-at = max(0, min(root.rows.length - 1, i + offset));
+                }
+                drop => {
+                    if root.drop-at >= 0 && root.drop-at != root.drag-from {
+                        root.action("move", track.index, root.drop-at);
                     }
-
-                    row-area := TouchArea {
-                        double-clicked => {
-                            root.play-track(track.index);
-                        }
-                    }
+                    root.drag-from = -1;
+                    root.drop-at = -1;
                 }
             }
         }
@@ -408,6 +607,10 @@ export component QueuePanel inherits Rectangle {
     callback play(int);
     callback remove(int);
     callback clear();
+    // (uid, new play-order position)
+    callback move(int, int);
+    property <int> drag-from: -1;
+    property <int> drop-at: -1;
     background: Theme.surface;
 
     VerticalLayout {
@@ -450,13 +653,41 @@ export component QueuePanel inherits Rectangle {
 
         if root.rows.length > 0: ListView {
             for row[i] in root.rows: Rectangle {
+                property <length> press-y;
+                property <bool> dragging: root.drag-from == i;
                 height: 48px;
-                background: i == root.current ? Theme.accent-dim : area.has-hover ? Theme.surface-hover : transparent;
+                background: self.dragging ? Theme.accent-dim : i == root.current ? Theme.accent-dim : area.has-hover ? Theme.surface-hover : transparent;
 
                 area := TouchArea {
                     double-clicked => {
                         root.play(row.uid);
                     }
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.left {
+                            if e.kind == PointerEventKind.down {
+                                parent.press-y = self.mouse-y;
+                            }
+                            if e.kind == PointerEventKind.up && root.drag-from == i {
+                                if root.drop-at >= 0 && root.drop-at != i {
+                                    root.move(row.uid, root.drop-at);
+                                }
+                                root.drag-from = -1;
+                                root.drop-at = -1;
+                            }
+                        }
+                    }
+                    moved => {
+                        if self.pressed && (root.drag-from == i || abs(self.mouse-y - parent.press-y) > 6px) {
+                            root.drag-from = i;
+                            root.drop-at = max(0, min(root.rows.length - 1, i + round((self.mouse-y - parent.press-y) / parent.height)));
+                        }
+                    }
+                }
+
+                if root.drag-from >= 0 && root.drop-at == i && i != root.drag-from: Rectangle {
+                    y: root.drop-at < root.drag-from ? 0 : parent.height - 2px;
+                    height: 2px;
+                    background: Theme.accent;
                 }
 
                 HorizontalLayout {
@@ -486,7 +717,7 @@ export component QueuePanel inherits Rectangle {
                     }
                     Rectangle {
                         width: 28px;
-                        remove-icon := Icon {
+                        Icon {
                             visible: area.has-hover || remove-area.has-hover;
                             kind: IconKind.close;
                             width: 14px;
@@ -601,6 +832,10 @@ export component PlayerBar inherits Rectangle {
     in property <bool> shuffle;
     // 0 off, 1 all, 2 one.
     in property <int> repeat;
+    in property <bool> favorite;
+    callback toggle-favorite();
+    callback open-album();
+    callback open-artist();
     in property <bool> sleep-active;
     // Remaining time or the mode, next to the button.
     in property <string> sleep-label;
@@ -652,17 +887,30 @@ export component PlayerBar inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 spacing: 2px;
+                horizontal-stretch: 1;
                 Text {
                     text: root.has-track ? root.title : "未在播放";
                     color: Theme.text;
                     font-weight: 600;
                     overflow: elide;
+                    TouchArea {
+                        mouse-cursor: root.has-track ? pointer : default;
+                        clicked => {
+                            root.open-album();
+                        }
+                    }
                 }
                 Text {
                     text: root.artist;
-                    color: Theme.text-dim;
+                    color: artist-area.has-hover ? Theme.text : Theme.text-dim;
                     font-size: 12px;
                     overflow: elide;
+                    artist-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open-artist();
+                        }
+                    }
                 }
                 Text {
                     text: root.quality;
@@ -670,6 +918,17 @@ export component PlayerBar inherits Rectangle {
                     color: Theme.accent;
                     font-size: 11px;
                     overflow: elide;
+                }
+            }
+
+            if root.has-track: IconButton {
+                kind: root.favorite ? IconKind.heart : IconKind.heart-outline;
+                active: root.favorite;
+                icon-size: 16px;
+                size: 32px;
+                y: (parent.height - self.height) / 2;
+                clicked => {
+                    root.toggle-favorite();
                 }
             }
         }

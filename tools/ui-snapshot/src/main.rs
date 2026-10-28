@@ -136,17 +136,65 @@ fn tracks() -> Value {
                 row.set_field("artist".into(), s(a));
                 row.set_field("album".into(), s(al));
                 row.set_field("duration".into(), s(d));
+                row.set_field("favorite".into(), Value::Bool(i % 4 == 1));
+                row.set_field("number".into(), s(&format!("1-{:02}", i + 1)));
+                row.set_field("album-id".into(), Value::Number(3.0));
+                row.set_field("artist-id".into(), Value::Number(5.0));
                 Value::Struct(row)
             })
             .collect(),
     )
 }
 
+fn strings(values: &[&str]) -> Value {
+    model(values.iter().map(|v| s(v)).collect())
+}
+
+fn bools(values: &[bool]) -> Value {
+    model(values.iter().map(|v| Value::Bool(*v)).collect())
+}
+
+fn list_query(sort: f64, desc: bool) -> Value {
+    let mut q = Struct::default();
+    q.set_field("sort".into(), Value::Number(sort));
+    q.set_field("desc".into(), Value::Bool(desc));
+    q.set_field("search".into(), s(""));
+    q.set_field("year-from".into(), s(""));
+    q.set_field("year-to".into(), s(""));
+    Value::Struct(q)
+}
+
+fn detail(
+    kind: f64,
+    title: &str,
+    subtitle: &str,
+    meta: &str,
+    quality: &str,
+    description: &str,
+) -> Value {
+    let mut d = Struct::default();
+    d.set_field("kind".into(), Value::Number(kind));
+    d.set_field("id".into(), Value::Number(1.0));
+    d.set_field("title".into(), s(title));
+    d.set_field("subtitle".into(), s(subtitle));
+    d.set_field("subtitle-id".into(), Value::Number(5.0));
+    d.set_field("meta".into(), s(meta));
+    d.set_field("quality".into(), s(quality));
+    d.set_field("description".into(), s(description));
+    d.set_field("favorite".into(), Value::Bool(kind == 0.0));
+    d.set_field("custom-artwork".into(), Value::Bool(false));
+    Value::Struct(d)
+}
+
 fn queue() -> Value {
     let rows = [
         ("夜に駆ける", "YOASOBI", "4:21"),
         ("晴天", "周杰伦", "4:29"),
-        ("Get Lucky (feat. Pharrell Williams & Nile Rodgers)", "Daft Punk", "6:09"),
+        (
+            "Get Lucky (feat. Pharrell Williams & Nile Rodgers)",
+            "Daft Punk",
+            "6:09",
+        ),
         ("だんご大家族", "茶太", "3:38"),
     ];
     model(
@@ -249,6 +297,66 @@ fn main() {
     inst.show().unwrap();
     set(&inst, "logged-in", Value::Bool(true));
     set(&inst, "server-label", s("https://music.example.com"));
+    set(&inst, "browse", Value::Bool(true));
+    set(
+        &inst,
+        "album-sorts",
+        strings(&[
+            "名称",
+            "最近添加",
+            "最近播放",
+            "发行日期",
+            "发行年份",
+            "随机",
+        ]),
+    );
+    set(
+        &inst,
+        "album-sort-desc",
+        bools(&[false, true, true, true, true, false]),
+    );
+    set(
+        &inst,
+        "track-sorts",
+        strings(&[
+            "专辑",
+            "名称",
+            "播放次数",
+            "最近播放",
+            "发行日期",
+            "发行年份",
+            "最近添加",
+            "时长",
+            "随机",
+        ]),
+    );
+    set(
+        &inst,
+        "track-sort-desc",
+        bools(&[false, false, true, true, true, true, true, false, false]),
+    );
+    set(
+        &inst,
+        "artist-sorts",
+        strings(&["名称", "专辑数", "曲目数", "随机"]),
+    );
+    set(
+        &inst,
+        "artist-sort-desc",
+        bools(&[false, true, true, false]),
+    );
+    set(
+        &inst,
+        "playlist-sorts",
+        strings(&["名称", "时长", "曲目数"]),
+    );
+    set(&inst, "playlist-sort-desc", bools(&[false, true, true]));
+    set(&inst, "q-albums", list_query(1.0, true));
+    set(&inst, "q-tracks", list_query(6.0, true));
+    set(&inst, "q-artists", list_query(0.0, false));
+    set(&inst, "q-playlists", list_query(0.0, false));
+    set(&inst, "q-fav-tracks", list_query(1.0, false));
+    set(&inst, "album-filter", s("艺人：YOASOBI"));
     // Columns for 1280 - 200 sidebar - 320 lyrics = 760px.
     set(&inst, "album-rows", album_rows(3));
     set(&inst, "album-loaded", Value::Number(500.0));
@@ -260,6 +368,7 @@ fn main() {
     set(&inst, "np-title", s("夜に駆ける"));
     set(&inst, "np-artist", s("YOASOBI"));
     set(&inst, "np-quality", s("FLAC / 24bit / 48kHz"));
+    set(&inst, "np-favorite", Value::Bool(true));
     set(&inst, "np-cover", Value::Image(cover(3)));
     set(&inst, "position-ms", Value::Number(83_000.0));
     set(&inst, "duration-ms", Value::Number(261_000.0));
@@ -288,6 +397,68 @@ fn main() {
     render(&window, size, &format!("{out}/queue.png"));
     set(&inst, "show-queue", Value::Bool(false));
 
+    // Library pages.
+    set(&inst, "show-lyrics", Value::Bool(false));
+    set(&inst, "artist-rows", album_rows(5));
+    set(&inst, "artist-total", Value::Number(321.0));
+    set(&inst, "page", Value::Number(3.0));
+    render(&window, size, &format!("{out}/artists.png"));
+    set(&inst, "playlist-rows", album_rows(5));
+    set(&inst, "playlist-count", Value::Number(24.0));
+    set(&inst, "page", Value::Number(4.0));
+    render(&window, size, &format!("{out}/playlists.png"));
+    set(&inst, "fav-tracks", tracks());
+    set(&inst, "page", Value::Number(5.0));
+    render(&window, size, &format!("{out}/favorites.png"));
+    set(&inst, "search-text", s("夜"));
+    set(&inst, "search-tracks", tracks());
+    set(&inst, "search-album-count", Value::Number(3.0));
+    set(&inst, "page", Value::Number(6.0));
+    render(&window, size, &format!("{out}/search.png"));
+
+    // Details.
+    set(&inst, "detail-tracks", tracks());
+    set(&inst, "detail-cover", Value::Image(cover(5)));
+    set(&inst, "can-go-back", Value::Bool(true));
+    set(
+        &inst,
+        "detail",
+        detail(
+            0.0,
+            "CLANNAD ORIGINAL SOUNDTRACK",
+            "麻枝准 / 戸越まごめ",
+            "2004 · 64 首 · 3 小时 2 分钟 · Soundtrack",
+            "最高 FLAC / 24bit / 96kHz",
+            "",
+        ),
+    );
+    set(&inst, "page", Value::Number(10.0));
+    render(&window, size, &format!("{out}/album.png"));
+    set(&inst, "detail-releases", album_rows(5));
+    set(
+        &inst,
+        "detail",
+        detail(
+            1.0,
+            "YOASOBI",
+            "",
+            "12 张专辑 · 140 首",
+            "",
+            "日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成。",
+        ),
+    );
+    render(&window, size, &format!("{out}/artist.png"));
+    set(
+        &inst,
+        "detail",
+        detail(2.0, "夜间播放", "", "40 首 · 2 小时 41 分钟", "", "客厅"),
+    );
+    set(&inst, "dialog", Value::Number(2.0));
+    set(&inst, "dialog-name", s("夜间播放"));
+    set(&inst, "dialog-description", s("客厅"));
+    render(&window, size, &format!("{out}/playlist.png"));
+    set(&inst, "dialog", Value::Number(0.0));
+
     set(&inst, "page", Value::Number(2.0));
     set(&inst, "notice", s(""));
     let devices: Vec<Value> = [
@@ -307,5 +478,14 @@ fn main() {
     set(&inst, "audio-device-index", Value::Number(2.0));
     set(&inst, "exclusive", Value::Bool(true));
     set(&inst, "tray-available", Value::Bool(true));
+    set(
+        &inst,
+        "transcode-options",
+        strings(&[
+            "原始文件（默认，无损）",
+            "FLAC（最高 48 kHz）",
+            "MP3 320 kbps",
+        ]),
+    );
     render(&window, size, &format!("{out}/settings.png"));
 }

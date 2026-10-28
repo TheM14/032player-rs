@@ -1,11 +1,16 @@
 import { Theme } from "theme.slint";
 import {
-    AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow,
-    LoginView, AlbumGrid, TrackList, LyricsPanel, QueuePanel, PlayerBar,
+    AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow, PlaylistChoice,
+    LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, QueuePanel, PlayerBar,
 } from "views.slint";
+import {
+    ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
+    ConfirmDialog,
+} from "library.slint";
 import { SettingsView } from "settings.slint";
+import { GhostButton, IconButton, IconKind, SearchField, Tab } from "controls.slint";
 
-export { AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow }
+export { AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo }
 
 component NavItem inherits Rectangle {
     in property <string> text;
@@ -54,25 +59,108 @@ export component AppWindow inherits Window {
     callback login(string, string, string);
     callback logout();
 
-    // Navigation: 0 albums, 1 tracks, 2 settings.
-    in-out property <int> page: 0;
+    // Navigation. Pages: 0 albums, 1 tracks, 2 settings, 3 artists,
+    // 4 playlists, 5 favorites, 6 search, 10 detail (see `detail.kind`).
+    // Rust keeps the history; `navigate(page, id)` opens details by id.
+    in property <int> page: 0;
+    in property <bool> can-go-back;
+    callback navigate(int, int);
+    callback go-back();
     in property <string> server-label;
+    // The server has /browse (sort direction, random, album year ranges).
+    in property <bool> browse;
+
+    // Card grids (`grid` ids): 0 albums, 1 artists, 2 favorite albums,
+    // 3 favorite artists, 4 search artists, 5 search albums, 6 artist
+    // releases, 7 playlists.
+    callback card-layout-changed(int, int, length);
+    // (grid, action, id, argument)
+    callback card-action(int, string, int, int);
+    // Track lists (`list` ids): 0 tracks page, 1 favorites, 2 detail,
+    // 3 search. (list, action, row index, argument)
+    callback track-action(int, string, int, int);
+    in property <[PlaylistChoice]> playlist-choices;
+
+    // List queries (`target`): 0 albums, 1 tracks, 2 artists, 3 playlists,
+    // 4 favorite albums, 5 favorite tracks, 6 favorite artists.
+    callback query-changed(int, ListQuery);
+    callback clear-filter(int);
+    in-out property <ListQuery> q-albums;
+    in-out property <ListQuery> q-tracks;
+    in-out property <ListQuery> q-artists;
+    in-out property <ListQuery> q-playlists;
+    in-out property <ListQuery> q-fav-albums;
+    in-out property <ListQuery> q-fav-tracks;
+    in-out property <ListQuery> q-fav-artists;
+    in property <[string]> album-sorts;
+    in property <[bool]> album-sort-desc;
+    in property <[string]> track-sorts;
+    in property <[bool]> track-sort-desc;
+    in property <[string]> artist-sorts;
+    in property <[bool]> artist-sort-desc;
+    in property <[string]> playlist-sorts;
+    in property <[bool]> playlist-sort-desc;
+    // Artist filter chips ("艺人：X").
+    in property <string> album-filter;
+    in property <string> track-filter;
 
     // Albums.
     in property <[AlbumRow]> album-rows;
     in property <int> album-loaded;
     in property <int> album-total;
-    callback album-layout-changed(int, length);
-    callback play-album(int);
-    // (album id, true: play next / false: add to the end)
-    callback enqueue-album(int, bool);
+    in property <bool> albums-loading;
 
     // Tracks.
     in property <[TrackRow]> tracks;
     in property <int> track-total;
-    callback play-track(int);
-    // (track list index, true: play next / false: add to the end)
-    callback enqueue-track(int, bool);
+    in property <bool> tracks-loading;
+    callback shuffle-all();
+
+    // Artists.
+    in property <[AlbumRow]> artist-rows;
+    in property <int> artist-total;
+    in property <bool> artists-loading;
+
+    // Playlists.
+    in property <[AlbumRow]> playlist-rows;
+    in property <int> playlist-count;
+    callback new-playlist();
+
+    // Favorites: tab 0 tracks, 1 albums, 2 artists.
+    in-out property <int> fav-tab: 0;
+    in property <[TrackRow]> fav-tracks;
+    in property <[AlbumRow]> fav-album-rows;
+    in property <[AlbumRow]> fav-artist-rows;
+    in property <int> fav-album-count;
+    in property <int> fav-artist-count;
+    in property <bool> fav-loading;
+
+    // Search: tab 0 tracks, 1 albums, 2 artists.
+    in-out property <string> search-text;
+    in-out property <int> search-tab: 0;
+    in property <[TrackRow]> search-tracks;
+    in property <[AlbumRow]> search-album-rows;
+    in property <[AlbumRow]> search-artist-rows;
+    in property <int> search-album-count;
+    in property <int> search-artist-count;
+    in property <bool> search-loading;
+    callback search(string);
+
+    // Detail page.
+    in property <DetailInfo> detail;
+    in property <image> detail-cover;
+    in property <bool> detail-loading;
+    in property <[TrackRow]> detail-tracks;
+    in property <[AlbumRow]> detail-releases;
+    in property <bool> playlist-artwork;
+    callback detail-action(string, int);
+
+    // Dialogs: 0 none, 1 new playlist, 2 edit playlist, 3 delete playlist.
+    in-out property <int> dialog: 0;
+    in-out property <string> dialog-name;
+    in-out property <string> dialog-description;
+    in property <string> dialog-message;
+    callback dialog-confirm(string, string);
 
     // Queue (play order).
     in property <[QueueRow]> queue;
@@ -83,6 +171,7 @@ export component AppWindow inherits Window {
     in property <int> repeat;
     callback play-queue-item(int);
     callback remove-queue-item(int);
+    callback move-queue-item(int, int);
     callback clear-queue();
     callback toggle-shuffle();
     callback cycle-repeat();
@@ -98,6 +187,7 @@ export component AppWindow inherits Window {
     in property <string> np-album;
     in property <string> np-quality;
     in property <image> np-cover;
+    in property <bool> np-favorite;
     in property <int> position-ms;
     in property <int> duration-ms;
     in property <string> position-text: "0:00";
@@ -110,6 +200,9 @@ export component AppWindow inherits Window {
     callback previous();
     callback seek(int);
     callback volume-changed(float);
+    callback toggle-now-favorite();
+    callback open-now-album();
+    callback open-now-artist();
 
     // Lyrics.
     in property <[LyricLine]> lyrics;
@@ -131,8 +224,24 @@ export component AppWindow inherits Window {
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
+    in property <[string]> transcode-options: ["原始文件"];
+    in-out property <int> transcode-index;
+    callback transcode-selected(int);
 
     in property <string> notice;
+
+    search-debounce := Timer {
+        interval: 400ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.search(root.search-text);
+        }
+    }
+
+    function count(n: int, unit: string) -> string {
+        return n == 0 ? "" : n + " " + unit;
+    }
 
     if !root.logged-in: LoginView {
         server <=> root.login-server;
@@ -168,24 +277,52 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                     }
                     NavItem {
+                        text: "搜索";
+                        selected: root.page == 6;
+                        clicked => {
+                            root.navigate(6, 0);
+                        }
+                    }
+                    NavItem {
                         text: "专辑";
                         selected: root.page == 0;
                         clicked => {
-                            root.page = 0;
+                            root.navigate(0, 0);
                         }
                     }
                     NavItem {
                         text: "曲目";
                         selected: root.page == 1;
                         clicked => {
-                            root.page = 1;
+                            root.navigate(1, 0);
+                        }
+                    }
+                    NavItem {
+                        text: "艺人";
+                        selected: root.page == 3;
+                        clicked => {
+                            root.navigate(3, 0);
+                        }
+                    }
+                    NavItem {
+                        text: "歌单";
+                        selected: root.page == 4;
+                        clicked => {
+                            root.navigate(4, 0);
+                        }
+                    }
+                    NavItem {
+                        text: "收藏";
+                        selected: root.page == 5;
+                        clicked => {
+                            root.navigate(5, 0);
                         }
                     }
                     NavItem {
                         text: "设置";
                         selected: root.page == 2;
                         clicked => {
-                            root.page = 2;
+                            root.navigate(2, 0);
                         }
                     }
                 }
@@ -215,31 +352,440 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 horizontal-stretch: 1;
-                if root.page == 0: AlbumGrid {
-                    rows: root.album-rows;
-                    loaded: root.album-loaded;
-                    total: root.album-total;
-                    layout-changed(n, size) => {
-                        root.album-layout-changed(n, size);
+
+                if root.page == 0: VerticalLayout {
+                    PageHeader {
+                        title: "专辑";
+                        count: root.album-total == 0 ? "" : root.album-loaded < root.album-total ? root.album-loaded + " / " + root.album-total : root.album-total + " 张";
+                        ListToolbar {
+                            sort-labels: root.album-sorts;
+                            sort-desc: root.album-sort-desc;
+                            query: root.q-albums;
+                            show-order: root.browse;
+                            show-years: true;
+                            filter-label: root.album-filter;
+                            changed(q) => {
+                                root.q-albums = q;
+                                root.query-changed(0, q);
+                            }
+                            clear-filter => {
+                                root.clear-filter(0);
+                            }
+                        }
                     }
-                    play-album(id) => {
-                        root.play-album(id);
-                    }
-                    enqueue-album(id, next) => {
-                        root.enqueue-album(id, next);
+                    CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.album-rows;
+                        kind: 0;
+                        loading: root.albums-loading;
+                        empty-text: "没有专辑";
+                        playlists: root.playlist-choices;
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(0, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(0, what, id, arg);
+                        }
                     }
                 }
-                if root.page == 1: TrackList {
-                    tracks: root.tracks;
-                    total: root.track-total;
-                    playing-id: root.playing-id;
-                    play-track(i) => {
-                        root.play-track(i);
+
+                if root.page == 1: VerticalLayout {
+                    PageHeader {
+                        title: "曲目";
+                        count: root.track-total == 0 ? "" : root.tracks.length < root.track-total ? root.tracks.length + " / " + root.track-total : root.track-total + " 首";
+                        ListToolbar {
+                            sort-labels: root.track-sorts;
+                            sort-desc: root.track-sort-desc;
+                            query: root.q-tracks;
+                            show-order: root.browse;
+                            show-years: true;
+                            filter-label: root.track-filter;
+                            changed(q) => {
+                                root.q-tracks = q;
+                                root.query-changed(1, q);
+                            }
+                            clear-filter => {
+                                root.clear-filter(1);
+                            }
+                            GhostButton {
+                                text: "随机播放全部";
+                                has-icon: true;
+                                icon: IconKind.shuffle;
+                                clicked => {
+                                    root.shuffle-all();
+                                }
+                            }
+                        }
                     }
-                    enqueue-track(i, next) => {
-                        root.enqueue-track(i, next);
+                    TrackList {
+                        vertical-stretch: 1;
+                        rows: root.tracks;
+                        mode: 0;
+                        loading: root.tracks-loading;
+                        playing-id: root.playing-id;
+                        playlists: root.playlist-choices;
+                        action(what, i, arg) => {
+                            root.track-action(0, what, i, arg);
+                        }
                     }
                 }
+
+                if root.page == 3: VerticalLayout {
+                    PageHeader {
+                        title: "艺人";
+                        count: root.count(root.artist-total, "位");
+                        ListToolbar {
+                            sort-labels: root.artist-sorts;
+                            sort-desc: root.artist-sort-desc;
+                            query: root.q-artists;
+                            show-order: root.browse;
+                            changed(q) => {
+                                root.q-artists = q;
+                                root.query-changed(2, q);
+                            }
+                        }
+                    }
+                    CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.artist-rows;
+                        kind: 1;
+                        loading: root.artists-loading;
+                        empty-text: "没有艺人";
+                        playlists: root.playlist-choices;
+                        init => {
+                            root.query-changed(2, root.q-artists);
+                        }
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(1, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(1, what, id, arg);
+                        }
+                    }
+                }
+
+                if root.page == 4: VerticalLayout {
+                    PageHeader {
+                        title: "歌单";
+                        count: root.count(root.playlist-count, "个");
+                        ListToolbar {
+                            sort-labels: root.playlist-sorts;
+                            sort-desc: root.playlist-sort-desc;
+                            query: root.q-playlists;
+                            changed(q) => {
+                                root.q-playlists = q;
+                                root.query-changed(3, q);
+                            }
+                            GhostButton {
+                                text: "新建歌单";
+                                has-icon: true;
+                                icon: IconKind.plus;
+                                clicked => {
+                                    root.new-playlist();
+                                }
+                            }
+                        }
+                    }
+                    CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.playlist-rows;
+                        kind: 2;
+                        empty-text: "还没有歌单";
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(7, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(7, what, id, arg);
+                        }
+                    }
+                }
+
+                if root.page == 5: VerticalLayout {
+                    PageHeader {
+                        title: "收藏";
+                        count: root.fav-tab == 0 ? root.count(root.fav-tracks.length, "首") : root.fav-tab == 1 ? root.count(root.fav-album-count, "张") : root.count(root.fav-artist-count, "位");
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Tab {
+                                text: "曲目";
+                                selected: root.fav-tab == 0;
+                                clicked => {
+                                    root.fav-tab = 0;
+                                }
+                            }
+                            Tab {
+                                text: "专辑";
+                                selected: root.fav-tab == 1;
+                                clicked => {
+                                    root.fav-tab = 1;
+                                }
+                            }
+                            Tab {
+                                text: "艺人";
+                                selected: root.fav-tab == 2;
+                                clicked => {
+                                    root.fav-tab = 2;
+                                }
+                            }
+                        }
+                        if root.fav-tab == 0: ListToolbar {
+                            sort-labels: root.track-sorts;
+                            sort-desc: root.track-sort-desc;
+                            query: root.q-fav-tracks;
+                            show-years: true;
+                            changed(q) => {
+                                root.q-fav-tracks = q;
+                                root.query-changed(5, q);
+                            }
+                        }
+                        if root.fav-tab == 1: ListToolbar {
+                            sort-labels: root.album-sorts;
+                            sort-desc: root.album-sort-desc;
+                            query: root.q-fav-albums;
+                            show-years: true;
+                            changed(q) => {
+                                root.q-fav-albums = q;
+                                root.query-changed(4, q);
+                            }
+                        }
+                        if root.fav-tab == 2: ListToolbar {
+                            sort-labels: root.artist-sorts;
+                            sort-desc: root.artist-sort-desc;
+                            query: root.q-fav-artists;
+                            show-order: root.browse;
+                            changed(q) => {
+                                root.q-fav-artists = q;
+                                root.query-changed(6, q);
+                            }
+                        }
+                    }
+                    if root.fav-tab == 0: TrackList {
+                        vertical-stretch: 1;
+                        rows: root.fav-tracks;
+                        mode: 0;
+                        loading: root.fav-loading;
+                        empty-text: "还没有收藏的曲目";
+                        playing-id: root.playing-id;
+                        playlists: root.playlist-choices;
+                        init => {
+                            root.query-changed(5, root.q-fav-tracks);
+                        }
+                        action(what, i, arg) => {
+                            root.track-action(1, what, i, arg);
+                        }
+                    }
+                    if root.fav-tab == 1: CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.fav-album-rows;
+                        kind: 0;
+                        loading: root.fav-loading;
+                        empty-text: "还没有收藏的专辑";
+                        playlists: root.playlist-choices;
+                        init => {
+                            root.query-changed(4, root.q-fav-albums);
+                        }
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(2, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(2, what, id, arg);
+                        }
+                    }
+                    if root.fav-tab == 2: CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.fav-artist-rows;
+                        kind: 1;
+                        loading: root.fav-loading;
+                        empty-text: "还没有收藏的艺人";
+                        playlists: root.playlist-choices;
+                        init => {
+                            root.query-changed(6, root.q-fav-artists);
+                        }
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(3, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(3, what, id, arg);
+                        }
+                    }
+                }
+
+                if root.page == 6: VerticalLayout {
+                    PageHeader {
+                        title: "搜索";
+                        search-field := SearchField {
+                            vertical-stretch: 0;
+                            height: 38px;
+                            placeholder: "搜索曲目、专辑、艺人";
+                            text <=> root.search-text;
+                            init => {
+                                self.focus();
+                            }
+                            edited => {
+                                search-debounce.restart();
+                            }
+                            accepted => {
+                                search-debounce.running = false;
+                                root.search(root.search-text);
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Tab {
+                                text: "曲目" + (root.search-tracks.length > 0 ? " " + root.search-tracks.length : "");
+                                selected: root.search-tab == 0;
+                                clicked => {
+                                    root.search-tab = 0;
+                                }
+                            }
+                            Tab {
+                                text: "专辑" + (root.search-album-count > 0 ? " " + root.search-album-count : "");
+                                selected: root.search-tab == 1;
+                                clicked => {
+                                    root.search-tab = 1;
+                                }
+                            }
+                            Tab {
+                                text: "艺人" + (root.search-artist-count > 0 ? " " + root.search-artist-count : "");
+                                selected: root.search-tab == 2;
+                                clicked => {
+                                    root.search-tab = 2;
+                                }
+                            }
+                        }
+                    }
+                    if root.search-tab == 0: TrackList {
+                        vertical-stretch: 1;
+                        rows: root.search-tracks;
+                        mode: 0;
+                        loading: root.search-loading;
+                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到曲目";
+                        playing-id: root.playing-id;
+                        playlists: root.playlist-choices;
+                        action(what, i, arg) => {
+                            root.track-action(3, what, i, arg);
+                        }
+                    }
+                    if root.search-tab == 1: CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.search-album-rows;
+                        kind: 0;
+                        loading: root.search-loading;
+                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到专辑";
+                        playlists: root.playlist-choices;
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(5, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(5, what, id, arg);
+                        }
+                    }
+                    if root.search-tab == 2: CardGrid {
+                        vertical-stretch: 1;
+                        rows: root.search-artist-rows;
+                        kind: 1;
+                        loading: root.search-loading;
+                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到艺人";
+                        playlists: root.playlist-choices;
+                        layout-changed(n, size) => {
+                            root.card-layout-changed(4, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(4, what, id, arg);
+                        }
+                    }
+                }
+
+                // Album, playlist, similar: header and a virtualized list.
+                if root.page == 10 && root.detail.kind != 1: VerticalLayout {
+                    DetailHeader {
+                        info: root.detail;
+                        cover: root.detail-cover;
+                        loading: root.detail-loading;
+                        artwork-upload: root.playlist-artwork;
+                        playlists: root.playlist-choices;
+                        action(what, arg) => {
+                            root.detail-action(what, arg);
+                        }
+                    }
+                    TrackList {
+                        vertical-stretch: 1;
+                        rows: root.detail-tracks;
+                        mode: root.detail.kind == 0 ? 1 : root.detail.kind == 2 ? 2 : 0;
+                        loading: root.detail-loading;
+                        empty-text: root.detail.kind == 2 ? "歌单是空的" : "没有曲目";
+                        playing-id: root.playing-id;
+                        playlists: root.playlist-choices;
+                        action(what, i, arg) => {
+                            root.track-action(2, what, i, arg);
+                        }
+                    }
+                }
+
+                // Artist: one scrolling page with top tracks and releases.
+                if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
+                    property <length> flex: max(0px, self.width - 64px - 48px - 28px - 56px - 80px);
+                    content-height: artist-page.preferred-height;
+                    artist-page := VerticalLayout {
+                        width: artist-flick.width;
+                        alignment: start;
+                        padding-bottom: 24px;
+                        DetailHeader {
+                            info: root.detail;
+                            cover: root.detail-cover;
+                            loading: root.detail-loading;
+                            playlists: root.playlist-choices;
+                            action(what, arg) => {
+                                root.detail-action(what, arg);
+                            }
+                        }
+                        if root.detail-tracks.length > 0: Text {
+                            x: 32px;
+                            height: 40px;
+                            text: "热门歌曲";
+                            color: Theme.text;
+                            font-size: 18px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        for track in root.detail-tracks: TrackRowView {
+                            track: track;
+                            mode: 0;
+                            playing: track.id == root.playing-id;
+                            playlists: root.playlist-choices;
+                            title-w: artist-flick.flex * 0.42;
+                            artist-w: artist-flick.flex * 0.24;
+                            album-w: artist-flick.flex * 0.34;
+                            action(what, arg) => {
+                                root.track-action(2, what, track.index, arg);
+                            }
+                        }
+                        if root.detail-releases.length > 0: Text {
+                            x: 32px;
+                            height: 56px;
+                            text: "作品";
+                            color: Theme.text;
+                            font-size: 18px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        CardRows {
+                            width: artist-flick.width;
+                            rows: root.detail-releases;
+                            kind: 0;
+                            playlists: root.playlist-choices;
+                            layout-changed(n, size) => {
+                                root.card-layout-changed(6, n, size);
+                            }
+                            action(what, id, arg) => {
+                                root.card-action(6, what, id, arg);
+                            }
+                        }
+                    }
+                }
+
                 if root.page == 2: SettingsView {
                     devices: root.audio-devices;
                     device-index <=> root.audio-device-index;
@@ -261,6 +807,22 @@ export component AppWindow inherits Window {
                     close-to-tray-toggled(on) => {
                         root.close-to-tray-toggled(on);
                     }
+                    transcode-options: root.transcode-options;
+                    transcode-index <=> root.transcode-index;
+                    transcode-selected(i) => {
+                        root.transcode-selected(i);
+                    }
+                }
+
+                if root.can-go-back && root.page == 10: IconButton {
+                    x: 8px;
+                    y: 8px;
+                    kind: IconKind.back;
+                    size: 32px;
+                    icon-size: 16px;
+                    clicked => {
+                        root.go-back();
+                    }
                 }
             }
 
@@ -273,6 +835,9 @@ export component AppWindow inherits Window {
                 }
                 remove(uid) => {
                     root.remove-queue-item(uid);
+                }
+                move(uid, to) => {
+                    root.move-queue-item(uid, to);
                 }
                 clear => {
                     root.clear-queue();
@@ -295,6 +860,7 @@ export component AppWindow inherits Window {
             album: root.np-album;
             quality: root.np-quality;
             cover: root.np-cover;
+            favorite: root.np-favorite;
             position-ms: root.position-ms;
             duration-ms: root.duration-ms;
             position-text: root.position-text;
@@ -310,6 +876,15 @@ export component AppWindow inherits Window {
             sleep-label: root.sleep-label;
             set-sleep(mode, minutes) => {
                 root.set-sleep(mode, minutes);
+            }
+            toggle-favorite => {
+                root.toggle-now-favorite();
+            }
+            open-album => {
+                root.open-now-album();
+            }
+            open-artist => {
+                root.open-now-artist();
             }
             toggle-queue => {
                 root.show-queue = !root.show-queue;
@@ -349,6 +924,33 @@ export component AppWindow inherits Window {
                     root.show-lyrics-changed(root.show-lyrics);
                 }
             }
+        }
+    }
+
+    if root.dialog == 1 || root.dialog == 2: PromptDialog {
+        title: root.dialog == 1 ? "新建歌单" : "编辑歌单";
+        confirm-text: root.dialog == 1 ? "创建" : "保存";
+        name <=> root.dialog-name;
+        description <=> root.dialog-description;
+        confirm(name, description) => {
+            root.dialog-confirm(name, description);
+            root.dialog = 0;
+        }
+        cancel => {
+            root.dialog = 0;
+        }
+    }
+
+    if root.dialog == 3: ConfirmDialog {
+        title: "删除歌单";
+        message: root.dialog-message;
+        confirm-text: "删除";
+        confirm => {
+            root.dialog-confirm("", "");
+            root.dialog = 0;
+        }
+        cancel => {
+            root.dialog = 0;
         }
     }
 

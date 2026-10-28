@@ -1,12 +1,13 @@
-//! Album grid model: albums chunked into rows of `columns` cards for a
-//! virtualized ListView. Covers load lazily: `row_data` is only called for
-//! rows the ListView instantiates, and that is where artwork is requested.
+//! Card grid model (albums, artists, playlists): items chunked into rows of
+//! `columns` cards for a virtualized ListView. Covers load lazily:
+//! `row_data` is only called for rows the ListView instantiates, and that
+//! is where artwork is requested.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use client_core::{AlbumItem, Command, Commander};
+use client_core::{AlbumItem, ArtistItem, Command, Commander, PlaylistItem};
 use slint::{Image, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 
 use crate::{AlbumCard, AlbumRow};
@@ -26,13 +27,82 @@ fn parse_key(key: &str) -> Option<(u32, &str)> {
     Some((px.parse().ok()?, path))
 }
 
+/// What a card shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Card {
+    pub id: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub year: i32,
+    /// Server-relative artwork / image path.
+    pub artwork: String,
+    pub artist_id: i64,
+    pub favorite: bool,
+    pub badge: String,
+}
+
+impl From<AlbumItem> for Card {
+    fn from(a: AlbumItem) -> Self {
+        let badge = match a.relation.as_str() {
+            "collaboration" => "合作",
+            "appearance" => "参与",
+            "credit" => "制作",
+            _ => "",
+        };
+        Self {
+            id: a.id,
+            title: a.title,
+            subtitle: a.artist,
+            year: a.year,
+            artwork: a.artwork,
+            artist_id: a.artist_id,
+            favorite: a.favorite,
+            badge: badge.into(),
+        }
+    }
+}
+
+impl From<ArtistItem> for Card {
+    fn from(a: ArtistItem) -> Self {
+        let subtitle = match (a.album_count, a.track_count) {
+            (0, 0) => String::new(),
+            (0, t) => format!("{t} 首"),
+            (n, _) => format!("{n} 张专辑"),
+        };
+        Self {
+            id: a.id,
+            title: a.name,
+            subtitle,
+            artwork: a.image,
+            favorite: a.favorite,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<PlaylistItem> for Card {
+    fn from(p: PlaylistItem) -> Self {
+        let subtitle = match p.duration {
+            Some(d) if p.track_count > 0 => format!("{} 首 · {d}", p.track_count),
+            _ => format!("{} 首", p.track_count),
+        };
+        Self {
+            id: p.id,
+            title: p.name,
+            subtitle,
+            artwork: p.artwork,
+            ..Self::default()
+        }
+    }
+}
+
 struct Entry {
-    item: AlbumItem,
+    item: Card,
     cover: Option<Image>,
     requested: Cell<bool>,
 }
 
-pub struct AlbumGridModel {
+pub struct CardGridModel {
     entries: RefCell<Vec<Entry>>,
     /// Entry indices by artwork path.
     by_path: RefCell<HashMap<String, Vec<usize>>>,
@@ -45,7 +115,7 @@ pub struct AlbumGridModel {
     commander: Commander,
 }
 
-impl AlbumGridModel {
+impl CardGridModel {
     pub fn new(commander: Commander) -> Rc<Self> {
         Rc::new(Self {
             entries: RefCell::default(),
@@ -73,7 +143,7 @@ impl AlbumGridModel {
         self.entries.borrow().len()
     }
 
-    pub fn append(&self, items: Vec<AlbumItem>) {
+    pub fn append(&self, items: Vec<Card>) {
         let columns = self.columns.get();
         let (old_len, new_len) = {
             let mut entries = self.entries.borrow_mut();
@@ -172,6 +242,40 @@ impl AlbumGridModel {
         true
     }
 
+    /// Replaces every item (small lists that are loaded at once).
+    pub fn set(&self, items: Vec<Card>) {
+        self.clear();
+        self.append(items);
+    }
+
+    /// Updates the favorite flag of the card `id`.
+    pub fn set_favorite(&self, id: i64, favorite: bool) {
+        let columns = self.columns.get();
+        let rows: Vec<usize> = {
+            let mut entries = self.entries.borrow_mut();
+            entries
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, e)| e.item.id == id && e.item.favorite != favorite)
+                .map(|(i, e)| {
+                    e.item.favorite = favorite;
+                    i / columns
+                })
+                .collect()
+        };
+        for row in rows {
+            self.notify.row_changed(row);
+        }
+    }
+
+    pub fn item(&self, id: i64) -> Option<Card> {
+        self.entries
+            .borrow()
+            .iter()
+            .find(|e| e.item.id == id)
+            .map(|e| e.item.clone())
+    }
+
     pub fn cover(&self, path: &str) -> Option<Image> {
         let by_path = self.by_path.borrow();
         let i = *by_path.get(path)?.first()?;
@@ -179,7 +283,7 @@ impl AlbumGridModel {
     }
 }
 
-impl Model for AlbumGridModel {
+impl Model for CardGridModel {
     type Data = AlbumRow;
 
     fn row_count(&self) -> usize {
@@ -210,13 +314,16 @@ impl Model for AlbumGridModel {
                 AlbumCard {
                     id: i32::try_from(entry.item.id).unwrap_or(i32::MAX),
                     title: SharedString::from(entry.item.title.as_str()),
-                    artist: SharedString::from(entry.item.artist.as_str()),
+                    artist: SharedString::from(entry.item.subtitle.as_str()),
                     year: if entry.item.year > 0 {
                         entry.item.year.to_string().into()
                     } else {
                         SharedString::new()
                     },
                     cover: entry.cover.clone().unwrap_or_default(),
+                    artist_id: i32::try_from(entry.item.artist_id).unwrap_or(0),
+                    favorite: entry.item.favorite,
+                    badge: SharedString::from(entry.item.badge.as_str()),
                 }
             })
             .collect();

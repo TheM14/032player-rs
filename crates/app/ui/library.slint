@@ -1,0 +1,581 @@
+import { ComboBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import {
+    Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
+} from "controls.slint";
+import { AlbumRow, PlaylistChoice, CardView } from "views.slint";
+
+// Sort, direction, search and year range of one list. Years are strings
+// (empty: no bound) as typed.
+export struct ListQuery {
+    sort: int,
+    desc: bool,
+    search: string,
+    year-from: string,
+    year-to: string,
+}
+
+// What the detail page shows. `kind`: 0 album, 1 artist, 2 playlist,
+// 3 similar tracks. `subtitle-id`: artist to open from the subtitle.
+export struct DetailInfo {
+    kind: int,
+    id: int,
+    title: string,
+    subtitle: string,
+    subtitle-id: int,
+    meta: string,
+    quality: string,
+    description: string,
+    favorite: bool,
+    custom-artwork: bool,
+}
+
+// Search, sort, direction, year range and the artist filter of a list.
+// Edits are committed with `changed` (search and years debounced).
+export component ListToolbar inherits HorizontalLayout {
+    in property <[string]> sort-labels;
+    // Default direction per sort (descending?).
+    in property <[bool]> sort-desc;
+    in property <ListQuery> query;
+    in property <bool> show-order: true;
+    in property <bool> show-years: false;
+    in property <bool> show-search: true;
+    in property <string> filter-label;
+    callback changed(ListQuery);
+    callback clear-filter();
+    property <string> search: root.query.search;
+    property <string> year-from: root.query.year-from;
+    property <string> year-to: root.query.year-to;
+    spacing: 8px;
+    alignment: start;
+    height: 32px;
+
+    function commit(sort: int, desc: bool) {
+        debounce.running = false;
+        root.changed({
+            sort: sort,
+            desc: desc,
+            search: root.search,
+            year-from: root.year-from,
+            year-to: root.year-to,
+        });
+    }
+
+    debounce := Timer {
+        interval: 400ms;
+        running: false;
+        triggered => {
+            root.commit(root.query.sort, root.query.desc);
+        }
+    }
+
+    if root.show-search: SearchField {
+        width: 220px;
+        text <=> root.search;
+        edited => {
+            debounce.restart();
+        }
+        accepted => {
+            root.commit(root.query.sort, root.query.desc);
+        }
+    }
+
+    if root.sort-labels.length > 0: ComboBox {
+        width: 150px;
+        model: root.sort-labels;
+        current-index: root.query.sort;
+        selected => {
+            root.commit(self.current-index, root.sort-desc[self.current-index]);
+        }
+    }
+
+    if root.show-order && root.sort-labels.length > 0: IconButton {
+        kind: root.query.desc ? IconKind.arrow-down : IconKind.arrow-up;
+        size: 32px;
+        icon-size: 16px;
+        clicked => {
+            root.commit(root.query.sort, !root.query.desc);
+        }
+    }
+
+    if root.show-years: HorizontalLayout {
+        spacing: 4px;
+        SmallInput {
+            placeholder: "起始年";
+            text <=> root.year-from;
+            edited => {
+                debounce.restart();
+            }
+        }
+        Text {
+            text: "–";
+            color: Theme.text-faint;
+            vertical-alignment: center;
+        }
+        SmallInput {
+            placeholder: "结束年";
+            text <=> root.year-to;
+            edited => {
+                debounce.restart();
+            }
+        }
+    }
+
+    if root.filter-label != "": Chip {
+        y: 2px;
+        text: root.filter-label;
+        removed => {
+            root.clear-filter();
+        }
+    }
+
+    @children
+}
+
+// Page title with a count on the right and a toolbar row below.
+export component PageHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> count;
+    vertical-stretch: 0;
+    padding-left: 32px;
+    padding-right: 32px;
+    padding-top: 24px;
+    padding-bottom: 12px;
+    spacing: 12px;
+
+    HorizontalLayout {
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        Text {
+            text: root.count;
+            color: Theme.text-dim;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    @children
+}
+
+// Cards without virtualization (short lists inside a scrolling page).
+export component CardRows inherits VerticalLayout {
+    in property <[AlbumRow]> rows;
+    in property <int> kind;
+    in property <[PlaylistChoice]> playlists;
+    callback layout-changed(int, length);
+    callback action(string, int, int);
+    out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
+    out property <length> card-size: (self.width - 64px - (root.columns - 1) * 24px) / root.columns;
+    changed card-size => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+    init => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+    spacing: 24px;
+
+    for row in root.rows: HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 32px;
+        spacing: 24px;
+        alignment: start;
+        for card in row.items: CardView {
+            card: card;
+            kind: root.kind;
+            size: root.card-size;
+            playlists: root.playlists;
+            action(what, arg) => {
+                root.action(what, card.id, arg);
+            }
+        }
+    }
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 30px;
+    border-radius: 4px;
+    background: menu-area.has-hover ? Theme.surface-hover : transparent;
+    Text {
+        x: 10px;
+        text: root.text;
+        color: root.danger ? Theme.danger : Theme.text;
+        vertical-alignment: center;
+        height: 100%;
+        width: parent.width - 20px;
+        overflow: elide;
+    }
+    menu-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Cover, titles and actions of an album / artist / playlist / similar page.
+export component DetailHeader inherits Rectangle {
+    in property <DetailInfo> info;
+    in property <image> cover;
+    in property <bool> loading;
+    // The server takes custom playlist artwork.
+    in property <bool> artwork-upload;
+    in property <[PlaylistChoice]> playlists;
+    // (action, argument): play, shuffle, next, last, favorite, add,
+    // new-playlist, artist, edit, delete, artwork, artwork-reset,
+    // artist-tracks, artist-albums.
+    callback action(string, int);
+    height: 260px;
+
+    HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 48px;
+        padding-bottom: 12px;
+        spacing: 24px;
+
+        Rectangle {
+            width: 200px;
+            height: 200px;
+            border-radius: root.info.kind == 1 ? 100px : Theme.radius;
+            background: Theme.raised;
+            clip: true;
+            Image {
+                source: root.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: ImageFit.cover;
+            }
+        }
+
+        VerticalLayout {
+            alignment: end;
+            spacing: 6px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            Text {
+                text: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            if root.info.subtitle != "": Text {
+                text: root.info.subtitle;
+                color: subtitle-area.has-hover && root.info.subtitle-id > 0 ? Theme.accent : Theme.text;
+                overflow: elide;
+                subtitle-area := TouchArea {
+                    mouse-cursor: root.info.subtitle-id > 0 ? pointer : default;
+                    clicked => {
+                        if root.info.subtitle-id > 0 {
+                            root.action("artist", root.info.subtitle-id);
+                        }
+                    }
+                }
+            }
+            if root.info.meta != "": Text {
+                text: root.info.meta;
+                color: Theme.text-dim;
+                font-size: 12px;
+                overflow: elide;
+            }
+            if root.info.quality != "": Text {
+                text: root.info.quality;
+                color: Theme.accent;
+                font-size: 12px;
+            }
+            if root.info.description != "": Text {
+                text: root.info.description;
+                color: Theme.text-dim;
+                font-size: 12px;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 34px;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        root.action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "随机播放";
+                    has-icon: true;
+                    icon: IconKind.shuffle;
+                    clicked => {
+                        root.action("shuffle", 0);
+                    }
+                }
+                if root.info.kind == 0 || root.info.kind == 1: IconButton {
+                    kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
+                    active: root.info.favorite;
+                    size: 32px;
+                    icon-size: 16px;
+                    clicked => {
+                        root.action("favorite", root.info.favorite ? 0 : 1);
+                    }
+                }
+                if root.info.kind != 2: add-button := GhostButton {
+                    text: root.info.kind == 3 ? "另存为歌单" : "添加到歌单";
+                    clicked => {
+                        if root.info.kind == 3 {
+                            root.action("new-playlist", 0);
+                        } else {
+                            add-menu.show();
+                        }
+                    }
+                }
+                more := GhostButton {
+                    text: "更多";
+                    clicked => {
+                        more-menu.show();
+                    }
+                }
+            }
+        }
+    }
+
+    more-menu := PopupWindow {
+        x: 256px + 32px + 96px + 8px + 100px;
+        y: root.height - 12px;
+        width: 180px;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                MenuRow {
+                    text: "下一首播放";
+                    clicked => {
+                        root.action("next", 0);
+                    }
+                }
+                MenuRow {
+                    text: "添加到队列末尾";
+                    clicked => {
+                        root.action("last", 0);
+                    }
+                }
+                if root.info.kind == 1: MenuRow {
+                    text: "查看全部曲目";
+                    clicked => {
+                        root.action("artist-tracks", 0);
+                    }
+                }
+                if root.info.kind == 1: MenuRow {
+                    text: "查看全部专辑";
+                    clicked => {
+                        root.action("artist-albums", 0);
+                    }
+                }
+                if root.info.kind == 2: MenuRow {
+                    text: "编辑名称和简介";
+                    clicked => {
+                        root.action("edit", 0);
+                    }
+                }
+                if root.info.kind == 2 && root.artwork-upload: MenuRow {
+                    text: "更换封面…";
+                    clicked => {
+                        root.action("artwork", 0);
+                    }
+                }
+                if root.info.kind == 2 && root.artwork-upload && root.info.custom-artwork: MenuRow {
+                    text: "恢复默认封面";
+                    clicked => {
+                        root.action("artwork-reset", 0);
+                    }
+                }
+                if root.info.kind == 2: MenuRow {
+                    text: "删除歌单";
+                    danger: true;
+                    clicked => {
+                        root.action("delete", 0);
+                    }
+                }
+            }
+        }
+    }
+
+    add-menu := PopupWindow {
+        x: 256px + 32px + 96px + 8px + 100px;
+        y: root.height - 12px;
+        width: 220px;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                MenuRow {
+                    text: "新建歌单…";
+                    clicked => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                Flickable {
+                    height: min(240px, root.playlists.length * 30px);
+                    VerticalLayout {
+                        alignment: start;
+                        for p in root.playlists: MenuRow {
+                            text: p.name;
+                            clicked => {
+                                root.action("add", p.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Modal dialog asking for a name and a description.
+export component PromptDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> confirm-text: "确定";
+    in-out property <string> name;
+    in-out property <string> description;
+    callback confirm(string, string);
+    callback cancel();
+    background: #00000099;
+
+    // Swallows clicks outside the card.
+    TouchArea { }
+
+    Rectangle {
+        width: 420px;
+        height: card.preferred-height;
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        card := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            Field {
+                label: "名称";
+                text <=> root.name;
+                accepted => {
+                    if root.name != "" {
+                        root.confirm(root.name, root.description);
+                    }
+                }
+            }
+            Field {
+                label: "简介（可选）";
+                text <=> root.description;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                GhostButton {
+                    text: "取消";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                PrimaryButton {
+                    text: root.confirm-text;
+                    enabled: root.name != "";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        root.confirm(root.name, root.description);
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component ConfirmDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-text: "确定";
+    callback confirm();
+    callback cancel();
+    background: #00000099;
+
+    TouchArea { }
+
+    Rectangle {
+        width: 380px;
+        height: card.preferred-height;
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        card := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            Text {
+                text: root.message;
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                GhostButton {
+                    text: "取消";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                Rectangle {
+                    width: 96px;
+                    height: 32px;
+                    border-radius: Theme.radius;
+                    background: danger-area.has-hover ? Theme.danger.brighter(10%) : Theme.danger;
+                    Text {
+                        text: root.confirm-text;
+                        color: #ffffff;
+                        font-weight: 600;
+                    }
+                    danger-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.confirm();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

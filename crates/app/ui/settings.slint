@@ -49,6 +49,10 @@ export component SettingsView inherits Rectangle {
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
+    // Index 0: the original file.
+    in property <[string]> transcode-options;
+    in-out property <int> transcode-index;
+    callback transcode-selected(int);
 
     init => {
         root.opened();
@@ -99,6 +103,20 @@ export component SettingsView inherits Rectangle {
                 enabled: !root.output-busy;
                 toggled => {
                     root.exclusive-toggled(self.checked);
+                }
+            }
+        }
+
+        if root.transcode-options.length > 1: SettingRow {
+            title: "转码";
+            description: "默认播放原始文件（无损、bit-perfect）。网络较慢时可改用服务端转码；MP3 / Opus 拖动进度时会重新请求。";
+            ComboBox {
+                width: 320px;
+                y: (parent.height - self.height) / 2;
+                model: root.transcode-options;
+                current-index <=> root.transcode-index;
+                selected => {
+                    root.transcode-selected(self.current-index);
                 }
             }
         }

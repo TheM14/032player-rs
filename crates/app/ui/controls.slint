@@ -59,7 +59,7 @@ export component ValueBar inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more }
 
 // Vector icons (no icon font dependency). Transport icons are filled,
 // the others are drawn with a stroke in the same color.
@@ -68,7 +68,9 @@ export component Icon inherits Path {
     in property <color> color: Theme.text;
     property <bool> stroked: root.kind == IconKind.shuffle || root.kind == IconKind.repeat
         || root.kind == IconKind.repeat-one || root.kind == IconKind.queue || root.kind == IconKind.close
-        || root.kind == IconKind.sleep;
+        || root.kind == IconKind.sleep || root.kind == IconKind.heart-outline || root.kind == IconKind.back
+        || root.kind == IconKind.search || root.kind == IconKind.plus || root.kind == IconKind.arrow-up
+        || root.kind == IconKind.arrow-down;
     viewbox-width: 24;
     viewbox-height: 24;
     fill: root.stroked ? transparent : root.color;
@@ -84,6 +86,13 @@ export component Icon inherits Path {
         : root.kind == IconKind.queue ? "M 4 6 L 17 6 M 4 11 L 17 11 M 4 16 L 11 16 M 15 14 L 15 20 L 20 17 Z"
         : root.kind == IconKind.close ? "M 6 6 L 18 18 M 18 6 L 6 18"
         : root.kind == IconKind.sleep ? "M 19 14.5 A 7.5 7.5 0 1 1 9.5 5 A 6 6 0 0 0 19 14.5 Z"
+        : root.kind == IconKind.heart || root.kind == IconKind.heart-outline ? "M 12 20 C 12 20 3 14.5 3 8.5 C 3 5.5 5.5 3.5 8 3.5 C 9.8 3.5 11.2 4.5 12 6 C 12.8 4.5 14.2 3.5 16 3.5 C 18.5 3.5 21 5.5 21 8.5 C 21 14.5 12 20 12 20 Z"
+        : root.kind == IconKind.back ? "M 15 5 L 8 12 L 15 19"
+        : root.kind == IconKind.search ? "M 4 10.5 A 6.5 6.5 0 1 0 17 10.5 A 6.5 6.5 0 1 0 4 10.5 Z M 15.2 15.2 L 20 20"
+        : root.kind == IconKind.plus ? "M 12 5 L 12 19 M 5 12 L 19 12"
+        : root.kind == IconKind.arrow-up ? "M 12 19 L 12 5 M 6 11 L 12 5 L 18 11"
+        : root.kind == IconKind.arrow-down ? "M 12 5 L 12 19 M 6 13 L 12 19 L 18 13"
+        : root.kind == IconKind.more ? "M 4.5 10.5 L 7.5 10.5 L 7.5 13.5 L 4.5 13.5 Z M 10.5 10.5 L 13.5 10.5 L 13.5 13.5 L 10.5 13.5 Z M 16.5 10.5 L 19.5 10.5 L 19.5 13.5 L 16.5 13.5 Z"
         : "M 4 6 L 20 6 L 20 8 L 4 8 Z M 4 11 L 16 11 L 16 13 L 4 13 Z M 4 16 L 18 16 L 18 18 L 4 18 Z";
 }
 
@@ -192,6 +201,215 @@ export component PrimaryButton inherits Rectangle {
 
     area := TouchArea {
         enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Search box with icon, placeholder and clear button.
+export component SearchField inherits Rectangle {
+    in property <string> placeholder: "搜索";
+    in-out property <string> text;
+    // Fires on every edit (callers debounce) and on Enter.
+    callback edited();
+    callback accepted();
+    forward-focus: input;
+    height: 32px;
+    border-radius: Theme.radius;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+
+    Icon {
+        x: 8px;
+        kind: IconKind.search;
+        width: 16px;
+        height: 16px;
+        color: Theme.text-faint;
+    }
+
+    input := TextInput {
+        x: 30px;
+        width: parent.width - 30px - 28px;
+        height: 100%;
+        vertical-alignment: center;
+        text <=> root.text;
+        color: Theme.text;
+        selection-background-color: Theme.accent-dim;
+        single-line: true;
+        edited => {
+            root.edited();
+        }
+        accepted => {
+            root.accepted();
+        }
+    }
+
+    Text {
+        x: 30px;
+        visible: root.text == "";
+        text: root.placeholder;
+        color: Theme.text-faint;
+        vertical-alignment: center;
+        height: 100%;
+    }
+
+    if root.text != "": Rectangle {
+        x: parent.width - 26px;
+        width: 20px;
+        height: 20px;
+        Icon {
+            kind: IconKind.close;
+            width: 12px;
+            height: 12px;
+            color: clear-area.has-hover ? Theme.text : Theme.text-faint;
+        }
+        clear-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.text = "";
+                root.edited();
+                root.accepted();
+            }
+        }
+    }
+}
+
+// Bordered text button, optionally with an icon.
+export component GhostButton inherits Rectangle {
+    in property <string> text;
+    in property <IconKind> icon: IconKind.plus;
+    in property <bool> has-icon: false;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    callback clicked();
+    height: 32px;
+    min-width: label.preferred-width + (root.has-icon ? 44px : 24px);
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    background: root.active ? Theme.accent-dim : area.has-hover ? Theme.surface-hover : transparent;
+    opacity: root.enabled ? 1 : 0.4;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+        if root.has-icon: Icon {
+            kind: root.icon;
+            width: 14px;
+            height: 14px;
+            y: (parent.height - self.height) / 2;
+            color: root.active ? Theme.accent : Theme.text;
+        }
+        label := Text {
+            text: root.text;
+            color: root.active ? Theme.accent : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Small text input for numbers (year range).
+export component SmallInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text;
+    callback edited();
+    width: 64px;
+    height: 32px;
+    border-radius: Theme.radius;
+    background: Theme.bg;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    input := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: 100%;
+        vertical-alignment: center;
+        text <=> root.text;
+        color: Theme.text;
+        single-line: true;
+        input-type: InputType.number;
+        edited => {
+            root.edited();
+        }
+    }
+    Text {
+        x: 8px;
+        visible: root.text == "" && !input.has-focus;
+        text: root.placeholder;
+        color: Theme.text-faint;
+        vertical-alignment: center;
+        height: 100%;
+    }
+}
+
+// Removable filter label ("艺人：X ×").
+export component Chip inherits Rectangle {
+    in property <string> text;
+    callback removed();
+    height: 28px;
+    width: chip-label.preferred-width + 40px;
+    border-radius: 14px;
+    background: Theme.accent-dim;
+    chip-label := Text {
+        x: 12px;
+        text: root.text;
+        color: Theme.text;
+        font-size: 12px;
+        vertical-alignment: center;
+        height: 100%;
+    }
+    Rectangle {
+        x: parent.width - 24px;
+        width: 16px;
+        height: 16px;
+        Icon {
+            kind: IconKind.close;
+            width: 10px;
+            height: 10px;
+            color: chip-area.has-hover ? Theme.text : Theme.text-dim;
+        }
+        chip-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.removed();
+            }
+        }
+    }
+}
+
+// Tab strip entry.
+export component Tab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    height: 32px;
+    width: tab-label.preferred-width + 24px;
+    tab-label := Text {
+        text: root.text;
+        color: root.selected ? Theme.text : tab-area.has-hover ? Theme.text : Theme.text-dim;
+        font-weight: root.selected ? 600 : 400;
+    }
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        x: 8px;
+        width: parent.width - 16px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+    tab-area := TouchArea {
         mouse-cursor: pointer;
         clicked => {
             root.clicked();

@@ -1,29 +1,229 @@
-//! UI-thread state: models, callbacks, and applying core events.
+//! UI-thread state: models, callbacks, navigation and applying core events.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
 use client_core::{
-    AudioDevice, Command, Commander, Event, LoginFailure, QueuePosition, Repeat, Rgba, Settings,
-    SignOutReason, SleepTimer, TrackSource, format,
+    AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, AudioDevice, Command, Commander, DetailView,
+    Event, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort, QueuePosition,
+    Repeat, Rgba, ServerFeatures, Settings, SignOutReason, SleepTimer, SortOrder, TrackFilter,
+    TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
     VecModel,
 };
 
-use crate::albums::{AlbumGridModel, image_key};
-use crate::{AppWindow, LyricLine, QueueRow, TrackRow};
+use crate::cards::{Card, CardGridModel, image_key};
+use crate::{AppWindow, DetailInfo, ListQuery, LyricLine, PlaylistChoice, QueueRow, TrackRow};
+
+/// Card grids, by the `grid` id used in app.slint.
+const GRID_ALBUMS: usize = 0;
+const GRID_ARTISTS: usize = 1;
+const GRID_FAV_ALBUMS: usize = 2;
+const GRID_FAV_ARTISTS: usize = 3;
+const GRID_SEARCH_ARTISTS: usize = 4;
+const GRID_SEARCH_ALBUMS: usize = 5;
+const GRID_RELEASES: usize = 6;
+const GRID_PLAYLISTS: usize = 7;
+const GRIDS: usize = 8;
+
+/// Pages of app.slint.
+const PAGE_ALBUMS: i32 = 0;
+const PAGE_TRACKS: i32 = 1;
+const PAGE_PLAYLISTS: i32 = 4;
+const PAGE_DETAIL: i32 = 10;
+
+/// Detail header cover size (logical px).
+const DETAIL_COVER: f32 = 200.0;
+/// Playlist artwork upload limit of the server.
+const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_HISTORY: usize = 50;
+
+/// Where the content area is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Page(i32),
+    Album(i64),
+    Artist(i64),
+    Playlist(i64),
+    Similar(TrackList, usize),
+}
+
+/// What the open playlist dialog does on confirm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialog {
+    New(Option<TrackSource>),
+    Edit(i64),
+    Delete(i64),
+}
+
+/// Sort options of a list: value, label, default descending.
+struct Sorts<T> {
+    options: Vec<(T, &'static str, bool)>,
+}
+
+impl<T: Copy + PartialEq> Sorts<T> {
+    fn labels(&self) -> ModelRc<SharedString> {
+        ModelRc::new(VecModel::from(
+            self.options
+                .iter()
+                .map(|(_, l, _)| SharedString::from(*l))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    fn desc(&self) -> ModelRc<bool> {
+        ModelRc::new(VecModel::from(
+            self.options.iter().map(|(_, _, d)| *d).collect::<Vec<_>>(),
+        ))
+    }
+
+    fn get(&self, index: i32) -> Option<T> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.options.get(i))
+            .map(|(v, _, _)| *v)
+    }
+
+    fn index(&self, value: T) -> i32 {
+        self.options
+            .iter()
+            .position(|(v, _, _)| *v == value)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0)
+    }
+}
+
+/// Sort menus as in `list-sort-by-dropdown.tsx` (MUSIC032); random and
+/// some track sorts need `/browse`.
+fn album_sorts(browse: bool) -> Sorts<AlbumSort> {
+    let mut options = vec![
+        (AlbumSort::Title, "名称", false),
+        (AlbumSort::Added, "最近添加", true),
+        (AlbumSort::RecentlyPlayed, "最近播放", true),
+        (AlbumSort::Date, "发行日期", true),
+        (AlbumSort::Year, "发行年份", true),
+    ];
+    if browse {
+        options.push((AlbumSort::Random, "随机", false));
+    }
+    Sorts { options }
+}
+
+fn track_sorts(browse: bool) -> Sorts<TrackSort> {
+    let mut options = vec![
+        (TrackSort::Album, "专辑", false),
+        (TrackSort::Title, "名称", false),
+        (TrackSort::Plays, "播放次数", true),
+        (TrackSort::RecentlyPlayed, "最近播放", true),
+        (TrackSort::Date, "发行日期", true),
+        (TrackSort::Year, "发行年份", true),
+    ];
+    if browse {
+        options.push((TrackSort::Added, "最近添加", true));
+        options.push((TrackSort::Duration, "时长", false));
+        options.push((TrackSort::Random, "随机", false));
+    }
+    Sorts { options }
+}
+
+fn artist_sorts(browse: bool) -> Sorts<ArtistSort> {
+    let mut options = vec![
+        (ArtistSort::Name, "名称", false),
+        (ArtistSort::Albums, "专辑数", true),
+        (ArtistSort::Tracks, "曲目数", true),
+    ];
+    if browse {
+        options.push((ArtistSort::Random, "随机", false));
+    }
+    Sorts { options }
+}
+
+fn playlist_sorts() -> Sorts<PlaylistSort> {
+    Sorts {
+        options: vec![
+            (PlaylistSort::Name, "名称", false),
+            (PlaylistSort::Duration, "时长", true),
+            (PlaylistSort::TrackCount, "曲目数", true),
+        ],
+    }
+}
+
+/// Transcode choices the server offers (index 0: the original file).
+fn transcode_options(features: &ServerFeatures) -> Vec<(&'static str, Option<Transcode>)> {
+    let mut options = vec![("原始文件（默认，无损）", None)];
+    let has = |f: &str| features.transcode.iter().any(|t| t == f);
+    if has("flac") {
+        options.push(("FLAC（最高 48 kHz）", Some(Transcode::Flac48)));
+    }
+    if has("mp3") {
+        options.push(("MP3 320 kbps", Some(Transcode::Mp3(320))));
+        options.push(("MP3 192 kbps", Some(Transcode::Mp3(192))));
+        options.push(("MP3 128 kbps", Some(Transcode::Mp3(128))));
+    }
+    if has("ogg") {
+        options.push(("Opus 192 kbps", Some(Transcode::Ogg(192))));
+        options.push(("Opus 128 kbps", Some(Transcode::Ogg(128))));
+        options.push(("Opus 96 kbps", Some(Transcode::Ogg(96))));
+    }
+    options
+}
+
+fn order(desc: bool) -> SortOrder {
+    if desc {
+        SortOrder::Desc
+    } else {
+        SortOrder::Asc
+    }
+}
+
+fn query(sort: i32, desc: bool) -> ListQuery {
+    ListQuery {
+        sort,
+        desc,
+        ..ListQuery::default()
+    }
+}
+
+/// Year range from the two fields; a reversed range is swapped (the
+/// server rejects it).
+fn years(q: &ListQuery) -> (Option<i32>, Option<i32>) {
+    let parse = |s: &SharedString| s.trim().parse::<i32>().ok().filter(|y| *y > 0);
+    match (parse(&q.year_from), parse(&q.year_to)) {
+        (Some(a), Some(b)) if a > b => (Some(b), Some(a)),
+        range => range,
+    }
+}
 
 struct Ui {
     window: slint::Weak<AppWindow>,
     commander: Commander,
-    albums: Rc<AlbumGridModel>,
+    grids: Vec<Rc<CardGridModel>>,
     tracks: Rc<VecModel<TrackRow>>,
+    fav_tracks: Rc<VecModel<TrackRow>>,
+    detail_tracks: Rc<VecModel<TrackRow>>,
+    search_tracks: Rc<VecModel<TrackRow>>,
     lyrics: Rc<VecModel<LyricLine>>,
     queue: Rc<VecModel<QueueRow>>,
+    playlist_choices: Rc<VecModel<PlaylistChoice>>,
+    now: RefCell<Option<NowPlaying>>,
     now_cover_key: RefCell<Option<String>>,
+    detail_cover_key: RefCell<Option<String>>,
+    detail: RefCell<Option<DetailView>>,
+    route: Cell<Route>,
+    history: RefCell<Vec<Route>>,
+    dialog: Cell<Option<Dialog>>,
+    /// Artist filters of the albums / tracks pages (id, name).
+    album_artist: RefCell<Option<(i64, String)>>,
+    track_artist: RefCell<Option<(i64, String)>>,
+    /// Last query sent per target (pages re-announce theirs when shown).
+    sent: RefCell<HashMap<i32, (ListQuery, Option<i64>)>>,
+    browse: Cell<bool>,
+    transcode: Cell<Option<Transcode>>,
+    transcode_choices: RefCell<Vec<Option<Transcode>>>,
     notice_timer: Timer,
     /// Engine names behind the device combo box; index 0 (`None`) is the
     /// system default.
@@ -66,6 +266,664 @@ impl Ui {
         w.set_audio_devices(ModelRc::new(VecModel::from(labels)));
         w.set_audio_device_index(self.device_index());
     }
+
+    fn send(&self, command: Command) {
+        self.commander.send(command);
+    }
+
+    fn track_model(&self, list: TrackList) -> &Rc<VecModel<TrackRow>> {
+        match list {
+            TrackList::Library => &self.tracks,
+            TrackList::Favorites => &self.fav_tracks,
+            TrackList::Detail => &self.detail_tracks,
+            TrackList::Search => &self.search_tracks,
+        }
+    }
+
+    fn scale(&self, w: &AppWindow) -> f32 {
+        let _ = self;
+        w.window().scale_factor()
+    }
+
+    // ------------------------------------------------------------ navigation
+
+    fn navigate(&self, w: &AppWindow, route: Route) {
+        let current = self.route.get();
+        if current != route {
+            let mut history = self.history.borrow_mut();
+            history.push(current);
+            if history.len() > MAX_HISTORY {
+                history.remove(0);
+            }
+        }
+        self.show(w, route);
+    }
+
+    fn go_back(&self, w: &AppWindow) {
+        let previous = self.history.borrow_mut().pop();
+        if let Some(route) = previous {
+            self.show(w, route);
+        }
+    }
+
+    fn show(&self, w: &AppWindow, route: Route) {
+        self.route.set(route);
+        w.set_can_go_back(!self.history.borrow().is_empty());
+        let (kind, id) = match route {
+            Route::Page(page) => {
+                w.set_page(page);
+                return;
+            }
+            Route::Album(id) => (0, id),
+            Route::Artist(id) => (1, id),
+            Route::Playlist(id) => (2, id),
+            Route::Similar(..) => (3, 0),
+        };
+        // Empty page of the right kind until the detail arrives.
+        *self.detail.borrow_mut() = None;
+        *self.detail_cover_key.borrow_mut() = None;
+        w.set_detail(DetailInfo {
+            kind,
+            id: int(id),
+            ..DetailInfo::default()
+        });
+        w.set_detail_cover(Image::default());
+        w.set_detail_loading(true);
+        self.detail_tracks.set_vec(Vec::new());
+        self.grids[GRID_RELEASES].clear();
+        w.set_page(PAGE_DETAIL);
+        self.send(match route {
+            Route::Album(id) => Command::OpenAlbum(id),
+            Route::Artist(id) => Command::OpenArtist(id),
+            Route::Playlist(id) => Command::OpenPlaylist(id),
+            Route::Similar(list, index) => Command::OpenSimilar(list, index),
+            Route::Page(_) => return,
+        });
+    }
+
+    // ------------------------------------------------------------ queries
+
+    /// Sends a list query unless it is the one already shown.
+    fn query(&self, w: &AppWindow, target: i32, q: ListQuery) {
+        let artist = match target {
+            0 => self.album_artist.borrow().as_ref().map(|a| a.0),
+            1 => self.track_artist.borrow().as_ref().map(|a| a.0),
+            _ => None,
+        };
+        let key = (q.clone(), artist);
+        if self.sent.borrow().get(&target) == Some(&key) {
+            return;
+        }
+        self.sent.borrow_mut().insert(target, key);
+        let browse = self.browse.get();
+        let (year_from, year_to) = years(&q);
+        let search = q.search.trim().to_owned();
+        match target {
+            0 | 4 => {
+                let filter = AlbumFilter {
+                    sort: album_sorts(browse).get(q.sort).unwrap_or(AlbumSort::Added),
+                    order: order(q.desc),
+                    year_from,
+                    year_to,
+                    artist_id: artist,
+                    search,
+                };
+                if target == 4 {
+                    w.set_fav_loading(true);
+                }
+                self.send(Command::QueryAlbums {
+                    favorites: target == 4,
+                    filter,
+                });
+            }
+            1 | 5 => {
+                let filter = TrackFilter {
+                    sort: track_sorts(browse).get(q.sort).unwrap_or(TrackSort::Title),
+                    order: order(q.desc),
+                    year_from,
+                    year_to,
+                    artist_id: artist,
+                    search,
+                };
+                if target == 5 {
+                    w.set_fav_loading(true);
+                }
+                self.send(Command::QueryTracks {
+                    favorites: target == 5,
+                    filter,
+                });
+            }
+            2 | 6 => {
+                let filter = ArtistFilter {
+                    sort: artist_sorts(browse).get(q.sort).unwrap_or(ArtistSort::Name),
+                    order: order(q.desc),
+                    search,
+                };
+                if target == 6 {
+                    w.set_fav_loading(true);
+                }
+                self.send(Command::QueryArtists {
+                    favorites: target == 6,
+                    filter,
+                });
+            }
+            3 => self.send(Command::QueryPlaylists(PlaylistFilter {
+                sort: playlist_sorts().get(q.sort).unwrap_or_default(),
+                order: order(q.desc),
+                search,
+            })),
+            _ => {}
+        }
+    }
+
+    /// Shows the albums (`albums`) or tracks page filtered by an artist.
+    fn filter_by_artist(&self, w: &AppWindow, albums: bool, artist: Option<(i64, String)>) {
+        let label: SharedString = artist
+            .as_ref()
+            .map(|(_, name)| format!("艺人：{name}").into())
+            .unwrap_or_default();
+        if albums {
+            *self.album_artist.borrow_mut() = artist;
+            w.set_album_filter(label);
+            self.query(w, 0, w.get_q_albums());
+            if self.route.get() != Route::Page(PAGE_ALBUMS) {
+                self.navigate(w, Route::Page(PAGE_ALBUMS));
+            }
+        } else {
+            *self.track_artist.borrow_mut() = artist;
+            w.set_track_filter(label);
+            self.query(w, 1, w.get_q_tracks());
+            if self.route.get() != Route::Page(PAGE_TRACKS) {
+                self.navigate(w, Route::Page(PAGE_TRACKS));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ actions
+
+    fn open_dialog(&self, w: &AppWindow, dialog: Dialog, name: &str, description: &str) {
+        self.dialog.set(Some(dialog));
+        w.set_dialog_name(name.into());
+        w.set_dialog_description(description.into());
+        w.set_dialog(match dialog {
+            Dialog::New(_) => 1,
+            Dialog::Edit(_) => 2,
+            Dialog::Delete(_) => 3,
+        });
+    }
+
+    fn card_action(&self, w: &AppWindow, grid: usize, action: &str, id: i64, arg: i64) {
+        let card = self.grids.get(grid).and_then(|g| g.item(id));
+        let (source, kind) = match grid {
+            GRID_ARTISTS | GRID_FAV_ARTISTS | GRID_SEARCH_ARTISTS => {
+                (TrackSource::Artist(id), Some(FavoriteKind::Artist))
+            }
+            GRID_PLAYLISTS => (TrackSource::Playlist(id), None),
+            _ => (TrackSource::Album(id), Some(FavoriteKind::Album)),
+        };
+        match action {
+            "open" => self.navigate(
+                w,
+                match source {
+                    TrackSource::Artist(id) => Route::Artist(id),
+                    TrackSource::Playlist(id) => Route::Playlist(id),
+                    _ => Route::Album(id),
+                },
+            ),
+            "favorite" => {
+                if let Some(kind) = kind {
+                    self.send(Command::SetFavorite {
+                        kind,
+                        id,
+                        favorite: arg != 0,
+                    });
+                }
+            }
+            "artist" => self.navigate(w, Route::Artist(arg)),
+            "new-playlist" => {
+                let name = card.map(|c| c.title).unwrap_or_default();
+                self.open_dialog(w, Dialog::New(Some(source)), &name, "");
+            }
+            "delete" => {
+                let name = card.map(|c| c.title).unwrap_or_default();
+                w.set_dialog_message(format!("删除歌单「{name}」？此操作不能撤销。").into());
+                self.open_dialog(w, Dialog::Delete(id), "", "");
+            }
+            other => self.source_action(other, source, arg),
+        }
+    }
+
+    /// Play / shuffle / queue / add-to-playlist actions on a source.
+    fn source_action(&self, action: &str, source: TrackSource, arg: i64) {
+        match action {
+            "play" => self.send(Command::Play(source)),
+            "shuffle" => self.send(Command::ShufflePlay(source)),
+            "next" => self.send(Command::Enqueue {
+                source,
+                at: QueuePosition::Next,
+            }),
+            "last" => self.send(Command::Enqueue {
+                source,
+                at: QueuePosition::Last,
+            }),
+            "add" => self.send(Command::AddToPlaylist {
+                playlist_id: arg,
+                source,
+            }),
+            _ => {}
+        }
+    }
+
+    fn open_playlist_id(&self) -> Option<i64> {
+        match self.route.get() {
+            Route::Playlist(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn track_action(&self, w: &AppWindow, list: TrackList, action: &str, index: usize, arg: i64) {
+        let row = self.track_model(list).row_data(index);
+        match action {
+            "favorite" => {
+                if let Some(row) = row {
+                    self.send(Command::SetFavorite {
+                        kind: FavoriteKind::Track,
+                        id: row.id.into(),
+                        favorite: arg != 0,
+                    });
+                }
+            }
+            "similar" => self.navigate(w, Route::Similar(list, index)),
+            "album" => self.navigate(w, Route::Album(arg)),
+            "artist" => self.navigate(w, Route::Artist(arg)),
+            "new-playlist" => {
+                let name = row.map(|r| r.title.to_string()).unwrap_or_default();
+                let source = TrackSource::Track(list, index);
+                self.open_dialog(w, Dialog::New(Some(source)), &name, "");
+            }
+            "remove" => {
+                if let Some(playlist_id) = self.open_playlist_id() {
+                    self.send(Command::RemoveFromPlaylist { playlist_id, index });
+                }
+            }
+            "move" => {
+                let Some(playlist_id) = self.open_playlist_id() else {
+                    return;
+                };
+                let Ok(to) = usize::try_from(arg) else { return };
+                // Show the new order now; the reload confirms it.
+                let model = &self.detail_tracks;
+                if index < model.row_count() && to < model.row_count() {
+                    let row = model.remove(index);
+                    model.insert(to, row);
+                    for i in index.min(to)..=index.max(to) {
+                        if let Some(mut r) = model.row_data(i) {
+                            r.index = i32::try_from(i).unwrap_or(i32::MAX);
+                            model.set_row_data(i, r);
+                        }
+                    }
+                }
+                self.send(Command::MovePlaylistItem {
+                    playlist_id,
+                    from: index,
+                    to,
+                });
+            }
+            other => self.source_action(other, TrackSource::Track(list, index), arg),
+        }
+    }
+
+    fn detail_action(&self, w: &AppWindow, action: &str, arg: i64) {
+        let Some(view) = self.detail.borrow().clone() else {
+            return;
+        };
+        let (source, add_source) = match &view {
+            DetailView::Album(a) => (
+                TrackSource::List(TrackList::Detail),
+                TrackSource::Album(a.id),
+            ),
+            DetailView::Artist(a) => (TrackSource::Artist(a.id), TrackSource::Artist(a.id)),
+            DetailView::Playlist(_) | DetailView::Similar { .. } => (
+                TrackSource::List(TrackList::Detail),
+                TrackSource::List(TrackList::Detail),
+            ),
+        };
+        match (action, &view) {
+            ("favorite", DetailView::Album(a)) => self.send(Command::SetFavorite {
+                kind: FavoriteKind::Album,
+                id: a.id,
+                favorite: arg != 0,
+            }),
+            ("favorite", DetailView::Artist(a)) => self.send(Command::SetFavorite {
+                kind: FavoriteKind::Artist,
+                id: a.id,
+                favorite: arg != 0,
+            }),
+            ("artist", _) => self.navigate(w, Route::Artist(arg)),
+            ("add", _) => self.source_action("add", add_source, arg),
+            ("new-playlist", view) => {
+                let name = match view {
+                    DetailView::Album(a) => a.title.clone(),
+                    DetailView::Artist(a) => a.name.clone(),
+                    DetailView::Playlist(p) => p.name.clone(),
+                    DetailView::Similar { title, .. } => format!("与「{title}」相似"),
+                };
+                self.open_dialog(w, Dialog::New(Some(add_source)), &name, "");
+            }
+            ("edit", DetailView::Playlist(p)) => {
+                self.open_dialog(w, Dialog::Edit(p.id), &p.name, &p.description);
+            }
+            ("delete", DetailView::Playlist(p)) => {
+                w.set_dialog_message(format!("删除歌单「{}」？此操作不能撤销。", p.name).into());
+                self.open_dialog(w, Dialog::Delete(p.id), "", "");
+            }
+            ("artwork", DetailView::Playlist(p)) => self.pick_artwork(p.id),
+            ("artwork-reset", DetailView::Playlist(p)) => {
+                self.send(Command::SetPlaylistArtwork {
+                    playlist_id: p.id,
+                    image: None,
+                });
+            }
+            ("artist-tracks", DetailView::Artist(a)) => {
+                self.filter_by_artist(w, false, Some((a.id, a.name.clone())));
+            }
+            ("artist-albums", DetailView::Artist(a)) => {
+                self.filter_by_artist(w, true, Some((a.id, a.name.clone())));
+            }
+            (other, _) => self.source_action(other, source, arg),
+        }
+    }
+
+    /// Asks for an image file and uploads it as the playlist artwork.
+    fn pick_artwork(&self, playlist_id: i64) {
+        let Some(path) = os::dialog::pick_image() else {
+            return;
+        };
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size > MAX_ARTWORK_BYTES {
+            self.notice("图片太大（最大 10 MB）".into());
+            return;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => self.send(Command::SetPlaylistArtwork {
+                playlist_id,
+                image: Some(bytes),
+            }),
+            Err(e) => self.notice(format!("读取图片失败：{e}")),
+        }
+    }
+
+    fn dialog_confirm(&self, name: &str, description: &str) {
+        match self.dialog.take() {
+            Some(Dialog::New(tracks)) => self.send(Command::CreatePlaylist {
+                name: name.to_owned(),
+                description: description.to_owned(),
+                tracks,
+            }),
+            Some(Dialog::Edit(id)) => self.send(Command::UpdatePlaylist {
+                id,
+                name: name.to_owned(),
+                description: description.to_owned(),
+            }),
+            Some(Dialog::Delete(id)) => self.send(Command::DeletePlaylist(id)),
+            None => {}
+        }
+    }
+
+    fn notice(&self, text: String) {
+        let Some(w) = self.window.upgrade() else {
+            return;
+        };
+        tracing::warn!("{text}");
+        w.set_notice(text.into());
+        let weak = self.window.clone();
+        self.notice_timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_secs(5),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_notice(SharedString::new());
+                }
+            },
+        );
+    }
+
+    // ------------------------------------------------------------ events
+
+    fn logged_in(&self, w: &AppWindow, features: &ServerFeatures) {
+        let browse = features.browse;
+        self.browse.set(browse);
+        w.set_browse(browse);
+        w.set_playlist_artwork(features.playlist_artwork);
+        let albums = album_sorts(browse);
+        let tracks = track_sorts(browse);
+        let artists = artist_sorts(browse);
+        let playlists = playlist_sorts();
+        w.set_album_sorts(albums.labels());
+        w.set_album_sort_desc(albums.desc());
+        w.set_track_sorts(tracks.labels());
+        w.set_track_sort_desc(tracks.desc());
+        w.set_artist_sorts(artists.labels());
+        w.set_artist_sort_desc(artists.desc());
+        w.set_playlist_sorts(playlists.labels());
+        w.set_playlist_sort_desc(playlists.desc());
+
+        // The core loads albums and tracks with these at sign-in.
+        let initial = TrackFilter::initial(browse);
+        let q_albums = query(albums.index(AlbumSort::Added), true);
+        let q_tracks = query(tracks.index(initial.sort), initial.order == SortOrder::Desc);
+        w.set_q_albums(q_albums.clone());
+        w.set_q_tracks(q_tracks.clone());
+        w.set_q_fav_albums(q_albums.clone());
+        w.set_q_fav_tracks(query(tracks.index(TrackSort::Title), false));
+        w.set_q_artists(query(artists.index(ArtistSort::Name), false));
+        w.set_q_fav_artists(query(artists.index(ArtistSort::Name), false));
+        w.set_q_playlists(query(playlists.index(PlaylistSort::Name), false));
+        *self.album_artist.borrow_mut() = None;
+        *self.track_artist.borrow_mut() = None;
+        w.set_album_filter(SharedString::new());
+        w.set_track_filter(SharedString::new());
+        {
+            let mut sent = self.sent.borrow_mut();
+            sent.clear();
+            sent.insert(0, (q_albums, None));
+            sent.insert(1, (q_tracks, None));
+        }
+
+        let options = transcode_options(features);
+        w.set_transcode_options(ModelRc::new(VecModel::from(
+            options
+                .iter()
+                .map(|(label, _)| SharedString::from(*label))
+                .collect::<Vec<_>>(),
+        )));
+        let choices: Vec<Option<Transcode>> = options.into_iter().map(|(_, t)| t).collect();
+        let current = self.transcode.get();
+        w.set_transcode_index(
+            choices
+                .iter()
+                .position(|t| *t == current)
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(0),
+        );
+        *self.transcode_choices.borrow_mut() = choices;
+
+        self.history.borrow_mut().clear();
+        self.show(w, Route::Page(PAGE_ALBUMS));
+        w.set_search_text(SharedString::new());
+    }
+
+    fn detail_loaded(&self, w: &AppWindow, view: DetailView, tracks: Vec<TrackItem>) {
+        // Only the page on screen.
+        let matches = match (&view, self.route.get()) {
+            (DetailView::Album(a), Route::Album(id)) => a.id == id,
+            (DetailView::Artist(a), Route::Artist(id)) => a.id == id,
+            (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
+            (DetailView::Similar { .. }, Route::Similar(..)) => true,
+            _ => false,
+        };
+        if !matches {
+            return;
+        }
+        let multi_disc = matches!(&view, DetailView::Album(a) if a.multi_disc);
+        self.detail_tracks.set_vec(
+            tracks
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| track_row(t, i, multi_disc))
+                .collect::<Vec<_>>(),
+        );
+        let (info, artwork) = match &view {
+            DetailView::Album(a) => {
+                let mut meta = Vec::new();
+                if a.year > 0 {
+                    meta.push(a.year.to_string());
+                }
+                meta.push(format!("{} 首", a.track_count));
+                meta.push(a.duration.clone());
+                if !a.genres.is_empty() {
+                    meta.push(a.genres.clone());
+                }
+                if !a.label.is_empty() {
+                    meta.push(a.label.clone());
+                }
+                (
+                    DetailInfo {
+                        kind: 0,
+                        id: int(a.id),
+                        title: a.title.as_str().into(),
+                        subtitle: a.artist.as_str().into(),
+                        subtitle_id: int(a.artist_id),
+                        meta: meta.join(" · ").into(),
+                        quality: a.quality.clone().unwrap_or_default().into(),
+                        favorite: a.favorite,
+                        ..DetailInfo::default()
+                    },
+                    a.artwork.clone(),
+                )
+            }
+            DetailView::Artist(a) => {
+                self.grids[GRID_RELEASES].set(a.releases.iter().cloned().map(Card::from).collect());
+                let mut meta = Vec::new();
+                if a.album_count > 0 {
+                    meta.push(format!("{} 张专辑", a.album_count));
+                }
+                if a.track_count > 0 {
+                    meta.push(format!("{} 首", a.track_count));
+                }
+                (
+                    DetailInfo {
+                        kind: 1,
+                        id: int(a.id),
+                        title: a.name.as_str().into(),
+                        meta: meta.join(" · ").into(),
+                        description: a.biography.lines().next().unwrap_or_default().into(),
+                        favorite: a.favorite,
+                        ..DetailInfo::default()
+                    },
+                    a.image.clone(),
+                )
+            }
+            DetailView::Playlist(p) => {
+                let mut meta = vec![format!("{} 首", p.track_count)];
+                if let Some(d) = &p.duration {
+                    meta.push(d.clone());
+                }
+                (
+                    DetailInfo {
+                        kind: 2,
+                        id: int(p.id),
+                        title: p.name.as_str().into(),
+                        meta: meta.join(" · ").into(),
+                        description: p.description.as_str().into(),
+                        custom_artwork: p.has_custom_artwork,
+                        ..DetailInfo::default()
+                    },
+                    p.artwork.clone(),
+                )
+            }
+            DetailView::Similar { title, .. } => (
+                DetailInfo {
+                    kind: 3,
+                    title: format!("与「{title}」相似").into(),
+                    meta: format!("{} 首 · 按元数据相似度", self.detail_tracks.row_count()).into(),
+                    ..DetailInfo::default()
+                },
+                String::new(),
+            ),
+        };
+        w.set_detail(info);
+        w.set_detail_loading(false);
+        self.load_detail_cover(w, &artwork);
+        *self.detail.borrow_mut() = Some(view);
+    }
+
+    fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let px = (DETAIL_COVER * self.scale(w)).ceil() as u32;
+        let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
+        let same = *self.detail_cover_key.borrow() == key;
+        if same {
+            return;
+        }
+        w.set_detail_cover(Image::default());
+        if let Some(key) = &key {
+            self.send(Command::LoadImage {
+                key: key.clone(),
+                path: artwork.to_owned(),
+                px,
+            });
+        }
+        *self.detail_cover_key.borrow_mut() = key;
+    }
+
+    fn favorite_changed(&self, w: &AppWindow, kind: FavoriteKind, id: i64, favorite: bool) {
+        match kind {
+            FavoriteKind::Track => {
+                for model in [
+                    &self.tracks,
+                    &self.fav_tracks,
+                    &self.detail_tracks,
+                    &self.search_tracks,
+                ] {
+                    for i in 0..model.row_count() {
+                        if let Some(mut row) = model.row_data(i)
+                            && i64::from(row.id) == id
+                            && row.favorite != favorite
+                        {
+                            row.favorite = favorite;
+                            model.set_row_data(i, row);
+                        }
+                    }
+                }
+                if let Some(now) = self.now.borrow_mut().as_mut()
+                    && now.track_id == id
+                {
+                    now.favorite = favorite;
+                    w.set_np_favorite(favorite);
+                }
+            }
+            FavoriteKind::Album | FavoriteKind::Artist => {
+                for grid in &self.grids {
+                    grid.set_favorite(id, favorite);
+                }
+                let mut info = w.get_detail();
+                let kind_matches = (kind == FavoriteKind::Album && info.kind == 0)
+                    || (kind == FavoriteKind::Artist && info.kind == 1);
+                if kind_matches && i64::from(info.id) == id {
+                    info.favorite = favorite;
+                    w.set_detail(info);
+                    if let Some(view) = self.detail.borrow_mut().as_mut() {
+                        match view {
+                            DetailView::Album(a) => a.favorite = favorite,
+                            DetailView::Artist(a) => a.favorite = favorite,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -81,7 +939,17 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
     }
 }
 
+fn track_list(id: i32) -> TrackList {
+    match id {
+        1 => TrackList::Favorites,
+        2 => TrackList::Detail,
+        3 => TrackList::Search,
+        _ => TrackList::Library,
+    }
+}
+
 /// Wires callbacks and models; `settings` are the saved ones.
+#[allow(clippy::too_many_lines)]
 pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     #[allow(clippy::cast_possible_truncation)]
     window.set_volume(settings.volume as f32);
@@ -90,14 +958,54 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_close_to_tray(settings.close_to_tray);
     window.set_repeat(repeat_index(settings.repeat));
     window.set_shuffle(settings.shuffle);
-    let albums = AlbumGridModel::new(commander.clone());
-    let tracks = Rc::new(VecModel::<TrackRow>::default());
-    let lyrics = Rc::new(VecModel::<LyricLine>::default());
-    let queue = Rc::new(VecModel::<QueueRow>::default());
-    window.set_queue(ModelRc::from(queue.clone()));
-    window.set_album_rows(ModelRc::from(albums.clone()));
-    window.set_tracks(ModelRc::from(tracks.clone()));
-    window.set_lyrics(ModelRc::from(lyrics.clone()));
+    let grids: Vec<Rc<CardGridModel>> = (0..GRIDS)
+        .map(|_| CardGridModel::new(commander.clone()))
+        .collect();
+    let new_tracks = || Rc::new(VecModel::<TrackRow>::default());
+    let ui = Rc::new(Ui {
+        window: window.as_weak(),
+        commander: commander.clone(),
+        grids,
+        tracks: new_tracks(),
+        fav_tracks: new_tracks(),
+        detail_tracks: new_tracks(),
+        search_tracks: new_tracks(),
+        lyrics: Rc::new(VecModel::default()),
+        queue: Rc::new(VecModel::default()),
+        playlist_choices: Rc::new(VecModel::default()),
+        now: RefCell::default(),
+        now_cover_key: RefCell::default(),
+        detail_cover_key: RefCell::default(),
+        detail: RefCell::default(),
+        route: Cell::new(Route::Page(PAGE_ALBUMS)),
+        history: RefCell::default(),
+        dialog: Cell::new(None),
+        album_artist: RefCell::default(),
+        track_artist: RefCell::default(),
+        sent: RefCell::default(),
+        browse: Cell::new(true),
+        transcode: Cell::new(settings.transcode),
+        transcode_choices: RefCell::new(vec![None]),
+        notice_timer: Timer::default(),
+        device_names: RefCell::new(vec![None]),
+        selected_device: RefCell::new(settings.audio_device.clone()),
+    });
+    window.set_album_rows(ModelRc::from(ui.grids[GRID_ALBUMS].clone()));
+    window.set_artist_rows(ModelRc::from(ui.grids[GRID_ARTISTS].clone()));
+    window.set_fav_album_rows(ModelRc::from(ui.grids[GRID_FAV_ALBUMS].clone()));
+    window.set_fav_artist_rows(ModelRc::from(ui.grids[GRID_FAV_ARTISTS].clone()));
+    window.set_search_artist_rows(ModelRc::from(ui.grids[GRID_SEARCH_ARTISTS].clone()));
+    window.set_search_album_rows(ModelRc::from(ui.grids[GRID_SEARCH_ALBUMS].clone()));
+    window.set_detail_releases(ModelRc::from(ui.grids[GRID_RELEASES].clone()));
+    window.set_playlist_rows(ModelRc::from(ui.grids[GRID_PLAYLISTS].clone()));
+    window.set_tracks(ModelRc::from(ui.tracks.clone()));
+    window.set_fav_tracks(ModelRc::from(ui.fav_tracks.clone()));
+    window.set_detail_tracks(ModelRc::from(ui.detail_tracks.clone()));
+    window.set_search_tracks(ModelRc::from(ui.search_tracks.clone()));
+    window.set_queue(ModelRc::from(ui.queue.clone()));
+    window.set_lyrics(ModelRc::from(ui.lyrics.clone()));
+    window.set_playlist_choices(ModelRc::from(ui.playlist_choices.clone()));
+    UI.with(|cell| *cell.borrow_mut() = Some(ui));
 
     let c = commander.clone();
     let weak = window.as_weak();
@@ -115,6 +1023,93 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     let c = commander.clone();
     window.on_logout(move || c.send(Command::Logout));
 
+    // Navigation and library.
+    window.on_navigate(|page, id| {
+        with_ui(|ui, w| {
+            let id = i64::from(id);
+            let route = match page {
+                11 => Route::Artist(id),
+                12 => Route::Playlist(id),
+                10 => Route::Album(id),
+                page => Route::Page(page),
+            };
+            ui.navigate(w, route);
+        });
+    });
+    window.on_go_back(|| with_ui(|ui, w| ui.go_back(w)));
+    window.on_query_changed(|target, q| with_ui(|ui, w| ui.query(w, target, q)));
+    window.on_clear_filter(|target| with_ui(|ui, w| ui.filter_by_artist(w, target == 0, None)));
+    window.on_card_layout_changed(|grid, columns, card_size| {
+        with_ui(|ui, w| {
+            let scale = ui.scale(w);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let px = (card_size * scale).ceil().max(0.0) as u32;
+            if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
+                model.set_layout(usize::try_from(columns).unwrap_or(1), px);
+            }
+        });
+    });
+    window.on_card_action(|grid, action, id, arg| {
+        with_ui(|ui, w| {
+            if let Ok(grid) = usize::try_from(grid) {
+                ui.card_action(w, grid, &action, id.into(), arg.into());
+            }
+        });
+    });
+    window.on_track_action(|list, action, index, arg| {
+        with_ui(|ui, w| {
+            if let Ok(index) = usize::try_from(index) {
+                ui.track_action(w, track_list(list), &action, index, arg.into());
+            }
+        });
+    });
+    window
+        .on_detail_action(|action, arg| with_ui(|ui, w| ui.detail_action(w, &action, arg.into())));
+    window.on_dialog_confirm(|name, description| {
+        with_ui(|ui, _| ui.dialog_confirm(name.trim(), description.trim()));
+    });
+    window.on_new_playlist(|| {
+        with_ui(|ui, w| ui.open_dialog(w, Dialog::New(None), "", ""));
+    });
+    let c = commander.clone();
+    window.on_shuffle_all(move || c.send(Command::ShuffleAll));
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_search(move |text| {
+        if let Some(w) = weak.upgrade() {
+            w.set_search_loading(!text.trim().is_empty());
+        }
+        c.send(Command::Search(text.to_string()));
+    });
+    window.on_toggle_now_favorite(|| {
+        with_ui(|ui, _| {
+            if let Some(now) = ui.now.borrow().as_ref() {
+                ui.send(Command::SetFavorite {
+                    kind: FavoriteKind::Track,
+                    id: now.track_id,
+                    favorite: !now.favorite,
+                });
+            }
+        });
+    });
+    window.on_open_now_album(|| {
+        with_ui(|ui, w| {
+            let album = ui.now.borrow().as_ref().map(|n| n.album_id);
+            if let Some(id) = album.filter(|id| *id > 0) {
+                ui.navigate(w, Route::Album(id));
+            }
+        });
+    });
+    window.on_open_now_artist(|| {
+        with_ui(|ui, w| {
+            let artist = ui.now.borrow().as_ref().map(|n| n.artist_id);
+            if let Some(id) = artist.filter(|id| *id > 0) {
+                ui.navigate(w, Route::Artist(id));
+            }
+        });
+    });
+
+    // Settings.
     let c = commander.clone();
     window.on_show_lyrics_changed(move |show| c.send(Command::SetShowLyrics(show)));
     let c = commander.clone();
@@ -142,43 +1137,19 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     });
     let c = commander.clone();
     window.on_exclusive_toggled(move |on| c.send(Command::SetExclusive(on)));
-
-    let grid = albums.clone();
-    let weak = window.as_weak();
-    window.on_album_layout_changed(move |columns, card_size| {
-        let scale = weak.upgrade().map_or(1.0, |w| w.window().scale_factor());
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (card_size * scale).ceil().max(0.0) as u32;
-        grid.set_layout(usize::try_from(columns).unwrap_or(1), px);
-    });
-    let c = commander.clone();
-    window.on_play_album(move |id| {
-        c.send(Command::PlayAlbum {
-            album_id: id.into(),
-        })
-    });
-    let c = commander.clone();
-    window.on_play_track(move |index| {
-        if let Ok(index) = usize::try_from(index) {
-            c.send(Command::PlayTracks { index });
-        }
-    });
-    let c = commander.clone();
-    window.on_enqueue_track(move |index, next| {
-        if let Ok(index) = usize::try_from(index) {
-            c.send(Command::Enqueue {
-                source: TrackSource::Library(index),
-                at: position(next),
-            });
-        }
-    });
-    let c = commander.clone();
-    window.on_enqueue_album(move |id, next| {
-        c.send(Command::Enqueue {
-            source: TrackSource::Album(id.into()),
-            at: position(next),
+    window.on_transcode_selected(|index| {
+        with_ui(|ui, _| {
+            let choice = usize::try_from(index)
+                .ok()
+                .and_then(|i| ui.transcode_choices.borrow().get(i).copied());
+            if let Some(transcode) = choice {
+                ui.transcode.set(transcode);
+                ui.send(Command::SetTranscode(transcode));
+            }
         });
     });
+
+    // Queue and transport.
     let c = commander.clone();
     window.on_play_queue_item(move |uid| {
         if let Ok(uid) = u64::try_from(uid) {
@@ -189,6 +1160,12 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_remove_queue_item(move |uid| {
         if let Ok(uid) = u64::try_from(uid) {
             c.send(Command::RemoveFromQueue(uid));
+        }
+    });
+    let c = commander.clone();
+    window.on_move_queue_item(move |uid, to| {
+        if let (Ok(uid), Ok(to)) = (u64::try_from(uid), usize::try_from(to)) {
+            c.send(Command::MoveQueueItem { uid, to });
         }
     });
     let c = commander.clone();
@@ -231,30 +1208,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             position_ms: ms.into(),
         })
     });
-    let c = commander.clone();
+    let c = commander;
     window.on_volume_changed(move |v| c.send(Command::SetVolume(f64::from(v))));
-
-    let ui = Rc::new(Ui {
-        window: window.as_weak(),
-        commander,
-        albums,
-        tracks,
-        lyrics,
-        queue,
-        now_cover_key: RefCell::default(),
-        notice_timer: Timer::default(),
-        device_names: RefCell::new(vec![None]),
-        selected_device: RefCell::new(settings.audio_device.clone()),
-    });
-    UI.with(|cell| *cell.borrow_mut() = Some(ui));
-}
-
-fn position(next: bool) -> QueuePosition {
-    if next {
-        QueuePosition::Next
-    } else {
-        QueuePosition::Last
-    }
 }
 
 fn repeat_index(repeat: Repeat) -> i32 {
@@ -301,7 +1256,41 @@ fn int(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
+/// A list row; `multi_disc` numbers album tracks "disc-track".
+fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
+    let number = match (t.track_number, multi_disc) {
+        (n, _) if n <= 0 => String::new(),
+        (n, true) => format!("{}-{n:02}", t.disc_number.max(1)),
+        (n, false) => n.to_string(),
+    };
+    TrackRow {
+        id: int(t.id),
+        index: i32::try_from(index).unwrap_or(i32::MAX),
+        title: t.title.into(),
+        artist: t.artist.into(),
+        album: t.album.into(),
+        duration: t.duration.into(),
+        album_id: int(t.album_id),
+        artist_id: int(t.artist_id),
+        favorite: t.favorite,
+        number: number.into(),
+    }
+}
+
+fn track_rows(items: Vec<TrackItem>, offset: usize) -> Vec<TrackRow> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| track_row(t, offset + i, false))
+        .collect()
+}
+
+fn cards<T: Into<Card>>(items: Vec<T>) -> Vec<Card> {
+    items.into_iter().map(Into::into).collect()
+}
+
 /// Applies one core event on the UI thread.
+#[allow(clippy::too_many_lines)]
 pub fn apply(event: Event) {
     with_ui(|ui, w| match event {
         Event::SavedLogin(saved) => {
@@ -324,81 +1313,153 @@ pub fn apply(event: Event) {
                 SignOutReason::User => SharedString::new(),
                 SignOutReason::Expired => "API Token 已失效，请重新输入".into(),
             });
+            w.set_dialog(0);
             *ui.now_cover_key.borrow_mut() = None;
+            *ui.now.borrow_mut() = None;
+            for grid in &ui.grids {
+                grid.clear();
+            }
+            ui.detail_tracks.set_vec(Vec::new());
+            ui.search_tracks.set_vec(Vec::new());
         }
         Event::LoginFailed(failure) => {
             w.set_login_busy(false);
             w.set_login_error(login_message(&failure).into());
         }
-        Event::LoggedIn { server_url } => {
+        Event::LoggedIn {
+            server_url,
+            features,
+        } => {
             w.set_login_busy(false);
             w.set_logged_in(true);
             w.set_server_label(server_url.into());
+            ui.logged_in(w, &features);
         }
         Event::AlbumsReset => {
-            ui.albums.clear();
+            ui.grids[GRID_ALBUMS].clear();
             w.set_album_loaded(0);
             w.set_album_total(0);
+            w.set_albums_loading(true);
         }
         Event::AlbumsAppended { items, total } => {
-            ui.albums.append(items);
-            w.set_album_loaded(i32::try_from(ui.albums.len()).unwrap_or(i32::MAX));
+            ui.grids[GRID_ALBUMS].append(cards(items));
+            w.set_album_loaded(i32::try_from(ui.grids[GRID_ALBUMS].len()).unwrap_or(i32::MAX));
             w.set_album_total(i32::try_from(total).unwrap_or(i32::MAX));
+            w.set_albums_loading(false);
         }
         Event::TracksReset => {
             ui.tracks.set_vec(Vec::new());
             w.set_track_total(0);
+            w.set_tracks_loading(true);
         }
         Event::TracksAppended { items, total } => {
             let offset = ui.tracks.row_count();
-            let rows: Vec<TrackRow> = items
-                .into_iter()
-                .enumerate()
-                .map(|(i, t)| TrackRow {
-                    id: int(t.id),
-                    index: i32::try_from(offset + i).unwrap_or(i32::MAX),
-                    title: t.title.into(),
-                    artist: t.artist.into(),
-                    album: t.album.into(),
-                    duration: t.duration.into(),
-                })
-                .collect();
-            ui.tracks.extend(rows);
+            ui.tracks.extend(track_rows(items, offset));
             w.set_track_total(i32::try_from(total).unwrap_or(i32::MAX));
+            w.set_tracks_loading(false);
         }
+        Event::ArtistsReset => {
+            ui.grids[GRID_ARTISTS].clear();
+            w.set_artist_total(0);
+            w.set_artists_loading(true);
+        }
+        Event::ArtistsAppended { items, total } => {
+            ui.grids[GRID_ARTISTS].append(cards(items));
+            w.set_artist_total(i32::try_from(total).unwrap_or(i32::MAX));
+            w.set_artists_loading(false);
+        }
+        Event::FavoriteAlbums(items) => {
+            w.set_fav_album_count(i32::try_from(items.len()).unwrap_or(i32::MAX));
+            ui.grids[GRID_FAV_ALBUMS].set(cards(items));
+            w.set_fav_loading(false);
+        }
+        Event::FavoriteTracks(items) => {
+            ui.fav_tracks.set_vec(track_rows(items, 0));
+            w.set_fav_loading(false);
+        }
+        Event::FavoriteArtists(items) => {
+            w.set_fav_artist_count(i32::try_from(items.len()).unwrap_or(i32::MAX));
+            ui.grids[GRID_FAV_ARTISTS].set(cards(items));
+            w.set_fav_loading(false);
+        }
+        Event::Playlists(items) => {
+            w.set_playlist_count(i32::try_from(items.len()).unwrap_or(i32::MAX));
+            ui.grids[GRID_PLAYLISTS].set(cards(items));
+        }
+        Event::PlaylistChoices(items) => {
+            ui.playlist_choices.set_vec(
+                items
+                    .into_iter()
+                    .map(|p| PlaylistChoice {
+                        id: int(p.id),
+                        name: p.name.into(),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        Event::PlaylistDeleted(id) => {
+            if ui.route.get() == Route::Playlist(id) {
+                ui.navigate(w, Route::Page(PAGE_PLAYLISTS));
+            }
+        }
+        Event::Detail { view, tracks } => ui.detail_loaded(w, view, tracks),
+        Event::SearchResults {
+            query: _,
+            artists,
+            albums,
+            tracks,
+        } => {
+            w.set_search_artist_count(i32::try_from(artists.len()).unwrap_or(i32::MAX));
+            w.set_search_album_count(i32::try_from(albums.len()).unwrap_or(i32::MAX));
+            ui.grids[GRID_SEARCH_ARTISTS].set(cards(artists));
+            ui.grids[GRID_SEARCH_ALBUMS].set(cards(albums));
+            ui.search_tracks.set_vec(track_rows(tracks, 0));
+            w.set_search_loading(false);
+        }
+        Event::Favorite { kind, id, favorite } => ui.favorite_changed(w, kind, id, favorite),
         Event::Image { key, image } => {
             let image = to_image(&image);
-            ui.albums.set_cover(&key, &image);
+            for grid in &ui.grids {
+                grid.set_cover(&key, &image);
+            }
             if ui.now_cover_key.borrow().as_deref() == Some(key.as_str()) {
-                w.set_np_cover(image);
+                w.set_np_cover(image.clone());
+            }
+            if ui.detail_cover_key.borrow().as_deref() == Some(key.as_str()) {
+                w.set_detail_cover(image);
             }
         }
         Event::NowPlaying(None) => {
             w.set_has_track(false);
             w.set_playing_id(-1);
+            w.set_np_favorite(false);
+            *ui.now.borrow_mut() = None;
         }
         Event::NowPlaying(Some(now)) => {
             w.set_has_track(true);
             w.set_playing_id(int(now.track_id));
-            w.set_np_title(now.title.into());
-            w.set_np_artist(now.artist.into());
-            w.set_np_album(now.album.into());
-            w.set_np_quality(now.quality.unwrap_or_default().into());
-            // Same size as the grid so both share the cached artwork.
-            let px = ui.albums.cover_px();
+            w.set_np_title(now.title.as_str().into());
+            w.set_np_artist(now.artist.as_str().into());
+            w.set_np_album(now.album.as_str().into());
+            w.set_np_quality(now.quality.clone().unwrap_or_default().into());
+            w.set_np_favorite(now.favorite);
+            // Same size as the album grid so both share the cached artwork.
+            let grid = &ui.grids[GRID_ALBUMS];
+            let px = grid.cover_px();
             let key = (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px));
             match &key {
                 Some(key) => {
-                    w.set_np_cover(ui.albums.cover(&now.artwork).unwrap_or_default());
-                    ui.commander.send(Command::LoadImage {
+                    w.set_np_cover(grid.cover(&now.artwork).unwrap_or_default());
+                    ui.send(Command::LoadImage {
                         key: key.clone(),
-                        path: now.artwork,
+                        path: now.artwork.clone(),
                         px,
                     });
                 }
                 None => w.set_np_cover(Image::default()),
             }
             *ui.now_cover_key.borrow_mut() = key;
+            *ui.now.borrow_mut() = Some(now);
         }
         Event::Position {
             position_ms,
@@ -472,19 +1533,6 @@ pub fn apply(event: Event) {
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
-        Event::Notice(text) => {
-            tracing::warn!("{text}");
-            w.set_notice(text.into());
-            let weak = ui.window.clone();
-            ui.notice_timer.start(
-                slint::TimerMode::SingleShot,
-                Duration::from_secs(5),
-                move || {
-                    if let Some(w) = weak.upgrade() {
-                        w.set_notice(SharedString::new());
-                    }
-                },
-            );
-        }
+        Event::Notice(text) => ui.notice(text),
     });
 }
