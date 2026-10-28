@@ -166,10 +166,13 @@ export component CardRows inherits VerticalLayout {
     in property <[AlbumRow]> rows;
     in property <int> kind;
     in property <[PlaylistChoice]> playlists;
+    // Smallest card and the side padding.
+    in property <length> min-size: 160px;
+    in property <length> side: 32px;
     callback layout-changed(int, length);
     callback action(string, int, int);
-    out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
-    out property <length> card-size: (self.width - 64px - (root.columns - 1) * 24px) / root.columns;
+    out property <int> columns: max(1, floor((self.width - 2 * root.side + 24px) / (root.min-size + 24px)));
+    out property <length> card-size: (self.width - 2 * root.side - (root.columns - 1) * 24px) / root.columns;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }
@@ -179,8 +182,8 @@ export component CardRows inherits VerticalLayout {
     spacing: 24px;
 
     for row in root.rows: HorizontalLayout {
-        padding-left: 32px;
-        padding-right: 32px;
+        padding-left: root.side;
+        padding-right: root.side;
         spacing: 24px;
         alignment: start;
         for card in row.items: CardView {

@@ -39,6 +39,10 @@ pub struct Card {
     pub artist_id: i64,
     pub favorite: bool,
     pub badge: String,
+    /// Third line (track uses on a work page, roles of a work).
+    pub note: String,
+    /// The current track belongs to it.
+    pub playing: bool,
 }
 
 impl From<AlbumItem> for Card {
@@ -58,6 +62,7 @@ impl From<AlbumItem> for Card {
             artist_id: a.artist_id,
             favorite: a.favorite,
             badge: badge.into(),
+            ..Self::default()
         }
     }
 }
@@ -268,6 +273,30 @@ impl CardGridModel {
         }
     }
 
+    /// Marks the cards whose id is in `ids` as playing.
+    pub fn set_playing(&self, ids: &std::collections::HashSet<i64>) {
+        let columns = self.columns.get();
+        let rows: Vec<usize> = {
+            let mut entries = self.entries.borrow_mut();
+            entries
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    let playing = ids.contains(&e.item.id);
+                    (e.item.playing != playing).then(|| {
+                        e.item.playing = playing;
+                        i / columns
+                    })
+                })
+                .collect()
+        };
+        let mut rows = rows;
+        rows.dedup();
+        for row in rows {
+            self.notify.row_changed(row);
+        }
+    }
+
     pub fn item(&self, id: i64) -> Option<Card> {
         self.entries
             .borrow()
@@ -324,6 +353,8 @@ impl Model for CardGridModel {
                     artist_id: i32::try_from(entry.item.artist_id).unwrap_or(0),
                     favorite: entry.item.favorite,
                     badge: SharedString::from(entry.item.badge.as_str()),
+                    note: SharedString::from(entry.item.note.as_str()),
+                    playing: entry.item.playing,
                 }
             })
             .collect();

@@ -145,6 +145,7 @@ export component Field inherits VerticalLayout {
     in property <bool> password: false;
     in-out property <string> text;
     callback accepted();
+    callback edited();
     spacing: 6px;
 
     Text {
@@ -171,6 +172,9 @@ export component Field inherits VerticalLayout {
             single-line: true;
             accepted => {
                 root.accepted();
+            }
+            edited => {
+                root.edited();
             }
         }
 

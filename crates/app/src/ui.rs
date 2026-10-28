@@ -1,5 +1,7 @@
 //! UI-thread state: models, callbacks, navigation and applying core events.
 
+mod m032;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -17,7 +19,15 @@ use slint::{
 };
 
 use crate::cards::{Card, CardGridModel, image_key};
-use crate::{AppWindow, DetailInfo, ListQuery, LyricLine, PlaylistChoice, QueueRow, TrackRow};
+use crate::{
+    AppWindow, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult, LyricsSearch,
+    PlaylistChoice, QueueRow, TrackRow,
+};
+use m032::{
+    Bind, GRID_CHRONICLE, GRID_HOME_ALBUMS, GRID_HOME_PLAYLISTS, GRID_HOME_WORKS, GRID_MEMBERS,
+    GRID_SERIES, GRID_SERIES_ALBUMS, GRID_WORK_ALBUMS, GRID_WORKS, M032State, PAGE_HOME,
+    track_list,
+};
 
 /// Card grids, by the `grid` id used in app.slint.
 const GRID_ALBUMS: usize = 0;
@@ -28,7 +38,7 @@ const GRID_SEARCH_ARTISTS: usize = 4;
 const GRID_SEARCH_ALBUMS: usize = 5;
 const GRID_RELEASES: usize = 6;
 const GRID_PLAYLISTS: usize = 7;
-const GRIDS: usize = 8;
+const GRIDS: usize = 17;
 
 /// Pages of app.slint.
 const PAGE_ALBUMS: i32 = 0;
@@ -50,6 +60,9 @@ enum Route {
     Artist(i64),
     Playlist(i64),
     Similar(TrackList, usize),
+    Work(i64),
+    Series(i64),
+    DailyMix(i64),
 }
 
 /// What the open playlist dialog does on confirm.
@@ -206,6 +219,17 @@ struct Ui {
     fav_tracks: Rc<VecModel<TrackRow>>,
     detail_tracks: Rc<VecModel<TrackRow>>,
     search_tracks: Rc<VecModel<TrackRow>>,
+    /// The playback history page.
+    played: Rc<VecModel<TrackRow>>,
+    /// Preview tracks of the shown spotlight tab.
+    pane_tracks: Rc<VecModel<TrackRow>>,
+    home_mixes: Rc<VecModel<HomeRow>>,
+    home_recent: Rc<VecModel<HomeRow>>,
+    home_resume: Rc<VecModel<HomeRow>>,
+    home_songs: Rc<VecModel<HomeRow>>,
+    mix_others: Rc<VecModel<HomeRow>>,
+    lyrics_results: Rc<VecModel<LyricsResult>>,
+    m032: RefCell<M032State>,
     lyrics: Rc<VecModel<LyricLine>>,
     queue: Rc<VecModel<QueueRow>>,
     playlist_choices: Rc<VecModel<PlaylistChoice>>,
@@ -271,13 +295,31 @@ impl Ui {
         self.commander.send(command);
     }
 
-    fn track_model(&self, list: TrackList) -> &Rc<VecModel<TrackRow>> {
-        match list {
+    fn track_model(&self, list: TrackList) -> Option<&Rc<VecModel<TrackRow>>> {
+        Some(match list {
             TrackList::Library => &self.tracks,
             TrackList::Favorites => &self.fav_tracks,
             TrackList::Detail => &self.detail_tracks,
             TrackList::Search => &self.search_tracks,
+            TrackList::Spotlight(_) => &self.pane_tracks,
+            TrackList::History => &self.played,
+            TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
+        })
+    }
+
+    /// Id, title and favorite flag of a row of any track list.
+    fn row_basics(&self, list: TrackList, index: usize) -> Option<(i64, String, bool)> {
+        if let Some(model) = self.track_model(list) {
+            let row = model.row_data(index)?;
+            return Some((row.id.into(), row.title.to_string(), row.favorite));
         }
+        let model = match list {
+            TrackList::HomeResume => &self.home_resume,
+            TrackList::HomeRecent => &self.home_recent,
+            _ => &self.home_songs,
+        };
+        let row = model.row_data(index)?;
+        Some((row.id.into(), row.title.to_string(), row.favorite))
     }
 
     fn scale(&self, w: &AppWindow) -> f32 {
@@ -312,12 +354,16 @@ impl Ui {
         let (kind, id) = match route {
             Route::Page(page) => {
                 w.set_page(page);
+                self.page_shown(w, page);
                 return;
             }
             Route::Album(id) => (0, id),
             Route::Artist(id) => (1, id),
             Route::Playlist(id) => (2, id),
             Route::Similar(..) => (3, 0),
+            Route::Work(id) => (4, id),
+            Route::Series(id) => (5, id),
+            Route::DailyMix(id) => (6, id),
         };
         // Empty page of the right kind until the detail arrives.
         *self.detail.borrow_mut() = None;
@@ -331,12 +377,16 @@ impl Ui {
         w.set_detail_loading(true);
         self.detail_tracks.set_vec(Vec::new());
         self.grids[GRID_RELEASES].clear();
+        self.reset_m032_detail(w);
         w.set_page(PAGE_DETAIL);
         self.send(match route {
             Route::Album(id) => Command::OpenAlbum(id),
             Route::Artist(id) => Command::OpenArtist(id),
             Route::Playlist(id) => Command::OpenPlaylist(id),
             Route::Similar(list, index) => Command::OpenSimilar(list, index),
+            Route::Work(id) => Command::OpenWork(id),
+            Route::Series(id) => Command::OpenSeries(id),
+            Route::DailyMix(id) => Command::OpenDailyMix(id),
             Route::Page(_) => return,
         });
     }
@@ -453,12 +503,15 @@ impl Ui {
     }
 
     fn card_action(&self, w: &AppWindow, grid: usize, action: &str, id: i64, arg: i64) {
+        if self.m032_card_action(w, grid, action, id, arg) {
+            return;
+        }
         let card = self.grids.get(grid).and_then(|g| g.item(id));
         let (source, kind) = match grid {
             GRID_ARTISTS | GRID_FAV_ARTISTS | GRID_SEARCH_ARTISTS => {
                 (TrackSource::Artist(id), Some(FavoriteKind::Artist))
             }
-            GRID_PLAYLISTS => (TrackSource::Playlist(id), None),
+            GRID_PLAYLISTS | GRID_HOME_PLAYLISTS => (TrackSource::Playlist(id), None),
             _ => (TrackSource::Album(id), Some(FavoriteKind::Album)),
         };
         match action {
@@ -522,13 +575,29 @@ impl Ui {
     }
 
     fn track_action(&self, w: &AppWindow, list: TrackList, action: &str, index: usize, arg: i64) {
-        let row = self.track_model(list).row_data(index);
+        let row = self.row_basics(list, index);
         match action {
+            // Rows of the home page and the history play alone.
+            "play"
+                if matches!(
+                    list,
+                    TrackList::HomeResume
+                        | TrackList::HomeRecent
+                        | TrackList::HomeSongs
+                        | TrackList::History
+                ) =>
+            {
+                self.send(Command::PlayTrack(list, index));
+            }
+            "block" => self.send(Command::BlockRecommendation {
+                index,
+                blocked: arg != 0,
+            }),
             "favorite" => {
-                if let Some(row) = row {
+                if let Some((id, _, _)) = row {
                     self.send(Command::SetFavorite {
                         kind: FavoriteKind::Track,
-                        id: row.id.into(),
+                        id,
                         favorite: arg != 0,
                     });
                 }
@@ -537,7 +606,7 @@ impl Ui {
             "album" => self.navigate(w, Route::Album(arg)),
             "artist" => self.navigate(w, Route::Artist(arg)),
             "new-playlist" => {
-                let name = row.map(|r| r.title.to_string()).unwrap_or_default();
+                let name = row.map(|r| r.1).unwrap_or_default();
                 let source = TrackSource::Track(list, index);
                 self.open_dialog(w, Dialog::New(Some(source)), &name, "");
             }
@@ -587,6 +656,7 @@ impl Ui {
                 TrackSource::List(TrackList::Detail),
                 TrackSource::List(TrackList::Detail),
             ),
+            DetailView::Work(_) | DetailView::Series(_) | DetailView::DailyMix(_) => return,
         };
         match (action, &view) {
             ("favorite", DetailView::Album(a)) => self.send(Command::SetFavorite {
@@ -607,6 +677,7 @@ impl Ui {
                     DetailView::Artist(a) => a.name.clone(),
                     DetailView::Playlist(p) => p.name.clone(),
                     DetailView::Similar { title, .. } => format!("与「{title}」相似"),
+                    _ => String::new(),
                 };
                 self.open_dialog(w, Dialog::New(Some(add_source)), &name, "");
             }
@@ -691,6 +762,17 @@ impl Ui {
     // ------------------------------------------------------------ events
 
     fn logged_in(&self, w: &AppWindow, features: &ServerFeatures) {
+        self.m032.borrow_mut().reset();
+        let home = w.global::<Home>();
+        home.set_loading(true);
+        home.set_unavailable(false);
+        w.set_has_home(features.home);
+        w.set_lyrics_translation_available(features.lyrics_translation);
+        let lib = w.global::<Lib032>();
+        lib.set_series_supported(features.series);
+        for model in [&self.played, &self.pane_tracks] {
+            model.set_vec(Vec::new());
+        }
         let browse = features.browse;
         self.browse.set(browse);
         w.set_browse(browse);
@@ -749,7 +831,14 @@ impl Ui {
         *self.transcode_choices.borrow_mut() = choices;
 
         self.history.borrow_mut().clear();
-        self.show(w, Route::Page(PAGE_ALBUMS));
+        self.show(
+            w,
+            Route::Page(if features.home {
+                PAGE_HOME
+            } else {
+                PAGE_ALBUMS
+            }),
+        );
         w.set_search_text(SharedString::new());
     }
 
@@ -760,11 +849,15 @@ impl Ui {
             (DetailView::Artist(a), Route::Artist(id)) => a.id == id,
             (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
             (DetailView::Similar { .. }, Route::Similar(..)) => true,
+            (DetailView::Work(v), Route::Work(id)) => v.id == id,
+            (DetailView::Series(v), Route::Series(id)) => v.id == id,
+            (DetailView::DailyMix(v), Route::DailyMix(id)) => v.id == id,
             _ => false,
         };
         if !matches {
             return;
         }
+        let rows = tracks.len();
         let multi_disc = matches!(&view, DetailView::Album(a) if a.multi_disc);
         self.detail_tracks.set_vec(
             tracks
@@ -773,6 +866,23 @@ impl Ui {
                 .map(|(i, t)| track_row(t, i, multi_disc))
                 .collect::<Vec<_>>(),
         );
+        if self.m032_detail(w, &view, rows) {
+            let (kind, id, title) = match &view {
+                DetailView::Work(v) => (4, v.id, v.title.clone()),
+                DetailView::Series(v) => (5, v.id, v.title.clone()),
+                DetailView::DailyMix(v) => (6, v.id, v.title.clone()),
+                _ => (0, 0, String::new()),
+            };
+            w.set_detail(DetailInfo {
+                kind,
+                id: int(id),
+                title: title.into(),
+                ..DetailInfo::default()
+            });
+            w.set_detail_loading(false);
+            *self.detail.borrow_mut() = Some(view);
+            return;
+        }
         let (info, artwork) = match &view {
             DetailView::Album(a) => {
                 let mut meta = Vec::new();
@@ -851,6 +961,7 @@ impl Ui {
                 },
                 String::new(),
             ),
+            DetailView::Work(_) | DetailView::Series(_) | DetailView::DailyMix(_) => return,
         };
         w.set_detail(info);
         w.set_detail_loading(false);
@@ -880,11 +991,16 @@ impl Ui {
     fn favorite_changed(&self, w: &AppWindow, kind: FavoriteKind, id: i64, favorite: bool) {
         match kind {
             FavoriteKind::Track => {
+                for model in [&self.home_resume, &self.home_recent, &self.home_songs] {
+                    m032::set_row_favorite(model, id, favorite);
+                }
                 for model in [
                     &self.tracks,
                     &self.fav_tracks,
                     &self.detail_tracks,
                     &self.search_tracks,
+                    &self.played,
+                    &self.pane_tracks,
                 ] {
                     for i in 0..model.row_count() {
                         if let Some(mut row) = model.row_data(i)
@@ -906,6 +1022,14 @@ impl Ui {
             FavoriteKind::Album | FavoriteKind::Artist => {
                 for grid in &self.grids {
                     grid.set_favorite(id, favorite);
+                }
+                if kind == FavoriteKind::Album {
+                    let home = w.global::<Home>();
+                    let mut pane = home.get_pane();
+                    if i64::from(pane.album_id) == id {
+                        pane.favorite = favorite;
+                        home.set_pane(pane);
+                    }
                 }
                 let mut info = w.get_detail();
                 let kind_matches = (kind == FavoriteKind::Album && info.kind == 0)
@@ -939,15 +1063,6 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
     }
 }
 
-fn track_list(id: i32) -> TrackList {
-    match id {
-        1 => TrackList::Favorites,
-        2 => TrackList::Detail,
-        3 => TrackList::Search,
-        _ => TrackList::Library,
-    }
-}
-
 /// Wires callbacks and models; `settings` are the saved ones.
 #[allow(clippy::too_many_lines)]
 pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
@@ -970,6 +1085,15 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         fav_tracks: new_tracks(),
         detail_tracks: new_tracks(),
         search_tracks: new_tracks(),
+        played: new_tracks(),
+        pane_tracks: new_tracks(),
+        home_mixes: Rc::new(VecModel::default()),
+        home_recent: Rc::new(VecModel::default()),
+        home_resume: Rc::new(VecModel::default()),
+        home_songs: Rc::new(VecModel::default()),
+        mix_others: Rc::new(VecModel::default()),
+        lyrics_results: Rc::new(VecModel::default()),
+        m032: RefCell::default(),
         lyrics: Rc::new(VecModel::default()),
         queue: Rc::new(VecModel::default()),
         playlist_choices: Rc::new(VecModel::default()),
@@ -1003,6 +1127,30 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_detail_tracks(ModelRc::from(ui.detail_tracks.clone()));
     window.set_search_tracks(ModelRc::from(ui.search_tracks.clone()));
     window.set_queue(ModelRc::from(ui.queue.clone()));
+    {
+        let home = window.global::<Home>();
+        home.set_pane_tracks(ModelRc::from(ui.pane_tracks.clone()));
+        home.set_mixes(ModelRc::from(ui.home_mixes.clone()));
+        home.set_recent(ModelRc::from(ui.home_recent.clone()));
+        home.set_resume(ModelRc::from(ui.home_resume.clone()));
+        home.set_songs(ModelRc::from(ui.home_songs.clone()));
+        home.set_works(ModelRc::from(ui.grids[GRID_HOME_WORKS].clone()));
+        home.set_recent_albums(ModelRc::from(ui.grids[GRID_HOME_ALBUMS].clone()));
+        home.set_chronicle(ModelRc::from(ui.grids[GRID_CHRONICLE].clone()));
+        home.set_playlists(ModelRc::from(ui.grids[GRID_HOME_PLAYLISTS].clone()));
+        let lib = window.global::<Lib032>();
+        lib.set_works(ModelRc::from(ui.grids[GRID_WORKS].clone()));
+        lib.set_series(ModelRc::from(ui.grids[GRID_SERIES].clone()));
+        lib.set_history(ModelRc::from(ui.played.clone()));
+        lib.set_work_albums(ModelRc::from(ui.grids[GRID_WORK_ALBUMS].clone()));
+        lib.set_series_members(ModelRc::from(ui.grids[GRID_MEMBERS].clone()));
+        lib.set_series_albums(ModelRc::from(ui.grids[GRID_SERIES_ALBUMS].clone()));
+        lib.set_mix_others(ModelRc::from(ui.mix_others.clone()));
+        window
+            .global::<LyricsSearch>()
+            .set_results(ModelRc::from(ui.lyrics_results.clone()));
+    }
+    Ui::show_lyrics_settings(window, &settings.lyrics);
     window.set_lyrics(ModelRc::from(ui.lyrics.clone()));
     window.set_playlist_choices(ModelRc::from(ui.playlist_choices.clone()));
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
@@ -1031,6 +1179,17 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
                 11 => Route::Artist(id),
                 12 => Route::Playlist(id),
                 10 => Route::Album(id),
+                13 => Route::Work(id),
+                14 => {
+                    ui.open_series(w, id);
+                    return;
+                }
+                15 => Route::DailyMix(id),
+                22 if !w.global::<Lib032>().get_series_supported() => {
+                    // Without the series API the list lives on the web.
+                    ui.open_web("/admin/series");
+                    return;
+                }
                 page => Route::Page(page),
             };
             ui.navigate(w, route);
@@ -1041,7 +1200,12 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_clear_filter(|target| with_ui(|ui, w| ui.filter_by_artist(w, target == 0, None)));
     window.on_card_layout_changed(|grid, columns, card_size| {
         with_ui(|ui, w| {
-            let scale = ui.scale(w);
+            // Posters are 2:3: request their long side.
+            let poster = matches!(
+                usize::try_from(grid).unwrap_or(0),
+                GRID_WORKS | GRID_SERIES | GRID_HOME_WORKS | GRID_MEMBERS
+            );
+            let scale = ui.scale(w) * if poster { 1.5 } else { 1.0 };
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let px = (card_size * scale).ceil().max(0.0) as u32;
             if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
@@ -1107,6 +1271,75 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
                 ui.navigate(w, Route::Artist(id));
             }
         });
+    });
+
+    // 032 pages.
+    {
+        let home = window.global::<Home>();
+        home.on_tab_selected(|tab| with_ui(|ui, w| ui.select_tab(w, tab)));
+        home.on_action(|action, arg| with_ui(|ui, w| ui.home_action(w, &action, arg.into())));
+        let lib = window.global::<Lib032>();
+        lib.on_query_works(|search, kind, sort| {
+            with_ui(|ui, w| {
+                w.global::<Lib032>().set_works_loading(true);
+                ui.send(Command::QueryWorks(m032::works_query(&search, kind, sort)));
+            });
+        });
+        lib.on_query_series(|search| {
+            with_ui(|ui, w| {
+                w.global::<Lib032>().set_series_loading(true);
+                ui.send(Command::QuerySeries(search.to_string()));
+            });
+        });
+        lib.on_detail_action(|action, arg| {
+            with_ui(|ui, w| ui.lib032_action(w, &action, arg.into()));
+        });
+        lib.on_open_web(|path| with_ui(|ui, _| ui.open_web(&path)));
+        let search = window.global::<LyricsSearch>();
+        search.on_search(|name, artist| {
+            with_ui(|ui, w| {
+                w.global::<LyricsSearch>().set_searching(true);
+                ui.send(Command::SearchLyrics {
+                    name: name.to_string(),
+                    artist: artist.to_string(),
+                });
+            });
+        });
+        let c = commander.clone();
+        search.on_select(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                c.send(Command::PreviewLyrics(i));
+            }
+        });
+        let c = commander.clone();
+        search.on_apply(move |i| {
+            if let Ok(i) = usize::try_from(i) {
+                c.send(Command::ApplyLyrics(i));
+            }
+        });
+    }
+    window.on_lyrics_tool(|tool| {
+        with_ui(|ui, w| match tool.as_str() {
+            "search" => ui.open_lyrics_search(w),
+            "clear" => ui.send(Command::ClearLyrics),
+            "translate" => ui.send(Command::ToggleTranslation),
+            _ => {}
+        });
+    });
+    let c = commander.clone();
+    window.on_lyrics_offset_changed(move |ms| c.send(Command::SetLyricsOffset(ms.into())));
+    let c = commander.clone();
+    window.on_lyrics_seek(move |i| {
+        if let Ok(i) = usize::try_from(i) {
+            c.send(Command::SeekToLyric(i));
+        }
+    });
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_lyrics_settings_changed(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetLyricsSettings(Ui::lyrics_settings(&w)));
+        }
     });
 
     // Settings.
@@ -1274,6 +1507,8 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
         artist_id: int(t.artist_id),
         favorite: t.favorite,
         number: number.into(),
+        tag: t.tag.into(),
+        ..TrackRow::default()
     }
 }
 
@@ -1321,6 +1556,16 @@ pub fn apply(event: Event) {
             }
             ui.detail_tracks.set_vec(Vec::new());
             ui.search_tracks.set_vec(Vec::new());
+            ui.unbind(Bind::Home);
+            ui.unbind(Bind::Detail);
+            for model in [
+                &ui.home_mixes,
+                &ui.home_recent,
+                &ui.home_resume,
+                &ui.home_songs,
+            ] {
+                model.set_vec(Vec::new());
+            }
         }
         Event::LoginFailed(failure) => {
             w.set_login_busy(false);
@@ -1332,8 +1577,9 @@ pub fn apply(event: Event) {
         } => {
             w.set_login_busy(false);
             w.set_logged_in(true);
-            w.set_server_label(server_url.into());
+            w.set_server_label(server_url.as_str().into());
             ui.logged_in(w, &features);
+            ui.m032.borrow_mut().server = server_url;
         }
         Event::AlbumsReset => {
             ui.grids[GRID_ALBUMS].clear();
@@ -1419,6 +1665,7 @@ pub fn apply(event: Event) {
         Event::Favorite { kind, id, favorite } => ui.favorite_changed(w, kind, id, favorite),
         Event::Image { key, image } => {
             let image = to_image(&image);
+            ui.image_arrived(&key, &image);
             for grid in &ui.grids {
                 grid.set_cover(&key, &image);
             }
@@ -1479,12 +1726,7 @@ pub fn apply(event: Event) {
             synced,
             source,
         } => {
-            ui.lyrics.set_vec(
-                lines
-                    .into_iter()
-                    .map(|text| LyricLine { text: text.into() })
-                    .collect::<Vec<_>>(),
-            );
+            ui.lyrics_lines(w, lines);
             w.set_lyrics_synced(synced);
             w.set_lyrics_active(-1);
             w.set_lyrics_source(source.unwrap_or_default().into());
@@ -1534,5 +1776,49 @@ pub fn apply(event: Event) {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
         Event::Notice(text) => ui.notice(text),
+        Event::LyricsTools(tools) => ui.lyrics_tools(w, &tools),
+        Event::LyricsSearchResults(results) => ui.lyrics_results(w, results),
+        Event::LyricsPreview(lines) => Ui::lyrics_preview(w, lines),
+        Event::Home(view) => ui.home_loaded(w, *view),
+        Event::HomeUnavailable => {
+            let home = w.global::<Home>();
+            home.set_loading(false);
+            home.set_unavailable(true);
+        }
+        Event::HomeWorks(works) => ui.home_works(w, works),
+        Event::HomeSongs(songs) => ui.home_songs(w, songs),
+        Event::HomeChronicle(c) => ui.chronicle(w, c),
+        Event::HomeSpotlightPane(pane) => ui.spotlight_pane(w, pane),
+        Event::HomeRecent(items) => ui.home_recent(w, items),
+        Event::DailyMixes { generating, items } => ui.home_mixes(w, generating, &items),
+        Event::DailyMixReplaced { from, to } => {
+            if ui.route.get() == Route::DailyMix(from) {
+                // Replaces the page instead of stacking the old mix.
+                ui.show(w, Route::DailyMix(to));
+            }
+        }
+        Event::MixRowBlocked { index, blocked } => ui.mix_row_blocked(index, blocked),
+        Event::WorksReset => {
+            ui.grids[GRID_WORKS].clear();
+            let lib = w.global::<Lib032>();
+            lib.set_works_total(0);
+            lib.set_works_loading(true);
+        }
+        Event::WorksAppended { items, total } => ui.works_appended(w, &items, total),
+        Event::SeriesReset => {
+            ui.grids[GRID_SERIES].clear();
+            let lib = w.global::<Lib032>();
+            lib.set_series_total(0);
+            lib.set_series_loading(true);
+        }
+        Event::SeriesAppended { items, total } => ui.series_appended(w, items, total),
+        Event::HistoryReset => {
+            ui.played.set_vec(Vec::new());
+            let lib = w.global::<Lib032>();
+            lib.set_history_total(0);
+            lib.set_history_loading(true);
+        }
+        Event::HistoryAppended { items, total } => ui.history_appended(w, items, total),
+        Event::PlayingSources(sources) => ui.playing_sources(w, sources),
     });
 }

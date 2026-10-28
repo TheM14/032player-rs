@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import {
-    AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow, PlaylistChoice,
+    AlbumCard, AlbumRow, TrackRow, LyricLine, RubySegment, QueueRow, PlaylistChoice,
     LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, QueuePanel, PlayerBar,
 } from "views.slint";
 import {
@@ -9,8 +9,17 @@ import {
 } from "library.slint";
 import { SettingsView } from "settings.slint";
 import { GhostButton, IconButton, IconKind, SearchField, Tab } from "controls.slint";
+import {
+    Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
+    WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
+    HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog,
+} from "m032.slint";
 
-export { AlbumCard, AlbumRow, TrackRow, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo }
+export { AlbumCard, AlbumRow, TrackRow, LyricLine, RubySegment, QueueRow, PlaylistChoice, ListQuery, DetailInfo }
+export {
+    Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
+    WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult,
+}
 
 component NavItem inherits Rectangle {
     in property <string> text;
@@ -60,9 +69,13 @@ export component AppWindow inherits Window {
     callback logout();
 
     // Navigation. Pages: 0 albums, 1 tracks, 2 settings, 3 artists,
-    // 4 playlists, 5 favorites, 6 search, 10 detail (see `detail.kind`).
-    // Rust keeps the history; `navigate(page, id)` opens details by id.
+    // 4 playlists, 5 favorites, 6 search, 10 detail (see `detail.kind`),
+    // 20 home, 21 works, 22 series, 23 playback history.
+    // Rust keeps the history; `navigate(page, id)` opens details by id:
+    // 10 album, 11 artist, 12 playlist, 13 work, 14 series, 15 daily mix.
     in property <int> page: 0;
+    // The server has the 032 home / series endpoints.
+    in property <bool> has-home;
     in property <bool> can-go-back;
     callback navigate(int, int);
     callback go-back();
@@ -72,12 +85,15 @@ export component AppWindow inherits Window {
 
     // Card grids (`grid` ids): 0 albums, 1 artists, 2 favorite albums,
     // 3 favorite artists, 4 search artists, 5 search albums, 6 artist
-    // releases, 7 playlists.
+    // releases, 7 playlists, 8 works, 9 series, 10 home works, 11 home
+    // recent albums, 12 chronicle, 13 home playlists, 14 work albums,
+    // 15 series members, 16 series albums.
     callback card-layout-changed(int, int, length);
     // (grid, action, id, argument)
     callback card-action(int, string, int, int);
     // Track lists (`list` ids): 0 tracks page, 1 favorites, 2 detail,
-    // 3 search. (list, action, row index, argument)
+    // 3 search, 4-6 spotlight tabs (recent, listening, random), 7 接着听,
+    // 8 最近播放, 9 主题曲, 10 history. (list, action, row index, argument)
     callback track-action(int, string, int, int);
     in property <[PlaylistChoice]> playlist-choices;
 
@@ -155,11 +171,12 @@ export component AppWindow inherits Window {
     in property <bool> playlist-artwork;
     callback detail-action(string, int);
 
-    // Dialogs: 0 none, 1 new playlist, 2 edit playlist, 3 delete playlist.
+    // Dialogs: 0 none, 1 new playlist, 2 edit playlist, 3 delete playlist,
+    // 4 clear playback history, 5 lyrics search.
     in-out property <int> dialog: 0;
     in-out property <string> dialog-name;
     in-out property <string> dialog-description;
-    in property <string> dialog-message;
+    in-out property <string> dialog-message;
     callback dialog-confirm(string, string);
 
     // Queue (play order).
@@ -209,8 +226,31 @@ export component AppWindow inherits Window {
     in property <int> lyrics-active: -1;
     in property <bool> lyrics-synced;
     in property <string> lyrics-source;
+    in property <bool> lyrics-translated-lines;
+    in property <bool> lyrics-ruby-lines;
+    in property <bool> lyrics-romaji-lines;
+    in property <bool> lyrics-can-search;
+    in property <bool> lyrics-can-translate;
+    in property <bool> lyrics-translation-shown;
+    in property <bool> lyrics-translating;
+    in property <int> lyrics-offset;
     in-out property <bool> show-lyrics: true;
     callback show-lyrics-changed(bool);
+    // search, clear, translate
+    callback lyrics-tool(string);
+    callback lyrics-offset-changed(int);
+    callback lyrics-seek(int);
+    // The daily mix the current track was queued from (-1: none).
+    in property <int> playing-mix: -1;
+    // Lyrics settings: translation language (0 zh-Hans, 1 zh-Hant, 2 en),
+    // mode (0 bilingual, 1 translated only), auto translate.
+    in-out property <int> lyrics-language;
+    in-out property <int> lyrics-mode;
+    in-out property <bool> lyrics-auto;
+    in-out property <bool> lyrics-furigana;
+    in-out property <bool> lyrics-romaji;
+    in property <bool> lyrics-translation-available;
+    callback lyrics-settings-changed();
 
     // Settings.
     in property <[string]> audio-devices: ["系统默认"];
@@ -276,53 +316,25 @@ export component AppWindow inherits Window {
                         height: 48px;
                         vertical-alignment: center;
                     }
-                    NavItem {
-                        text: "搜索";
-                        selected: root.page == 6;
+                    for item in [
+                        { text: "搜索", page: 6 },
+                        { text: "主页", page: 20 },
+                        { text: "专辑", page: 0 },
+                        { text: "曲目", page: 1 },
+                        { text: "艺人", page: 3 },
+                        { text: "作品", page: 21 },
+                        { text: "系列", page: 22 },
+                        { text: "播放记录", page: 23 },
+                        { text: "歌单", page: 4 },
+                        { text: "收藏", page: 5 },
+                        { text: "设置", page: 2 },
+                    ]: NavItem {
+                        text: item.text;
+                        selected: root.page == item.page;
+                        visible: item.page != 20 || root.has-home;
+                        height: item.page != 20 || root.has-home ? 36px : 0px;
                         clicked => {
-                            root.navigate(6, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "专辑";
-                        selected: root.page == 0;
-                        clicked => {
-                            root.navigate(0, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "曲目";
-                        selected: root.page == 1;
-                        clicked => {
-                            root.navigate(1, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "艺人";
-                        selected: root.page == 3;
-                        clicked => {
-                            root.navigate(3, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "歌单";
-                        selected: root.page == 4;
-                        clicked => {
-                            root.navigate(4, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "收藏";
-                        selected: root.page == 5;
-                        clicked => {
-                            root.navigate(5, 0);
-                        }
-                    }
-                    NavItem {
-                        text: "设置";
-                        selected: root.page == 2;
-                        clicked => {
-                            root.navigate(2, 0);
+                            root.navigate(item.page, 0);
                         }
                     }
                 }
@@ -699,7 +711,7 @@ export component AppWindow inherits Window {
                 }
 
                 // Album, playlist, similar: header and a virtualized list.
-                if root.page == 10 && root.detail.kind != 1: VerticalLayout {
+                if root.page == 10 && root.detail.kind != 1 && root.detail.kind < 4: VerticalLayout {
                     DetailHeader {
                         info: root.detail;
                         cover: root.detail-cover;
@@ -786,6 +798,105 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                if root.page == 20: HomePage {
+                    playlists: root.playlist-choices;
+                    playing-id: root.playing-id;
+                    playing-mix: root.playing-mix;
+                    card-action(grid, what, id, arg) => {
+                        root.card-action(grid, what, id, arg);
+                    }
+                    card-layout(grid, n, size) => {
+                        root.card-layout-changed(grid, n, size);
+                    }
+                    track-action(list, what, i, arg) => {
+                        root.track-action(list, what, i, arg);
+                    }
+                    navigate(page, id) => {
+                        root.navigate(page, id);
+                    }
+                    open-web(path) => {
+                        Lib032.open-web(path);
+                    }
+                }
+
+                if root.page == 21: WorksPage {
+                    playlists: root.playlist-choices;
+                    card-action(what, id, arg) => {
+                        root.card-action(8, what, id, arg);
+                    }
+                    card-layout(n, size) => {
+                        root.card-layout-changed(8, n, size);
+                    }
+                }
+
+                if root.page == 22: SeriesPage {
+                    card-action(what, id, arg) => {
+                        root.card-action(9, what, id, arg);
+                    }
+                    card-layout(n, size) => {
+                        root.card-layout-changed(9, n, size);
+                    }
+                }
+
+                if root.page == 23: HistoryPage {
+                    playing-id: root.playing-id;
+                    playlists: root.playlist-choices;
+                    track-action(what, i, arg) => {
+                        root.track-action(10, what, i, arg);
+                    }
+                    clear => {
+                        root.dialog-message = "这会永久清除全部播放次数和断点位置，不会删除歌曲或收藏。此操作不可撤销。";
+                        root.dialog = 4;
+                    }
+                }
+
+                if root.page == 10 && root.detail.kind == 4: WorkPage {
+                    tracks: root.detail-tracks;
+                    loading: root.detail-loading;
+                    playing-id: root.playing-id;
+                    playlists: root.playlist-choices;
+                    card-action(what, id, arg) => {
+                        root.card-action(14, what, id, arg);
+                    }
+                    card-layout(n, size) => {
+                        root.card-layout-changed(14, n, size);
+                    }
+                    track-action(what, i, arg) => {
+                        root.track-action(2, what, i, arg);
+                    }
+                    navigate(page, id) => {
+                        root.navigate(page, id);
+                    }
+                }
+
+                if root.page == 10 && root.detail.kind == 5: SeriesDetailPage {
+                    loading: root.detail-loading;
+                    playlists: root.playlist-choices;
+                    card-action(grid, what, id, arg) => {
+                        root.card-action(grid, what, id, arg);
+                    }
+                    card-layout(grid, n, size) => {
+                        root.card-layout-changed(grid, n, size);
+                    }
+                }
+
+                if root.page == 10 && root.detail.kind == 6: MixPage {
+                    tracks: root.detail-tracks;
+                    loading: root.detail-loading;
+                    playing-id: root.playing-id;
+                    playing-mix: root.playing-mix;
+                    playlists: root.playlist-choices;
+                    track-action(what, i, arg) => {
+                        root.track-action(2, what, i, arg);
+                    }
+                    open-mix(id) => {
+                        root.navigate(15, id);
+                    }
+                    play-mix(id) => {
+                        Home.action("mix-play", id);
+                    }
+                }
+
                 if root.page == 2: SettingsView {
                     devices: root.audio-devices;
                     device-index <=> root.audio-device-index;
@@ -811,6 +922,15 @@ export component AppWindow inherits Window {
                     transcode-index <=> root.transcode-index;
                     transcode-selected(i) => {
                         root.transcode-selected(i);
+                    }
+                    lyrics-translation: root.lyrics-translation-available;
+                    lyrics-language <=> root.lyrics-language;
+                    lyrics-mode <=> root.lyrics-mode;
+                    lyrics-auto <=> root.lyrics-auto;
+                    lyrics-furigana <=> root.lyrics-furigana;
+                    lyrics-romaji <=> root.lyrics-romaji;
+                    lyrics-changed => {
+                        root.lyrics-settings-changed();
                     }
                 }
 
@@ -850,6 +970,27 @@ export component AppWindow inherits Window {
                 active: root.lyrics-active;
                 synced: root.lyrics-synced;
                 source: root.lyrics-source;
+                has-track: root.has-track;
+                lines-have-translation: root.lyrics-translated-lines;
+                lines-have-ruby: root.lyrics-ruby-lines;
+                lines-have-romaji: root.lyrics-romaji-lines;
+                can-search: root.lyrics-can-search;
+                can-translate: root.lyrics-can-translate;
+                translation-shown: root.lyrics-translation-shown;
+                translating: root.lyrics-translating;
+                offset-ms: root.lyrics-offset;
+                seek-line(i) => {
+                    root.lyrics-seek(i);
+                }
+                tool(what) => {
+                    if what == "search" {
+                        root.dialog = 5;
+                    }
+                    root.lyrics-tool(what);
+                }
+                offset(ms) => {
+                    root.lyrics-offset-changed(ms);
+                }
             }
         }
 
@@ -937,6 +1078,25 @@ export component AppWindow inherits Window {
             root.dialog = 0;
         }
         cancel => {
+            root.dialog = 0;
+        }
+    }
+
+    if root.dialog == 4: ConfirmDialog {
+        title: "确定清空全部播放记录吗？";
+        message: root.dialog-message;
+        confirm-text: "永久清空";
+        confirm => {
+            root.dialog = 0;
+            Lib032.detail-action("clear-history", 0);
+        }
+        cancel => {
+            root.dialog = 0;
+        }
+    }
+
+    if root.dialog == 5: LyricsSearchDialog {
+        close => {
             root.dialog = 0;
         }
     }

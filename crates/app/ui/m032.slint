@@ -1,0 +1,2462 @@
+// 032 pages: home, works, series, daily mixes, playback history and the
+// lyrics search dialog. Their data lives in the globals `Home`, `Lib032`
+// and `LyricsSearch`, set from Rust; actions go through the callbacks of
+// the components (forwarded by app.slint) or of the globals.
+
+import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import {
+    Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab,
+} from "controls.slint";
+import { AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
+import { CardRows } from "library.slint";
+
+// A small row with a cover on the home page (接着听, 最近播放, 主题曲,
+// 今日推荐). `percent` < 0: no progress bar. `link`: the work of a song.
+export struct HomeRow {
+    index: int,
+    id: int,
+    title: string,
+    subtitle: string,
+    cover: image,
+    album-id: int,
+    artist-id: int,
+    favorite: bool,
+    tag: string,
+    tag-accent: bool,
+    link: string,
+    link-id: int,
+    note: string,
+    percent: int,
+    duration: string,
+    dimmed: bool,
+}
+
+// An album tab of the spotlight. `tab`: 0 recent, 1 listening, 3 random;
+// `list`: track list id of its preview tracks.
+export struct AlbumPane {
+    tab: int,
+    list: int,
+    album-id: int,
+    title: string,
+    artist: string,
+    artist-id: int,
+    facts: string,
+    spec: string,
+    note: string,
+    resume: string,
+    more: string,
+    favorite: bool,
+    cover: image,
+    track-count: int,
+}
+
+export struct SeriesPane {
+    is-series: bool,
+    series-id: int,
+    first-work-id: int,
+    title: string,
+    by: string,
+    facts: string,
+    album-count: int,
+}
+
+export struct NamedItem {
+    id: int,
+    title: string,
+    meta: string,
+    year: string,
+    cover: image,
+}
+
+export struct YearBar {
+    year: int,
+    count: int,
+    height: int,
+}
+
+export struct HomeStats {
+    albums: int,
+    tracks: int,
+    works: int,
+    last-scan: string,
+    pending: int,
+}
+
+export struct WorkInfo {
+    id: int,
+    title: string,
+    translated: string,
+    reading: string,
+    facts: string,
+    bangumi-url: string,
+    series-id: int,
+    series-title: string,
+    series-meta: string,
+    album-count: int,
+    collected: int,
+}
+
+export struct SeriesInfo {
+    id: int,
+    title: string,
+    renamed: bool,
+    facts: string,
+    member-count: int,
+    album-count: int,
+    playing: bool,
+}
+
+export struct MixTag {
+    label: string,
+    style: bool,
+}
+
+export struct MixInfo {
+    id: int,
+    title: string,
+    description: string,
+    kicker: string,
+    subtitle: string,
+    // 1 like, -1 dislike.
+    rating: int,
+    disliked-note: string,
+    current: bool,
+    replacements-left: int,
+    saved-playlist-id: int,
+    track-count: int,
+}
+
+export struct LyricsResult {
+    title: string,
+    artist: string,
+    meta: string,
+    score: string,
+}
+
+// The 032 home.
+export global Home {
+    in property <bool> loading: true;
+    // The server has no home endpoint.
+    in property <bool> unavailable;
+    in property <bool> empty;
+    // Spotlight: tab labels and ids (0 recent, 1 listening, 2 series, 3 random).
+    in property <[string]> tab-labels;
+    in property <[int]> tab-ids;
+    in property <int> tab;
+    in property <AlbumPane> pane;
+    in property <[TrackRow]> pane-tracks;
+    in property <SeriesPane> series;
+    in property <[image]> series-fan;
+    in property <[NamedItem]> series-works;
+    in property <[NamedItem]> series-albums;
+    in property <[HomeRow]> mixes;
+    in property <bool> mixes-generating;
+    in property <[HomeRow]> recent;
+    in property <[HomeRow]> resume;
+    in property <[AlbumRow]> recent-albums;
+    in property <[AlbumRow]> works;
+    in property <int> works-count;
+    in property <int> works-pages;
+    // 0 all, 1 anime, 2 game, 3 movie.
+    in property <int> works-type;
+    in property <[HomeRow]> songs;
+    in property <int> songs-count;
+    in property <int> songs-pages;
+    in property <[YearBar]> years;
+    in property <int> year;
+    in property <int> year-total;
+    in property <[AlbumRow]> chronicle;
+    in property <[AlbumRow]> playlists;
+    in property <HomeStats> stats;
+    callback tab-selected(int);
+    // play-pane, append-pane, resume, favorite, reroll, open-album,
+    // play-series, open-series, works-type (type), works-next, songs-next,
+    // year (year), year-all, mix-play (id), mix-open (id)
+    callback action(string, int);
+}
+
+// The works, series, history and 032 detail pages.
+export global Lib032 {
+    in property <[AlbumRow]> works;
+    in property <int> works-total;
+    in property <bool> works-loading;
+    in property <[string]> work-types: ["全部类型", "动画", "电视剧", "电影", "游戏", "广告", "其他"];
+    callback query-works(string, int, int);
+    in property <[AlbumRow]> series;
+    in property <int> series-total;
+    in property <bool> series-loading;
+    in property <bool> series-supported: true;
+    callback query-series(string);
+    in property <[TrackRow]> history;
+    in property <int> history-total;
+    in property <bool> history-loading;
+    in property <WorkInfo> work;
+    in property <image> work-poster;
+    in property <[AlbumRow]> work-albums;
+    in property <SeriesInfo> series-info;
+    in property <image> series-poster;
+    in property <[AlbumRow]> series-members;
+    in property <[AlbumRow]> series-albums;
+    in property <MixInfo> mix;
+    in property <[image]> mix-covers;
+    in property <[MixTag]> mix-tags;
+    in-out property <[bool]> mix-reasons: [false, false, false, false, false];
+    in property <[HomeRow]> mix-others;
+    // (action, argument) on the open work / series / mix page: play, shuffle,
+    // last, web, bangumi, series, like, dislike, undo, replace, save, saved.
+    callback detail-action(string, int);
+    // Opens a page of the 032 web console in the browser.
+    callback open-web(string);
+}
+
+export global LyricsSearch {
+    in-out property <string> name;
+    in-out property <string> artist;
+    in property <[LyricsResult]> results;
+    in property <bool> searching;
+    in-out property <int> selected: -1;
+    in property <[string]> preview;
+    callback search(string, string);
+    callback select(int);
+    callback apply(int);
+}
+
+component LinkText inherits Text {
+    callback clicked();
+    in property <bool> enabled: true;
+    color: link-area.has-hover && root.enabled ? Theme.accent : Theme.text-dim;
+    font-size: 12px;
+    vertical-alignment: center;
+    link-area := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent;
+    width: pill-text.preferred-width + 12px;
+    height: 20px;
+    border-radius: 10px;
+    background: root.accent ? Theme.accent-dim : Theme.raised;
+    pill-text := Text {
+        text: root.text;
+        color: root.accent ? Theme.accent : Theme.text-dim;
+        font-size: 11px;
+    }
+}
+
+// Section title, a dim count and tools on the right.
+component SectionHead inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> count;
+    spacing: 10px;
+    height: 32px;
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: 18px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.count;
+        color: Theme.text-faint;
+        font-size: 12px;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+        overflow: elide;
+    }
+    @children
+}
+
+// One row of cards that pages sideways with arrow buttons (no nested
+// scrolling inside the page).
+export component CardShelf inherits Rectangle {
+    in property <[AlbumRow]> rows;
+    in property <int> kind;
+    in property <length> size: 150px;
+    in property <[PlaylistChoice]> playlists;
+    callback layout-changed(length);
+    callback action(string, int, int);
+    property <length> offset: 0px;
+    property <length> content: row.preferred-width;
+    property <length> max-offset: max(0px, root.content - root.width);
+    height: (root.kind == 3 || root.kind == 4 ? root.size * 1.5 : root.size) + 70px;
+    clip: true;
+    init => {
+        root.layout-changed(root.size);
+    }
+
+    row := HorizontalLayout {
+        x: -root.offset;
+        width: max(root.width, self.preferred-width);
+        padding-left: 32px;
+        padding-right: 32px;
+        spacing: 16px;
+        alignment: start;
+        animate x { duration: 250ms; easing: ease-out; }
+        for r in root.rows: HorizontalLayout {
+            spacing: 16px;
+            for card in r.items: CardView {
+                card: card;
+                kind: root.kind;
+                size: root.size;
+                playlists: root.playlists;
+                action(what, arg) => {
+                    root.action(what, card.id, arg);
+                }
+            }
+        }
+    }
+
+    if root.offset > 0: IconButton {
+        x: 4px;
+        y: (root.size - self.height) / 2;
+        kind: IconKind.back;
+        filled: true;
+        size: 32px;
+        icon-size: 14px;
+        clicked => {
+            root.offset = max(0px, root.offset - root.width * 0.8);
+        }
+    }
+    if root.offset < root.max-offset: Rectangle {
+        x: root.width - 36px;
+        y: (root.size - 32px) / 2;
+        width: 32px;
+        height: 32px;
+        border-radius: 16px;
+        background: next-area.has-hover ? Theme.accent.brighter(15%) : Theme.accent;
+        Text {
+            text: "›";
+            color: #ffffff;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        next-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.offset = min(root.max-offset, root.offset + root.width * 0.8);
+            }
+        }
+    }
+}
+
+component Cover inherits Rectangle {
+    in property <image> source;
+    in property <string> placeholder: "032";
+    border-radius: Theme.radius;
+    background: Theme.raised;
+    clip: true;
+    if root.source.width == 0: Text {
+        text: root.placeholder;
+        color: Theme.text-faint;
+        font-size: 11px;
+    }
+    Image {
+        source: root.source;
+        width: 100%;
+        height: 100%;
+        image-fit: ImageFit.cover;
+    }
+}
+
+// A row of 接着听 / 最近播放 / 主题曲 / 今日推荐. (action, argument):
+// play, album (id), link (id), last, open, and the track menu actions.
+export component HomeRowView inherits Rectangle {
+    in property <HomeRow> item;
+    in property <bool> playing;
+    in property <bool> mix;
+    in property <bool> show-add;
+    in property <[PlaylistChoice]> playlists;
+    callback action(string, int);
+    height: 60px;
+    border-radius: Theme.radius;
+    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    opacity: root.item.dimmed ? 0.55 : 1;
+
+    row-area := TouchArea {
+        double-clicked => {
+            root.action(root.mix ? "open" : "play", 0);
+        }
+    }
+
+    HorizontalLayout {
+        padding: 6px;
+        spacing: 12px;
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            Cover {
+                source: root.item.cover;
+                placeholder: root.mix ? "♪" : "032";
+            }
+            Rectangle {
+                border-radius: Theme.radius;
+                background: art-area.has-hover || root.playing ? #00000080 : transparent;
+                Icon {
+                    visible: art-area.has-hover || root.playing;
+                    kind: root.playing ? IconKind.lyrics : IconKind.play;
+                    width: 16px;
+                    height: 16px;
+                    color: root.playing ? Theme.accent : #ffffff;
+                }
+            }
+            art-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("play", 0);
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.title;
+                color: root.playing ? Theme.accent : Theme.text;
+                font-weight: 600;
+                overflow: elide;
+                TouchArea {
+                    mouse-cursor: root.mix ? pointer : default;
+                    clicked => {
+                        if root.mix {
+                            root.action("open", 0);
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                Text {
+                    text: root.item.subtitle;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                    overflow: elide;
+                }
+            }
+            if root.item.percent >= 0: HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    height: 4px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 2px;
+                    background: Theme.raised;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * min(100, root.item.percent) / 100;
+                        border-radius: 2px;
+                        background: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.item.duration;
+                    color: Theme.text-faint;
+                    font-size: 11px;
+                }
+            }
+        }
+        if root.item.tag != "": VerticalLayout {
+            alignment: center;
+            Pill {
+                text: root.item.tag;
+                accent: root.item.tag-accent;
+            }
+        }
+        if root.item.link != "": LinkText {
+            text: root.item.link;
+            max-width: 160px;
+            overflow: elide;
+            clicked => {
+                root.action("link", root.item.link-id);
+            }
+        }
+        if root.item.note != "": Text {
+            text: root.item.note;
+            color: Theme.text-faint;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        if root.item.percent < 0 && root.item.duration != "": Text {
+            text: root.item.duration;
+            color: Theme.text-faint;
+            font-size: 12px;
+            vertical-alignment: center;
+            width: 44px;
+            horizontal-alignment: right;
+        }
+        if root.show-add: IconButton {
+            kind: IconKind.plus;
+            size: 28px;
+            icon-size: 14px;
+            clicked => {
+                root.action("last", 0);
+            }
+        }
+        if root.mix: Text {
+            text: "›";
+            color: Theme.text-faint;
+            font-size: 20px;
+            vertical-alignment: center;
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("open", 0);
+                }
+            }
+        }
+    }
+
+    if !root.mix: ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "播放";
+                activated => {
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                activated => {
+                    root.action("next", 0);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                activated => {
+                    root.action("last", 0);
+                }
+            }
+            Menu {
+                title: "添加到歌单";
+                MenuItem {
+                    title: "新建歌单…";
+                    activated => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                for p in root.playlists: MenuItem {
+                    title: p.name;
+                    activated => {
+                        root.action("add", p.id);
+                    }
+                }
+            }
+            MenuItem {
+                title: root.item.favorite ? "取消收藏" : "收藏";
+                activated => {
+                    root.action("favorite", root.item.favorite ? 0 : 1);
+                }
+            }
+            MenuItem {
+                title: "相似歌曲";
+                activated => {
+                    root.action("similar", 0);
+                }
+            }
+            if root.item.album-id > 0: MenuItem {
+                title: "转到专辑";
+                activated => {
+                    root.action("album", root.item.album-id);
+                }
+            }
+            if root.item.artist-id > 0: MenuItem {
+                title: "转到艺人";
+                activated => {
+                    root.action("artist", root.item.artist-id);
+                }
+            }
+        }
+    }
+}
+
+component Spotlight inherits Rectangle {
+    in property <int> playing-id;
+    in property <[int]> playing-works;
+    callback track-action(int, string, int, int);
+    callback navigate(int, int);
+    height: 340px;
+    border-radius: 16px;
+    background: Theme.surface;
+    clip: true;
+
+    HorizontalLayout {
+        padding: 24px;
+        spacing: 24px;
+
+        // Art: the album cover, or up to three covers fanned out.
+        if Home.tab != 2: Cover {
+            width: 220px;
+            height: 220px;
+            y: (parent.height - self.height) / 2;
+            source: Home.pane.cover;
+        }
+        if Home.tab == 2: Rectangle {
+            width: 220px;
+            for img[i] in Home.series-fan: Cover {
+                x: i * 30px;
+                y: (parent.height - 170px) / 2 + i * 16px;
+                width: 170px;
+                height: 170px;
+                source: img;
+                drop-shadow-blur: 12px;
+                drop-shadow-color: #00000080;
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 8px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                for label[i] in Home.tab-labels: Tab {
+                    text: label;
+                    selected: Home.tab-ids[i] == Home.tab;
+                    clicked => {
+                        Home.tab-selected(Home.tab-ids[i]);
+                    }
+                }
+            }
+
+            if Home.tab != 2: VerticalLayout {
+                spacing: 8px;
+                Text {
+                    text: Home.pane.title;
+                    color: title-area.has-hover ? Theme.accent : Theme.text;
+                    font-size: 26px;
+                    font-weight: 700;
+                    overflow: elide;
+                    title-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Home.action("open-album", Home.pane.album-id);
+                        }
+                    }
+                }
+                LinkText {
+                    text: Home.pane.artist;
+                    font-size: 14px;
+                    enabled: Home.pane.artist-id > 0;
+                    clicked => {
+                        root.navigate(11, Home.pane.artist-id);
+                    }
+                }
+                Text {
+                    text: Home.pane.facts;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    if Home.pane.spec != "": Pill {
+                        text: Home.pane.spec;
+                        accent: true;
+                    }
+                    Text {
+                        text: Home.pane.note;
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    padding-top: 8px;
+                    PrimaryButton {
+                        text: Home.pane.resume != "" ? Home.pane.resume : "播放";
+                        width: max(96px, self.preferred-width + 24px);
+                        height: 32px;
+                        clicked => {
+                            Home.action(Home.pane.resume != "" ? "resume" : "play-pane", 0);
+                        }
+                    }
+                    GhostButton {
+                        text: Home.pane.resume != "" ? "从头播放" : "加入队列";
+                        clicked => {
+                            Home.action(Home.pane.resume != "" ? "play-pane" : "append-pane", 0);
+                        }
+                    }
+                    IconButton {
+                        kind: Home.pane.favorite ? IconKind.heart : IconKind.heart-outline;
+                        active: Home.pane.favorite;
+                        size: 32px;
+                        icon-size: 16px;
+                        clicked => {
+                            Home.action("favorite", Home.pane.favorite ? 0 : 1);
+                        }
+                    }
+                    if Home.tab == 3: GhostButton {
+                        text: "换一张";
+                        clicked => {
+                            Home.action("reroll", 0);
+                        }
+                    }
+                    LinkText {
+                        text: "专辑详情 ›";
+                        clicked => {
+                            Home.action("open-album", Home.pane.album-id);
+                        }
+                    }
+                }
+            }
+
+            if Home.tab == 2: VerticalLayout {
+                spacing: 8px;
+                Text {
+                    text: Home.series.title;
+                    color: Theme.text;
+                    font-size: 26px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                Text {
+                    text: Home.series.by;
+                    color: Theme.text-dim;
+                }
+                Text {
+                    text: Home.series.facts;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for w in Home.series-works: Rectangle {
+                        height: 26px;
+                        width: chip-row.preferred-width + 16px;
+                        border-radius: 13px;
+                        background: chip-area.has-hover ? Theme.surface-hover : Theme.raised;
+                        chip-row := HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            Text {
+                                text: w.title;
+                                color: Theme.text;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                max-width: 160px;
+                            }
+                            Text {
+                                text: w.meta;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        chip-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.navigate(13, w.id);
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    padding-top: 8px;
+                    PrimaryButton {
+                        text: Home.series.is-series ? "播放系列全部歌曲" : "播放作品全部歌曲";
+                        width: self.preferred-width + 32px;
+                        height: 32px;
+                        clicked => {
+                            Home.action("play-series", 0);
+                        }
+                    }
+                    GhostButton {
+                        text: Home.series.is-series ? "查看系列" : "查看作品";
+                        clicked => {
+                            Home.action("open-series", 0);
+                        }
+                    }
+                    LinkText {
+                        text: "全部作品 ›";
+                        clicked => {
+                            root.navigate(21, 0);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preview tracks / related albums.
+        if Home.tab != 2 && Home.pane-tracks.length > 0: VerticalLayout {
+            width: 300px;
+            spacing: 6px;
+            HorizontalLayout {
+                height: 24px;
+                Text {
+                    text: "曲目";
+                    color: Theme.text;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Home.pane.track-count + " 首";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                }
+            }
+            ListView {
+                vertical-stretch: 1;
+                for t[i] in Home.pane-tracks: Rectangle {
+                    height: 42px;
+                    border-radius: 4px;
+                    background: t-area.has-hover ? Theme.surface-hover : transparent;
+                    t-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.track-action(Home.pane.list, "play", t.index, 0);
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 8px;
+                        Text {
+                            text: t.id == root.playing-id ? "♪" : t.number;
+                            width: 32px;
+                            color: t.id == root.playing-id ? Theme.accent : Theme.text-faint;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: t.title;
+                                color: t.id == root.playing-id ? Theme.accent : Theme.text;
+                                font-size: 13px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: t.artist;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+                        Text {
+                            text: t.duration;
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            LinkText {
+                text: Home.pane.more + " ›";
+                clicked => {
+                    Home.action("open-album", Home.pane.album-id);
+                }
+            }
+        }
+        if Home.tab == 2 && Home.series-albums.length > 0: VerticalLayout {
+            width: 300px;
+            spacing: 6px;
+            HorizontalLayout {
+                height: 24px;
+                Text {
+                    text: "关联专辑";
+                    color: Theme.text;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Home.series.album-count + " 张专辑";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                }
+            }
+            ListView {
+                vertical-stretch: 1;
+                for a in Home.series-albums: Rectangle {
+                    height: 48px;
+                    border-radius: 4px;
+                    background: a-area.has-hover ? Theme.surface-hover : transparent;
+                    a-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.navigate(10, a.id);
+                        }
+                    }
+                    HorizontalLayout {
+                        padding: 4px;
+                        spacing: 8px;
+                        Cover {
+                            width: 40px;
+                            height: 40px;
+                            source: a.cover;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: a.title;
+                                color: Theme.text;
+                                font-size: 13px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: a.meta;
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                        }
+                        Text {
+                            text: a.year;
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            if Home.series.is-series: LinkText {
+                text: "查看系列 ›";
+                clicked => {
+                    Home.action("open-series", 0);
+                }
+            }
+        }
+    }
+}
+
+// Card grid ids of the home page (see app.slint `card-action`).
+export global HomeGrids {
+    out property <int> works: 10;
+    out property <int> recent-albums: 11;
+    out property <int> chronicle: 12;
+    out property <int> playlists: 13;
+}
+
+export component HomePage inherits Flickable {
+    in property <[PlaylistChoice]> playlists;
+    in property <int> playing-id: -1;
+    in property <int> playing-mix: -1;
+    callback card-action(int, string, int, int);
+    callback card-layout(int, int, length);
+    callback track-action(int, string, int, int);
+    callback navigate(int, int);
+    callback open-web(string);
+    content-height: page.preferred-height;
+
+    page := VerticalLayout {
+        width: root.width;
+        padding-top: 24px;
+        padding-bottom: 48px;
+        spacing: 28px;
+        alignment: start;
+
+        HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            Text {
+                text: "主页";
+                color: Theme.text;
+                font-size: 24px;
+                font-weight: 700;
+            }
+        }
+
+        if Home.loading && !Home.unavailable: Text {
+            x: 32px;
+            text: "加载中…";
+            color: Theme.text-faint;
+        }
+
+        if Home.unavailable: VerticalLayout {
+            padding-left: 32px;
+            spacing: 12px;
+            Text {
+                text: "此服务端没有 032 主页接口";
+                color: Theme.text;
+                font-size: 16px;
+            }
+            Text {
+                text: "升级 032 服务端后，这里会显示最近添加、作品和播放进度。";
+                color: Theme.text-dim;
+            }
+            HorizontalLayout {
+                alignment: start;
+                GhostButton {
+                    text: "浏览专辑";
+                    clicked => {
+                        root.navigate(0, 0);
+                    }
+                }
+            }
+        }
+
+        // First run: the library is empty.
+        if !Home.loading && Home.empty: VerticalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            spacing: 12px;
+            Text {
+                text: "曲库还是空的";
+                color: Theme.text;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            Text {
+                text: "在控制台确认音乐目录并运行一次扫描。扫描只读取文件和标签，不会改写、移动或删除源文件；完成后，这里会出现最近添加、作品和你的播放进度。";
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                PrimaryButton {
+                    text: "前往控制台扫描";
+                    width: self.preferred-width + 32px;
+                    height: 32px;
+                    clicked => {
+                        root.open-web("/admin");
+                    }
+                }
+                GhostButton {
+                    text: "配置数据来源";
+                    clicked => {
+                        root.open-web("/admin/settings/metadata");
+                    }
+                }
+            }
+            for f in [
+                { label: "支持格式", value: "FLAC · MP3 · M4A/AAC · Ogg · Opus" },
+                { label: "歌词", value: "读取同名 .lrc 与内嵌歌词" },
+                { label: "在线增强", value: "MusicBrainz · Last.fm · Bangumi，可选、需人工审核" },
+            ]: HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: f.label;
+                    color: Theme.text-faint;
+                    width: 80px;
+                    font-size: 12px;
+                }
+                Text {
+                    text: f.value;
+                    color: Theme.text-dim;
+                    font-size: 12px;
+                }
+            }
+        }
+
+        if !Home.loading && !Home.empty && !Home.unavailable: VerticalLayout {
+            spacing: 32px;
+
+            if Home.tab-labels.length > 0: HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                Spotlight {
+                    playing-id: root.playing-id;
+                    track-action(list, what, i, arg) => {
+                        root.track-action(list, what, i, arg);
+                    }
+                    navigate(page, id) => {
+                        root.navigate(page, id);
+                    }
+                }
+            }
+
+            // Daily mixes or 接着听 next to 最近添加.
+            HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                spacing: 32px;
+                VerticalLayout {
+                    width: (root.width - 96px) / 2;
+                    spacing: 8px;
+                    alignment: start;
+                    if Home.mixes.length > 0 || Home.mixes-generating: SectionHead {
+                        title: "今日推荐";
+                    }
+                    if Home.mixes.length == 0 && Home.mixes-generating: VerticalLayout {
+                        Text {
+                            text: "正在生成今天的推荐";
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: "稍等片刻，生成好后会自动出现。";
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                        }
+                    }
+                    for m in Home.mixes: HomeRowView {
+                        item: m;
+                        mix: true;
+                        playing: m.id == root.playing-mix;
+                        action(what, arg) => {
+                            Home.action(what == "play" ? "mix-play" : "mix-open", m.id);
+                        }
+                    }
+                    SectionHead {
+                        title: "最近播放";
+                        LinkText {
+                            text: "播放记录 ›";
+                            clicked => {
+                                root.navigate(23, 0);
+                            }
+                        }
+                    }
+                    if Home.recent.length == 0: VerticalLayout {
+                        Text {
+                            text: "还没有播放记录";
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: "播放过的歌曲会出现在这里。";
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                        }
+                    }
+                    for r in Home.recent: HomeRowView {
+                        item: r;
+                        playing: r.id == root.playing-id;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            root.track-action(8, what, r.index, arg);
+                        }
+                    }
+                    if Home.mixes.length == 0 && !Home.mixes-generating && Home.resume.length > 0: SectionHead {
+                        title: "接着听";
+                    }
+                    if Home.mixes.length == 0 && !Home.mixes-generating: VerticalLayout {
+                        for r in Home.resume: HomeRowView {
+                            item: r;
+                            playing: r.id == root.playing-id;
+                            playlists: root.playlists;
+                            action(what, arg) => {
+                                root.track-action(7, what, r.index, arg);
+                            }
+                        }
+                    }
+                }
+                if Home.recent-albums.length > 0: VerticalLayout {
+                    width: (root.width - 96px) / 2;
+                    spacing: 8px;
+                    alignment: start;
+                    SectionHead {
+                        title: "最近添加";
+                        LinkText {
+                            text: "查看全部 ›";
+                            clicked => {
+                                root.navigate(0, 0);
+                            }
+                        }
+                    }
+                    CardRows {
+                        width: (root.width - 96px) / 2;
+                        rows: Home.recent-albums;
+                        kind: 0;
+                        min-size: 120px;
+                        side: 0px;
+                        playlists: root.playlists;
+                        layout-changed(n, size) => {
+                            root.card-layout(HomeGrids.recent-albums, n, size);
+                        }
+                        action(what, id, arg) => {
+                            root.card-action(HomeGrids.recent-albums, what, id, arg);
+                        }
+                    }
+                }
+            }
+
+            if Home.works-count > 0: VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    SectionHead {
+                        title: "按作品漫游";
+                        count: Home.works-count + " 部作品";
+                        for label[i] in ["全部", "动画", "游戏", "电影"]: Tab {
+                            text: label;
+                            selected: Home.works-type == i;
+                            clicked => {
+                                Home.action("works-type", i);
+                            }
+                        }
+                        if Home.works-pages > 1: GhostButton {
+                            text: "换一批";
+                            clicked => {
+                                Home.action("works-next", 0);
+                            }
+                        }
+                    }
+                }
+                if Home.works.length == 0: Text {
+                    x: 32px;
+                    text: "这个类型下还没有关联歌曲的作品";
+                    color: Theme.text-faint;
+                }
+                CardShelf {
+                    rows: Home.works;
+                    kind: 3;
+                    size: 140px;
+                    playlists: root.playlists;
+                    layout-changed(size) => {
+                        root.card-layout(HomeGrids.works, 1000, size);
+                    }
+                    action(what, id, arg) => {
+                        root.card-action(HomeGrids.works, what, id, arg);
+                    }
+                }
+            }
+
+            if Home.songs-count > 0: VerticalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                spacing: 8px;
+                SectionHead {
+                    title: "主题曲与插曲";
+                    count: "来自作品关联的歌曲角色 · 每日轮换";
+                    if Home.songs-pages > 1: GhostButton {
+                        text: "换一批";
+                        clicked => {
+                            Home.action("songs-next", 0);
+                        }
+                    }
+                    LinkText {
+                        text: "歌曲 ›";
+                        clicked => {
+                            root.navigate(1, 0);
+                        }
+                    }
+                }
+                for r in Home.songs: HomeRowView {
+                    item: r;
+                    playing: r.id == root.playing-id;
+                    show-add: true;
+                    playlists: root.playlists;
+                    action(what, arg) => {
+                        if what == "link" {
+                            root.navigate(13, arg);
+                        } else {
+                            root.track-action(9, what, r.index, arg);
+                        }
+                    }
+                }
+            }
+
+            if Home.years.length > 0: VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    SectionHead {
+                        title: "编年";
+                        count: "按发行年份 · 点击柱子查看那一年";
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    height: 140px;
+                    spacing: 3px;
+                    for bar in Home.years: Rectangle {
+                        horizontal-stretch: 1;
+                        max-width: 36px;
+                        bar-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                Home.action("year", bar.year);
+                            }
+                        }
+                        Rectangle {
+                            y: parent.height - 18px - self.height;
+                            height: (parent.height - 34px) * bar.height / 100;
+                            border-radius: 3px;
+                            background: bar.year == Home.year ? Theme.accent : bar-area.has-hover ? Theme.text-faint : Theme.raised;
+                        }
+                        if bar-area.has-hover || bar.year == Home.year: Text {
+                            y: parent.height - 34px - (parent.height - 34px) * bar.height / 100 - 2px;
+                            height: 14px;
+                            text: bar.count;
+                            color: Theme.text-dim;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            y: parent.height - 14px;
+                            height: 14px;
+                            text: mod(bar.year, 100) < 10 ? "'0" + mod(bar.year, 100) : "'" + mod(bar.year, 100);
+                            color: bar.year == Home.year ? Theme.accent : Theme.text-faint;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    SectionHead {
+                        title: Home.year + " 年";
+                        count: Home.year-total + " 张专辑";
+                        LinkText {
+                            text: "查看全部 ›";
+                            clicked => {
+                                Home.action("year-all", Home.year);
+                            }
+                        }
+                    }
+                }
+                if Home.chronicle.length == 0: Text {
+                    x: 32px;
+                    text: Home.year + " 年没有专辑";
+                    color: Theme.text-faint;
+                }
+                CardShelf {
+                    rows: Home.chronicle;
+                    kind: 0;
+                    size: 140px;
+                    playlists: root.playlists;
+                    layout-changed(size) => {
+                        root.card-layout(HomeGrids.chronicle, 1000, size);
+                    }
+                    action(what, id, arg) => {
+                        root.card-action(HomeGrids.chronicle, what, id, arg);
+                    }
+                }
+            }
+
+            if Home.playlists.length > 0: VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout {
+                    padding-left: 32px;
+                    padding-right: 32px;
+                    SectionHead {
+                        title: "歌单";
+                        LinkText {
+                            text: "全部歌单 ›";
+                            clicked => {
+                                root.navigate(4, 0);
+                            }
+                        }
+                    }
+                }
+                CardShelf {
+                    rows: Home.playlists;
+                    kind: 2;
+                    size: 140px;
+                    layout-changed(size) => {
+                        root.card-layout(HomeGrids.playlists, 1000, size);
+                    }
+                    action(what, id, arg) => {
+                        root.card-action(HomeGrids.playlists, what, id, arg);
+                    }
+                }
+            }
+
+            // Footer statistics.
+            HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 32px;
+                spacing: 16px;
+                alignment: start;
+                Text {
+                    text: Home.stats.albums + " 张专辑 · " + Home.stats.tracks + " 首歌曲 · " + Home.stats.works + " 部作品";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                }
+                if Home.stats.last-scan != "": Text {
+                    text: Home.stats.last-scan;
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                }
+                LinkText {
+                    text: "作品关联待审核" + (Home.stats.pending > 0 ? "（" + Home.stats.pending + "）" : "");
+                    clicked => {
+                        root.open-web("/admin/work-review");
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Virtualized poster / card grid with an empty hint.
+component CardGridPoster inherits Rectangle {
+    in property <[AlbumRow]> rows;
+    in property <int> kind;
+    in property <[PlaylistChoice]> playlists;
+    in property <string> empty-text;
+    in property <string> empty-hint;
+    in property <bool> loading;
+    callback layout-changed(int, length);
+    callback action(string, int, int);
+    out property <int> columns: max(1, floor((self.width - 64px + 24px) / 164px));
+    out property <length> card-size: (self.width - 64px - (root.columns - 1) * 24px) / root.columns;
+    changed card-size => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+    init => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+
+    if root.rows.length == 0: VerticalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text {
+            text: root.loading ? "加载中…" : root.empty-text;
+            color: Theme.text-faint;
+            horizontal-alignment: center;
+        }
+        if !root.loading && root.empty-hint != "": Text {
+            text: root.empty-hint;
+            color: Theme.text-faint;
+            font-size: 12px;
+            horizontal-alignment: center;
+        }
+    }
+
+    ListView {
+        for row in root.rows: HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            spacing: 24px;
+            alignment: start;
+            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 86px;
+            for card in row.items: CardView {
+                card: card;
+                kind: root.kind;
+                size: root.card-size;
+                playlists: root.playlists;
+                action(what, arg) => {
+                    root.action(what, card.id, arg);
+                }
+            }
+        }
+    }
+}
+
+// Works page: search, type and sort, a poster grid (grid 8).
+export component WorksPage inherits VerticalLayout {
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    property <string> search;
+    property <int> kind;
+    property <int> sort;
+    function commit() {
+        Lib032.query-works(root.search, root.kind, root.sort);
+    }
+
+    debounce := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.commit();
+        }
+    }
+
+    VerticalLayout {
+        vertical-stretch: 0;
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 24px;
+        padding-bottom: 12px;
+        spacing: 12px;
+        HorizontalLayout {
+            Text {
+                text: "作品";
+                color: Theme.text;
+                font-size: 24px;
+                font-weight: 700;
+            }
+            Text {
+                text: Lib032.works-total > 0 ? "共 " + Lib032.works-total + " 个作品" : "";
+                color: Theme.text-dim;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            height: 32px;
+            SearchField {
+                width: 240px;
+                placeholder: "原文、译名、假名或罗马音…";
+                text <=> root.search;
+                edited => {
+                    debounce.restart();
+                }
+                accepted => {
+                    debounce.running = false;
+                    root.commit();
+                }
+            }
+            ComboBox {
+                width: 130px;
+                model: Lib032.work-types;
+                current-index: root.kind;
+                selected => {
+                    root.kind = self.current-index;
+                    root.commit();
+                }
+            }
+            for label[i] in ["标题", "年份", "最近更新"]: Tab {
+                text: label;
+                selected: root.sort == i;
+                clicked => {
+                    root.sort = i;
+                    root.commit();
+                }
+            }
+        }
+    }
+
+    CardGridPoster {
+        vertical-stretch: 1;
+        rows: Lib032.works;
+        kind: 3;
+        loading: Lib032.works-loading;
+        empty-text: root.search == "" ? "没有找到作品" : "没有找到作品";
+        empty-hint: "扫描含 OP/ED/OST 标签的音乐，或在网页端新建作品。";
+        playlists: root.playlists;
+        layout-changed(n, size) => {
+            root.card-layout(n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(what, id, arg);
+        }
+    }
+}
+
+// Series page: search and a poster grid (grid 9).
+export component SeriesPage inherits VerticalLayout {
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    property <string> search;
+
+    debounce := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            Lib032.query-series(root.search);
+        }
+    }
+
+    VerticalLayout {
+        vertical-stretch: 0;
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 24px;
+        padding-bottom: 12px;
+        spacing: 12px;
+        HorizontalLayout {
+            Text {
+                text: "系列";
+                color: Theme.text;
+                font-size: 24px;
+                font-weight: 700;
+            }
+            Text {
+                text: Lib032.series-total > 0 ? "共 " + Lib032.series-total + " 个系列" : "";
+                color: Theme.text-dim;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        if Lib032.series-supported: HorizontalLayout {
+            alignment: start;
+            height: 32px;
+            SearchField {
+                width: 240px;
+                placeholder: "系列名或成员名…";
+                text <=> root.search;
+                edited => {
+                    debounce.restart();
+                }
+                accepted => {
+                    debounce.running = false;
+                    Lib032.query-series(root.search);
+                }
+            }
+        }
+    }
+
+    if !Lib032.series-supported: VerticalLayout {
+        alignment: center;
+        spacing: 8px;
+        Text {
+            text: "此服务端暂不支持系列接口";
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "升级 032 服务端，或在网页中管理系列。";
+            color: Theme.text-faint;
+            font-size: 12px;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            GhostButton {
+                text: "在网页中打开";
+                clicked => {
+                    Lib032.open-web("/admin/series");
+                }
+            }
+        }
+    }
+
+    if Lib032.series-supported: CardGridPoster {
+        vertical-stretch: 1;
+        rows: Lib032.series;
+        kind: 4;
+        loading: Lib032.series-loading;
+        empty-text: "没有找到系列";
+        empty-hint: "自动归组或在网页端手动新建后，系列会出现在这里。";
+        layout-changed(n, size) => {
+            root.card-layout(n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(what, id, arg);
+        }
+    }
+}
+
+// Playback history (track list 10).
+export component HistoryPage inherits VerticalLayout {
+    in property <int> playing-id;
+    in property <[PlaylistChoice]> playlists;
+    callback track-action(string, int, int);
+    callback clear();
+
+    VerticalLayout {
+        vertical-stretch: 0;
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 24px;
+        padding-bottom: 12px;
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: "播放记录";
+                color: Theme.text;
+                font-size: 24px;
+                font-weight: 700;
+            }
+            Text {
+                text: Lib032.history-total > 0 ? Lib032.history-total + " 首有播放记录的歌曲" : "";
+                color: Theme.text-dim;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if Lib032.history-total > 0: GhostButton {
+                text: "清空播放历史";
+                clicked => {
+                    root.clear();
+                }
+            }
+        }
+    }
+
+    TrackList {
+        vertical-stretch: 1;
+        rows: Lib032.history;
+        mode: 3;
+        loading: Lib032.history-loading;
+        empty-text: "还没有播放记录";
+        playing-id: root.playing-id;
+        playlists: root.playlists;
+        action(what, i, arg) => {
+            root.track-action(what, i, arg);
+        }
+    }
+}
+
+component DetailHero inherits HorizontalLayout {
+    in property <image> poster;
+    in property <length> poster-w: 160px;
+    in property <length> poster-h: 240px;
+    padding-left: 32px;
+    padding-right: 32px;
+    padding-top: 48px;
+    spacing: 24px;
+    Cover {
+        width: root.poster-w;
+        height: root.poster-h;
+        source: root.poster;
+        placeholder: "作";
+    }
+    VerticalLayout {
+        alignment: end;
+        spacing: 6px;
+        horizontal-stretch: 1;
+        @children
+    }
+}
+
+// Work page: hero, series banner, linked albums (grid 14) and tracks
+// collected on other albums (track list 2).
+export component WorkPage inherits Flickable {
+    in property <[TrackRow]> tracks;
+    in property <bool> loading;
+    in property <int> playing-id;
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    callback track-action(string, int, int);
+    callback navigate(int, int);
+    property <length> flex: max(0px, self.width - 64px - 48px - 28px - 56px - 80px);
+    content-height: page.preferred-height;
+
+    page := VerticalLayout {
+        width: root.width;
+        alignment: start;
+        spacing: 16px;
+        padding-bottom: 32px;
+
+        DetailHero {
+            poster: Lib032.work-poster;
+            Text {
+                text: "作品";
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            Text {
+                text: root.loading && Lib032.work.title == "" ? "加载中…" : Lib032.work.title;
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            if Lib032.work.translated != "": Text {
+                text: Lib032.work.translated;
+                color: Theme.text;
+                font-size: 16px;
+            }
+            if Lib032.work.reading != "": Text {
+                text: Lib032.work.reading;
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            Text {
+                text: Lib032.work.facts;
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+                GhostButton {
+                    text: "在网页中打开";
+                    clicked => {
+                        Lib032.detail-action("web", 0);
+                    }
+                }
+                if Lib032.work.bangumi-url != "": GhostButton {
+                    text: "在 Bangumi 查看 ↗";
+                    clicked => {
+                        Lib032.detail-action("bangumi", 0);
+                    }
+                }
+            }
+        }
+
+        if Lib032.work.series-id > 0: HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            Rectangle {
+                height: 52px;
+                border-radius: 10px;
+                background: banner-area.has-hover ? Theme.surface-hover : Theme.surface;
+                banner-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.navigate(14, Lib032.work.series-id);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            text: "所属系列";
+                            accent: true;
+                        }
+                    }
+                    Text {
+                        text: Lib032.work.series-title;
+                        color: Theme.text;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: Lib032.work.series-meta;
+                        color: Theme.text-dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "›";
+                        color: Theme.text-faint;
+                        font-size: 18px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            SectionHead {
+                title: "关联专辑";
+                count: Lib032.work.album-count + " 张整张关联专辑";
+            }
+        }
+        if !root.loading && Lib032.work-albums.length == 0: Text {
+            x: 32px;
+            text: "尚无关联专辑";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.work-albums;
+            kind: 0;
+            playlists: root.playlists;
+            layout-changed(n, size) => {
+                root.card-layout(n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(what, id, arg);
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            spacing: 2px;
+            SectionHead {
+                title: "收录于精选集 / 原创专辑";
+                count: Lib032.work.collected + " 首曲目";
+            }
+            Text {
+                text: "曲目级关联、但专辑本身未整张关联本作品的曲目：";
+                color: Theme.text-faint;
+                font-size: 12px;
+            }
+        }
+        if !root.loading && root.tracks.length == 0: Text {
+            x: 32px;
+            text: "还没有独立收录曲目";
+            color: Theme.text-faint;
+        }
+        for track in root.tracks: TrackRowView {
+            track: track;
+            mode: 0;
+            playing: track.id == root.playing-id;
+            playlists: root.playlists;
+            title-w: root.flex * 0.42;
+            artist-w: root.flex * 0.24;
+            album-w: root.flex * 0.34;
+            action(what, arg) => {
+                root.track-action(what, track.index, arg);
+            }
+        }
+    }
+}
+
+// Series page: hero, members (grid 15) and albums (grid 16).
+export component SeriesDetailPage inherits Flickable {
+    in property <bool> loading;
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(int, string, int, int);
+    callback card-layout(int, int, length);
+    content-height: page.preferred-height;
+
+    page := VerticalLayout {
+        width: root.width;
+        alignment: start;
+        spacing: 16px;
+        padding-bottom: 32px;
+
+        DetailHero {
+            poster: Lib032.series-poster;
+            Text {
+                text: "系列";
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                if Lib032.series-info.playing: Text {
+                    text: "♪";
+                    color: Theme.accent;
+                    font-size: 24px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.loading && Lib032.series-info.title == "" ? "加载中…" : Lib032.series-info.title;
+                    color: Theme.text;
+                    font-size: 28px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                if Lib032.series-info.renamed: VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        text: "已改名";
+                    }
+                }
+            }
+            Text {
+                text: Lib032.series-info.facts;
+                color: Theme.text-dim;
+                font-size: 12px;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+                GhostButton {
+                    text: "在网页中打开";
+                    clicked => {
+                        Lib032.detail-action("web", 0);
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            SectionHead {
+                title: "系列成员";
+                count: Lib032.series-info.member-count + " 部作品";
+            }
+        }
+        if !root.loading && Lib032.series-members.length == 0: Text {
+            x: 32px;
+            text: "没有找到系列";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.series-members;
+            kind: 3;
+            playlists: root.playlists;
+            layout-changed(n, size) => {
+                root.card-layout(15, n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(15, what, id, arg);
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 32px;
+            padding-right: 32px;
+            SectionHead {
+                title: "系列专辑";
+                count: Lib032.series-info.album-count + " 张专辑";
+            }
+        }
+        if !root.loading && Lib032.series-albums.length == 0: Text {
+            x: 32px;
+            text: "尚无关联专辑";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.series-albums;
+            kind: 0;
+            playlists: root.playlists;
+            layout-changed(n, size) => {
+                root.card-layout(16, n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(16, what, id, arg);
+            }
+        }
+    }
+}
+
+// Daily mix page: hero, tracks (track list 2, mode 4) and the feedback
+// column (rating, 换一个, 另存为歌单, today's other mixes).
+export component MixPage inherits VerticalLayout {
+    in property <[TrackRow]> tracks;
+    in property <bool> loading;
+    in property <int> playing-id;
+    in property <int> playing-mix: -1;
+    in property <[PlaylistChoice]> playlists;
+    callback track-action(string, int, int);
+    callback open-mix(int);
+    callback play-mix(int);
+    property <bool> reasons-open;
+    property <image> no-image;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 48px;
+        padding-bottom: 16px;
+        spacing: 24px;
+        Rectangle {
+            width: 180px;
+            height: 180px;
+            border-radius: Theme.radius;
+            background: Theme.raised;
+            clip: true;
+            if Lib032.mix-covers.length < 4: Cover {
+                source: Lib032.mix-covers.length > 0 ? Lib032.mix-covers[0] : root.no-image;
+                placeholder: "♪";
+            }
+            if Lib032.mix-covers.length >= 4: Rectangle {
+                for img[i] in Lib032.mix-covers: Image {
+                    x: mod(i, 2) * 90px;
+                    y: floor(i / 2) * 90px;
+                    width: 90px;
+                    height: 90px;
+                    source: img;
+                    image-fit: ImageFit.cover;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: end;
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: Lib032.mix.kicker;
+                color: Theme.accent;
+                font-size: 12px;
+            }
+            Text {
+                text: root.loading && Lib032.mix.title == "" ? "加载中…" : Lib032.mix.title;
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            if Lib032.mix.description != "": Text {
+                text: Lib032.mix.description;
+                color: Theme.text-dim;
+                font-size: 13px;
+                wrap: word-wrap;
+                max-height: 36px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                for tag in Lib032.mix-tags: Pill {
+                    text: tag.label;
+                    accent: tag.style;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "随机播放";
+                    has-icon: true;
+                    icon: IconKind.shuffle;
+                    clicked => {
+                        Lib032.detail-action("shuffle", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入播放队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+            }
+            Text {
+                text: Lib032.mix.subtitle;
+                color: Theme.text-faint;
+                font-size: 12px;
+            }
+        }
+    }
+
+    HorizontalLayout {
+        vertical-stretch: 1;
+        spacing: 0px;
+        TrackList {
+            width: root.width - 280px;
+            rows: root.tracks;
+            mode: 4;
+            loading: root.loading;
+            playing-id: root.playing-id;
+            playlists: root.playlists;
+            action(what, i, arg) => {
+                root.track-action(what, i, arg);
+            }
+        }
+        Flickable {
+            width: 280px;
+            content-height: aside.preferred-height;
+            aside := VerticalLayout {
+                width: parent.width;
+                padding-right: 24px;
+                spacing: 16px;
+                alignment: start;
+                Rectangle {
+                    border-radius: 10px;
+                    background: Theme.surface;
+                    height: feedback.preferred-height;
+                    feedback := VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "这个歌单怎么样？";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            GhostButton {
+                                text: "喜欢";
+                                active: Lib032.mix.rating == 1;
+                                clicked => {
+                                    Lib032.detail-action(Lib032.mix.rating == 1 ? "undo" : "like", 0);
+                                }
+                            }
+                            GhostButton {
+                                text: Lib032.mix.rating == -1 ? "不喜欢" : "不喜欢…";
+                                active: Lib032.mix.rating == -1;
+                                clicked => {
+                                    if Lib032.mix.rating == -1 {
+                                        Lib032.detail-action("undo", 0);
+                                    } else {
+                                        root.reasons-open = !root.reasons-open;
+                                    }
+                                }
+                            }
+                        }
+                        if Lib032.mix.disliked-note != "": Text {
+                            text: Lib032.mix.disliked-note;
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if root.reasons-open && Lib032.mix.rating != -1: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "哪里不满意？（可多选，也可不选）";
+                                color: Theme.text-dim;
+                                font-size: 12px;
+                            }
+                            for label[i] in ["太重复", "不喜欢这个主题", "歌不好听", "风格太跳", "歌和主题不符"]: CheckBox {
+                                text: label;
+                                checked: Lib032.mix-reasons[i];
+                                toggled => {
+                                    Lib032.mix-reasons[i] = self.checked;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: "提交";
+                                    clicked => {
+                                        root.reasons-open = false;
+                                        Lib032.detail-action("dislike", 0);
+                                    }
+                                }
+                            }
+                        }
+                        if Lib032.mix.current: VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: "换一个";
+                                    enabled: Lib032.mix.replacements-left > 0;
+                                    clicked => {
+                                        Lib032.detail-action("replace", 0);
+                                    }
+                                }
+                            }
+                            Text {
+                                text: Lib032.mix.replacements-left > 0 ? "今天还可以换 " + Lib032.mix.replacements-left + " 次" : "今天的次数已用完";
+                                color: Theme.text-faint;
+                                font-size: 11px;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            GhostButton {
+                                text: Lib032.mix.saved-playlist-id > 0 ? "再存一份为歌单" : "另存为歌单";
+                                clicked => {
+                                    Lib032.detail-action("save", 0);
+                                }
+                            }
+                            if Lib032.mix.saved-playlist-id > 0: LinkText {
+                                text: "查看已保存的歌单";
+                                clicked => {
+                                    Lib032.detail-action("saved", Lib032.mix.saved-playlist-id);
+                                }
+                            }
+                        }
+                        Text {
+                            text: "“不再推荐”和评价从下一次生成开始生效。";
+                            color: Theme.text-faint;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if Lib032.mix-others.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "今天的其他推荐";
+                        color: Theme.text;
+                        font-weight: 600;
+                    }
+                    for m in Lib032.mix-others: HomeRowView {
+                        item: m;
+                        mix: true;
+                        playing: m.id == root.playing-mix;
+                        action(what, arg) => {
+                            if what == "play" {
+                                root.play-mix(m.id);
+                            } else {
+                                root.open-mix(m.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Online lyrics search: results on the left, the selected one's lyrics on
+// the right; 确定 uses it for this track on the server.
+export component LyricsSearchDialog inherits Rectangle {
+    callback close();
+    background: #00000099;
+
+    TouchArea { }
+
+    debounce := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+        }
+    }
+
+    Rectangle {
+        width: min(760px, root.width - 64px);
+        height: min(560px, root.height - 64px);
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            Text {
+                text: "搜索歌词";
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                vertical-stretch: 0;
+                Field {
+                    label: "歌曲名";
+                    text <=> LyricsSearch.name;
+                    edited => {
+                        debounce.restart();
+                    }
+                    accepted => {
+                        debounce.running = false;
+                        LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+                    }
+                }
+                Field {
+                    label: "艺人";
+                    text <=> LyricsSearch.artist;
+                    edited => {
+                        debounce.restart();
+                    }
+                    accepted => {
+                        debounce.running = false;
+                        LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+                    }
+                }
+            }
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 12px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if LyricsSearch.results.length == 0: Text {
+                        text: LyricsSearch.searching ? "搜索中…" : "没有结果";
+                        color: Theme.text-faint;
+                    }
+                    ListView {
+                        for r[i] in LyricsSearch.results: Rectangle {
+                            height: 62px;
+                            border-radius: Theme.radius;
+                            background: i == LyricsSearch.selected ? Theme.accent-dim : r-area.has-hover ? Theme.surface-hover : transparent;
+                            r-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    LyricsSearch.selected = i;
+                                    LyricsSearch.select(i);
+                                }
+                            }
+                            HorizontalLayout {
+                                padding: 8px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    Text {
+                                        text: r.title;
+                                        color: Theme.text;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.artist;
+                                        color: Theme.text-dim;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.meta;
+                                        color: Theme.text-faint;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                    }
+                                }
+                                Text {
+                                    text: r.score;
+                                    color: Theme.text-dim;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 280px;
+                    border-radius: Theme.radius;
+                    background: Theme.bg;
+                    if LyricsSearch.preview.length == 0: Text {
+                        text: LyricsSearch.selected < 0 ? "选择一条结果预览歌词" : "加载中…";
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                    }
+                    ListView {
+                        for line in LyricsSearch.preview: Text {
+                            height: 24px;
+                            text: line;
+                            color: Theme.text-dim;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Text {
+                    text: "选中的歌词会保存到服务端，对所有设备生效。";
+                    color: Theme.text-faint;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                GhostButton {
+                    text: "取消";
+                    clicked => {
+                        root.close();
+                    }
+                }
+                PrimaryButton {
+                    text: "确定";
+                    enabled: LyricsSearch.selected >= 0;
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        LyricsSearch.apply(LyricsSearch.selected);
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}

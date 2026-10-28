@@ -2,7 +2,9 @@ import { ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon } from "controls.slint";
 
-// `badge`: relation on an artist page; `artist-id` 0 = none.
+// `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
+// extra line (track uses on a work page); `playing`: the current track
+// belongs to it (works, series).
 export struct AlbumCard {
     id: int,
     title: string,
@@ -12,6 +14,8 @@ export struct AlbumCard {
     artist-id: int,
     favorite: bool,
     badge: string,
+    note: string,
+    playing: bool,
 }
 
 export struct AlbumRow {
@@ -19,6 +23,9 @@ export struct AlbumRow {
 }
 
 // `index`: row in its list; `number`: album track number ("1-03").
+// `tag`: a label after the title (use on a work, history state, 新发现),
+// `note`: replaces the album column (history), `disabled`: the file is
+// missing, `blocked`: 不再推荐 (daily mixes).
 export struct TrackRow {
     id: int,
     index: int,
@@ -30,10 +37,26 @@ export struct TrackRow {
     artist-id: int,
     favorite: bool,
     number: string,
+    tag: string,
+    tag-accent: bool,
+    note: string,
+    disabled: bool,
+    blocked: bool,
 }
 
+// A piece of a lyrics line with its kana reading (empty: none).
+export struct RubySegment {
+    base: string,
+    reading: string,
+}
+
+// `translation`: shown under the line (bilingual); `ruby`: the line split
+// with furigana (empty: plain `text`); `romaji`: under Japanese lines.
 export struct LyricLine {
     text: string,
+    translation: string,
+    ruby: [RubySegment],
+    romaji: string,
 }
 
 export struct QueueRow {
@@ -134,17 +157,19 @@ export component LoginView inherits Rectangle {
 // Album / artist / playlist card. Clicking opens it; the round button plays.
 export component CardView inherits Rectangle {
     in property <AlbumCard> card;
-    // 0 album, 1 artist, 2 playlist.
+    // 0 album, 1 artist, 2 playlist, 3 work (2:3 poster), 4 series (poster).
     in property <int> kind;
     in property <length> size: 168px;
     in property <[PlaylistChoice]> playlists;
     // (action, argument): see `card-action` in app.slint.
     callback action(string, int);
+    property <bool> poster: root.kind == 3 || root.kind == 4;
+    property <length> art-h: root.poster ? root.size * 1.5 : root.size;
     // The pointer is on the round play button (bottom right of the cover).
     property <bool> over-play: area.has-hover && area.mouse-x >= root.size - 52px && area.mouse-x <= root.size - 12px
-        && area.mouse-y >= root.size - 52px && area.mouse-y <= root.size - 12px;
+        && area.mouse-y >= root.art-h - 52px && area.mouse-y <= root.art-h - 12px;
     width: root.size;
-    height: root.size + 62px;
+    height: root.art-h + 62px + (root.card.note != "" ? 18px : 0px);
 
     VerticalLayout {
         spacing: 6px;
@@ -152,13 +177,13 @@ export component CardView inherits Rectangle {
 
         Rectangle {
             width: root.size;
-            height: root.size;
+            height: root.art-h;
             border-radius: root.kind == 1 ? root.size / 2 : Theme.radius;
             background: Theme.raised;
             clip: true;
 
-            if root.kind == 1 && root.card.cover.width == 0: Text {
-                text: root.card.title == "" ? "?" : "♪";
+            if (root.kind == 1 || root.poster) && root.card.cover.width == 0: Text {
+                text: root.poster ? "作" : root.card.title == "" ? "?" : "♪";
                 color: Theme.text-faint;
                 font-size: root.size / 3;
             }
@@ -175,7 +200,7 @@ export component CardView inherits Rectangle {
                 animate background { duration: 120ms; }
             }
 
-            if area.has-hover: Rectangle {
+            if area.has-hover && root.kind != 4: Rectangle {
                 x: parent.width - 52px;
                 y: parent.height - 52px;
                 width: 40px;
@@ -186,6 +211,21 @@ export component CardView inherits Rectangle {
                     kind: IconKind.play;
                     width: 16px;
                     height: 16px;
+                    color: #ffffff;
+                }
+            }
+
+            if root.card.playing: Rectangle {
+                x: parent.width - 30px;
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.accent;
+                Icon {
+                    kind: IconKind.lyrics;
+                    width: 12px;
+                    height: 12px;
                     color: #ffffff;
                 }
             }
@@ -222,6 +262,14 @@ export component CardView inherits Rectangle {
             width: root.size;
             horizontal-alignment: root.kind == 1 ? center : left;
         }
+
+        if root.card.note != "": Text {
+            text: root.card.note;
+            color: Theme.accent;
+            font-size: 11px;
+            overflow: elide;
+            width: root.size;
+        }
     }
 
     ContextMenuArea {
@@ -250,7 +298,7 @@ export component CardView inherits Rectangle {
                     root.action("last", 0);
                 }
             }
-            if root.kind != 2: Menu {
+            if root.kind != 2 && root.kind != 4: Menu {
                 title: "添加到歌单";
                 MenuItem {
                     title: "新建歌单…";
@@ -265,7 +313,7 @@ export component CardView inherits Rectangle {
                     }
                 }
             }
-            if root.kind != 2: MenuItem {
+            if root.kind < 2: MenuItem {
                 title: root.card.favorite ? "取消收藏" : "收藏";
                 activated => {
                     root.action("favorite", root.card.favorite ? 0 : 1);
@@ -288,7 +336,7 @@ export component CardView inherits Rectangle {
         area := TouchArea {
             mouse-cursor: pointer;
             clicked => {
-                root.action(root.over-play ? "play" : "open", 0);
+                root.action(root.over-play && root.kind != 4 ? "play" : "open", 0);
             }
         }
     }
@@ -328,7 +376,7 @@ export component CardGrid inherits Rectangle {
             padding-right: 32px;
             spacing: 24px;
             alignment: start;
-            height: root.card-size + 86px;
+            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 86px;
             for card in row.items: CardView {
                 card: card;
                 kind: root.kind;
@@ -350,7 +398,8 @@ export global TrackColumns {
 }
 
 // One track row. `mode`: 0 list, 1 album (track numbers, no album
-// column), 2 playlist (removable, draggable).
+// column), 2 playlist (removable, draggable), 3 history (`note` instead
+// of the album), 4 daily mix (不再推荐 button).
 export component TrackRowView inherits Rectangle {
     in property <TrackRow> track;
     in property <int> mode;
@@ -381,12 +430,28 @@ export component TrackRowView inherits Rectangle {
             color: root.playing ? Theme.accent : Theme.text-faint;
             vertical-alignment: center;
         }
-        Text {
-            text: root.track.title;
+        HorizontalLayout {
             width: root.title-w;
-            color: root.playing ? Theme.accent : Theme.text;
-            overflow: elide;
-            vertical-alignment: center;
+            spacing: 6px;
+            Text {
+                text: root.track.title;
+                color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.track.tag != "": Rectangle {
+                width: tag-text.preferred-width + 10px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
+                tag-text := Text {
+                    text: root.track.tag;
+                    color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
+                    font-size: 11px;
+                }
+            }
         }
         Text {
             text: root.track.artist;
@@ -396,11 +461,26 @@ export component TrackRowView inherits Rectangle {
             vertical-alignment: center;
         }
         if root.mode != 1: Text {
-            text: root.track.album;
+            text: root.mode == 3 ? root.track.note : root.track.album;
             width: root.album-w;
             color: Theme.text-dim;
             overflow: elide;
             vertical-alignment: center;
+        }
+        if root.mode == 4: Rectangle {
+            width: 64px;
+            Text {
+                text: root.track.blocked ? "已不再推荐" : "不再推荐";
+                color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
+                font-size: 11px;
+                visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
+            }
+            block-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("block", root.track.blocked ? 0 : 1);
+                }
+            }
         }
         Rectangle {
             width: TrackColumns.heart;
@@ -502,7 +582,9 @@ export component TrackRowView inherits Rectangle {
 
         row-area := TouchArea {
             double-clicked => {
-                root.action("play", 0);
+                if !root.track.disabled {
+                    root.action("play", 0);
+                }
             }
             pointer-event(e) => {
                 if root.mode == 2 && e.button == PointerEventButton.left {
@@ -536,7 +618,7 @@ export component TrackList inherits Rectangle {
     // (action, row index, argument)
     callback action(string, int, int);
     // 32px side padding, fixed columns, 5 gaps of 16px.
-    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px);
+    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px - (root.mode == 4 ? 80px : 0px));
     property <length> title-w: root.mode == 1 ? root.flex * 0.62 : root.flex * 0.42;
     property <length> artist-w: root.mode == 1 ? root.flex * 0.38 - 16px : root.flex * 0.24;
     property <length> album-w: root.flex * 0.34;
@@ -553,7 +635,8 @@ export component TrackList inherits Rectangle {
             Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
             Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
             Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
-            if root.mode != 1: Text { text: "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
+            if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12px; vertical-alignment: center; }
+            if root.mode == 4: Rectangle { width: 64px; }
             Rectangle { width: TrackColumns.heart; }
             Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
         }
@@ -737,12 +820,49 @@ export component QueuePanel inherits Rectangle {
     }
 }
 
+component LyricsTool inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 26px;
+    width: max(30px, label.preferred-width + 16px);
+    border-radius: 4px;
+    background: area.has-hover ? Theme.surface-hover : transparent;
+    label := Text {
+        text: root.text;
+        color: root.active ? Theme.accent : area.has-hover ? Theme.text : Theme.text-dim;
+        font-size: 12px;
+    }
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Lyrics of the current track: synced lines follow playback (scrolling by
+// hand pauses that for a few seconds), clicking a synced line seeks to it.
+// The toolbar searches online lyrics, shifts them and translates.
 export component LyricsPanel inherits Rectangle {
     in property <[LyricLine]> lines;
     in property <int> active: -1;
     in property <bool> synced;
     in property <string> source;
-    property <length> line-height: 40px;
+    in property <bool> has-track;
+    in property <bool> can-search;
+    in property <bool> can-translate;
+    in property <bool> translation-shown;
+    in property <bool> translating;
+    in property <int> offset-ms;
+    callback seek-line(int);
+    // search, clear, translate; offset (ms)
+    callback tool(string);
+    callback offset(int);
+    property <length> line-height: 40px + (root.lines-have-translation ? 18px : 0px) + (root.lines-have-ruby ? 14px : 0px) + (root.lines-have-romaji ? 16px : 0px);
+    in property <bool> lines-have-translation;
+    in property <bool> lines-have-ruby;
+    in property <bool> lines-have-romaji;
     background: Theme.surface;
 
     VerticalLayout {
@@ -764,50 +884,222 @@ export component LyricsPanel inherits Rectangle {
         }
 
         if root.lines.length == 0: Rectangle {
+            vertical-stretch: 1;
             Text {
-                text: "暂无歌词";
+                text: root.has-track ? "暂无歌词" : "";
                 color: Theme.text-faint;
             }
         }
 
-        // Synced: auto-scroll only in M0 (user scrolling would break the binding).
         if root.lines.length > 0 && root.synced: synced-flick := Flickable {
-            interactive: false;
+            vertical-stretch: 1;
             property <length> pad: max(0px, (self.height - root.line-height) / 2);
+            property <bool> follow: true;
+            property <int> act: root.active;
+            changed act => {
+                if self.follow {
+                    self.recenter();
+                }
+            }
+            function recenter() {
+                self.content-y = -(max(0, root.active) * root.line-height);
+            }
             content-height: root.lines.length * root.line-height + 2 * self.pad;
-            content-y: -(max(0, root.active) * root.line-height);
+            init => {
+                self.recenter();
+            }
+            flicked => {
+                self.follow = false;
+                resume.restart();
+            }
+            resume := Timer {
+                interval: 4s;
+                running: false;
+                triggered => {
+                    self.running = false;
+                    synced-flick.follow = true;
+                    synced-flick.recenter();
+                }
+            }
+            changed height => {
+                if self.follow {
+                    self.recenter();
+                }
+            }
             animate content-y { duration: 380ms; easing: ease-out; }
 
-            for line[i] in root.lines: Text {
-                x: 16px;
+            for line[i] in root.lines: Rectangle {
+                x: 12px;
                 y: synced-flick.pad + i * root.line-height;
-                width: synced-flick.width - 32px;
+                width: synced-flick.width - 24px;
                 height: root.line-height;
-                text: line.text;
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-                font-size: i == root.active ? 18px : 15px;
-                font-weight: i == root.active ? 700 : 400;
-                color: i == root.active ? Theme.text : Theme.text-faint;
-                animate color { duration: 200ms; }
+                border-radius: Theme.radius;
+                background: line-area.has-hover ? Theme.surface-hover : transparent;
+                VerticalLayout {
+                    alignment: center;
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    if line.ruby.length == 0: Text {
+                        text: line.text;
+                        overflow: elide;
+                        horizontal-alignment: center;
+                        font-size: i == root.active ? 18px : 15px;
+                        font-weight: i == root.active ? 700 : 400;
+                        color: i == root.active ? Theme.text : Theme.text-faint;
+                        animate color { duration: 200ms; }
+                    }
+                    if line.ruby.length > 0: HorizontalLayout {
+                        alignment: center;
+                        spacing: 0px;
+                        for seg in line.ruby: VerticalLayout {
+                            alignment: end;
+                            Text {
+                                text: seg.reading;
+                                height: 13px;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                color: i == root.active ? Theme.text-dim : Theme.text-faint;
+                            }
+                            Text {
+                                text: seg.base;
+                                horizontal-alignment: center;
+                                font-size: i == root.active ? 18px : 15px;
+                                font-weight: i == root.active ? 700 : 400;
+                                color: i == root.active ? Theme.text : Theme.text-faint;
+                            }
+                        }
+                    }
+                    if line.romaji != "": Text {
+                        text: line.romaji;
+                        overflow: elide;
+                        horizontal-alignment: center;
+                        font-size: 12px;
+                        color: Theme.text-faint;
+                    }
+                    if line.translation != "": Text {
+                        text: line.translation;
+                        overflow: elide;
+                        horizontal-alignment: center;
+                        font-size: 13px;
+                        color: i == root.active ? Theme.text-dim : Theme.text-faint;
+                    }
+                }
+                line-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.seek-line(i);
+                    }
+                }
             }
         }
 
         // Plain lyrics: free scrolling.
         if root.lines.length > 0 && !root.synced: plain-flick := Flickable {
+            vertical-stretch: 1;
             content-height: root.lines.length * root.line-height + 32px;
-            for line[i] in root.lines: Text {
+            for line[i] in root.lines: VerticalLayout {
                 x: 16px;
                 y: 16px + i * root.line-height;
                 width: plain-flick.width - 32px;
                 height: root.line-height;
-                text: line.text;
-                overflow: elide;
-                vertical-alignment: center;
+                alignment: center;
+                if line.ruby.length == 0: Text {
+                    text: line.text;
+                    overflow: elide;
+                    horizontal-alignment: center;
+                    font-size: 15px;
+                    color: Theme.text-dim;
+                }
+                if line.ruby.length > 0: HorizontalLayout {
+                    alignment: center;
+                    spacing: 0px;
+                    for seg in line.ruby: VerticalLayout {
+                        alignment: end;
+                        Text {
+                            text: seg.reading;
+                            height: 13px;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            color: Theme.text-faint;
+                        }
+                        Text {
+                            text: seg.base;
+                            font-size: 15px;
+                            horizontal-alignment: center;
+                            color: Theme.text-dim;
+                        }
+                    }
+                }
+                if line.romaji != "": Text {
+                    text: line.romaji;
+                    overflow: elide;
+                    horizontal-alignment: center;
+                    font-size: 12px;
+                    color: Theme.text-faint;
+                }
+                if line.translation != "": Text {
+                    text: line.translation;
+                    overflow: elide;
+                    horizontal-alignment: center;
+                    font-size: 13px;
+                    color: Theme.text-faint;
+                }
+            }
+        }
+
+        if root.has-track: Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        if root.has-track: HorizontalLayout {
+            padding: 8px;
+            spacing: 2px;
+            alignment: center;
+            if root.can-search: LyricsTool {
+                text: "搜索";
+                clicked => {
+                    root.tool("search");
+                }
+            }
+            if root.synced: LyricsTool {
+                text: "−";
+                clicked => {
+                    root.offset(root.offset-ms - 50);
+                }
+            }
+            if root.synced: Text {
+                text: (root.offset-ms > 0 ? "+" : "") + root.offset-ms + " ms";
+                color: root.offset-ms == 0 ? Theme.text-faint : Theme.accent;
+                font-size: 12px;
+                width: 64px;
                 horizontal-alignment: center;
-                font-size: 15px;
-                color: Theme.text-dim;
+                vertical-alignment: center;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.offset(0);
+                    }
+                }
+            }
+            if root.synced: LyricsTool {
+                text: "+";
+                clicked => {
+                    root.offset(root.offset-ms + 50);
+                }
+            }
+            if root.can-translate: LyricsTool {
+                text: root.translating ? "翻译中…" : "翻译";
+                active: root.translation-shown;
+                clicked => {
+                    root.tool("translate");
+                }
+            }
+            if root.can-search && root.lines.length > 0: LyricsTool {
+                text: "清除";
+                clicked => {
+                    root.tool("clear");
+                }
             }
         }
     }

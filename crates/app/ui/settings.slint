@@ -53,89 +53,172 @@ export component SettingsView inherits Rectangle {
     in property <[string]> transcode-options;
     in-out property <int> transcode-index;
     callback transcode-selected(int);
+    // Server lyrics translation is available.
+    in property <bool> lyrics-translation;
+    in-out property <int> lyrics-language;
+    in-out property <int> lyrics-mode;
+    in-out property <bool> lyrics-auto;
+    in-out property <bool> lyrics-furigana;
+    in-out property <bool> lyrics-romaji;
+    callback lyrics-changed();
 
     init => {
         root.opened();
     }
 
-    VerticalLayout {
-        padding-left: 32px;
-        padding-right: 32px;
-        padding-top: 24px;
-        spacing: 12px;
-        alignment: start;
+    Flickable {
+        content-height: settings-page.preferred-height + 24px;
+        settings-page := VerticalLayout {
+            width: parent.width;
+            padding-left: 32px;
+            padding-right: 32px;
+            padding-top: 24px;
+            spacing: 12px;
+            alignment: start;
 
-        Text {
-            text: "设置";
-            color: Theme.text;
-            font-size: 24px;
-            font-weight: 700;
-        }
+            Text {
+                text: "设置";
+                color: Theme.text;
+                font-size: 24px;
+                font-weight: 700;
+            }
 
-        Text {
-            text: "播放";
-            color: Theme.text-dim;
-            font-size: 13px;
-            font-weight: 600;
-        }
+            Text {
+                text: "播放";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
 
-        SettingRow {
-            title: "输出设备";
-            description: "mpv 的音频输出设备";
-            ComboBox {
-                width: 320px;
-                y: (parent.height - self.height) / 2;
-                model: root.devices;
-                current-index <=> root.device-index;
-                enabled: !root.output-busy;
-                selected => {
-                    root.device-selected(self.current-index);
+            SettingRow {
+                title: "输出设备";
+                description: "mpv 的音频输出设备";
+                ComboBox {
+                    width: 320px;
+                    y: (parent.height - self.height) / 2;
+                    model: root.devices;
+                    current-index <=> root.device-index;
+                    enabled: !root.output-busy;
+                    selected => {
+                        root.device-selected(self.current-index);
+                    }
                 }
             }
-        }
 
-        SettingRow {
-            title: "独占模式";
-            description: "WASAPI 独占输出，绕过系统混音。播放中可切换；部分设备不支持。";
-            Switch {
-                y: (parent.height - self.height) / 2;
-                checked <=> root.exclusive;
-                enabled: !root.output-busy;
-                toggled => {
-                    root.exclusive-toggled(self.checked);
+            SettingRow {
+                title: "独占模式";
+                description: "WASAPI 独占输出，绕过系统混音。播放中可切换；部分设备不支持。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.exclusive;
+                    enabled: !root.output-busy;
+                    toggled => {
+                        root.exclusive-toggled(self.checked);
+                    }
                 }
             }
-        }
 
-        if root.transcode-options.length > 1: SettingRow {
-            title: "转码";
-            description: "默认播放原始文件（无损、bit-perfect）。网络较慢时可改用服务端转码；MP3 / Opus 拖动进度时会重新请求。";
-            ComboBox {
-                width: 320px;
-                y: (parent.height - self.height) / 2;
-                model: root.transcode-options;
-                current-index <=> root.transcode-index;
-                selected => {
-                    root.transcode-selected(self.current-index);
+            if root.transcode-options.length > 1: SettingRow {
+                title: "转码";
+                description: "默认播放原始文件（无损、bit-perfect）。网络较慢时可改用服务端转码；MP3 / Opus 拖动进度时会重新请求。";
+                ComboBox {
+                    width: 320px;
+                    y: (parent.height - self.height) / 2;
+                    model: root.transcode-options;
+                    current-index <=> root.transcode-index;
+                    selected => {
+                        root.transcode-selected(self.current-index);
+                    }
                 }
             }
-        }
 
-        if root.tray-available: Text {
-            text: "窗口";
-            color: Theme.text-dim;
-            font-size: 13px;
-            font-weight: 600;
-        }
+            Text {
+                text: "歌词";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
 
-        if root.tray-available: SettingRow {
-            title: "关闭时最小化到托盘";
-            description: "关闭窗口后继续播放，从托盘图标重新打开或退出。";
-            Switch {
-                y: (parent.height - self.height) / 2;
-                checked <=> root.close-to-tray;
-                toggled => {
-                    root.close-to-tray-toggled(self.checked);
+            SettingRow {
+                title: "翻译目标语言";
+                description: root.lyrics-translation ? "歌词翻译由 032 服务端完成（网易云自带翻译或 AI 翻译）。" : "服务端未开启歌词翻译。";
+                ComboBox {
+                    width: 200px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["简体中文", "繁體中文", "English"];
+                    current-index <=> root.lyrics-language;
+                    selected => {
+                        root.lyrics-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "译文显示方式";
+                description: "只看译文时保留原歌词的时间轴。";
+                ComboBox {
+                    width: 200px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["双语（原文下方显示译文）", "只看译文"];
+                    current-index <=> root.lyrics-mode;
+                    selected => {
+                        root.lyrics-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "自动翻译";
+                description: "歌词加载后自动请求翻译。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.lyrics-auto;
+                    toggled => {
+                        root.lyrics-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "假名注音";
+                description: "在日语歌词的汉字上方显示读音（只处理含假名的行）。只看译文时不显示。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.lyrics-furigana;
+                    toggled => {
+                        root.lyrics-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "罗马音";
+                description: "在日语歌词下方显示罗马音。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.lyrics-romaji;
+                    toggled => {
+                        root.lyrics-changed();
+                    }
+                }
+            }
+
+            if root.tray-available: Text {
+                text: "窗口";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            if root.tray-available: SettingRow {
+                title: "关闭时最小化到托盘";
+                description: "关闭窗口后继续播放，从托盘图标重新打开或退出。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.close-to-tray;
+                    toggled => {
+                        root.close-to-tray-toggled(self.checked);
+                    }
                 }
             }
         }
