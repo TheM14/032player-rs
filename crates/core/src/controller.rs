@@ -13,12 +13,13 @@ use api::{
 use session::{AdapterStatus, AdapterTrack};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::engine::{Engine, EngineEnd, EngineEvent};
+use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
 use crate::queue::Queue;
 use crate::reporter::{Reporter, ReporterMsg};
 use crate::secrets::{SecretStore, TokenKind, token_key};
+use crate::settings::Settings;
 use crate::storage::FileStorage;
 use session::KeyValueStorage;
 
@@ -27,6 +28,9 @@ const RESTART_THRESHOLD_MS: i64 = 10_000;
 /// Position updates to the UI and the reporter are coarsened to this step.
 const POSITION_STEP_MS: i64 = 250;
 const PAGE: u32 = api::MAX_PAGE_SIZE;
+
+/// Settings changes are written this long after the last one (volume drags).
+const SETTINGS_SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// Key of the last signed-in server in `session.json`.
 const SERVER_KEY: &str = "server";
@@ -37,6 +41,9 @@ pub struct CoreConfig {
     pub data_dir: PathBuf,
     /// API token and media token per server.
     pub secrets: Arc<dyn SecretStore>,
+    /// Loaded by the app with [`Settings::load`] (the engine is created
+    /// with them); the core saves changes to `settings.json`.
+    pub settings: Settings,
 }
 
 #[derive(Debug)]
@@ -67,6 +74,13 @@ pub enum Command {
         position_ms: i64,
     },
     SetVolume(f64),
+    /// Answered with [`Event::AudioDevices`].
+    RefreshAudioDevices,
+    /// `None` = system default. Answered with [`Event::AudioDevice`].
+    SetAudioDevice(Option<String>),
+    /// Answered with [`Event::Exclusive`] (the old value on failure).
+    SetExclusive(bool),
+    SetShowLyrics(bool),
     /// Load artwork `path` for display at `px` physical pixels (long side);
     /// answered with [`Event::Image`] carrying `key`.
     LoadImage {
@@ -182,6 +196,10 @@ pub enum Event {
     Paused(bool),
     Buffering(bool),
     Volume(f64),
+    AudioDevices(Vec<AudioDevice>),
+    /// Selected output device (`None` = system default).
+    AudioDevice(Option<String>),
+    Exclusive(bool),
     /// Lines of the current track (empty: none). `synced` false = plain text.
     Lyrics {
         lines: Vec<String>,
@@ -213,6 +231,9 @@ enum Internal {
         total: usize,
     },
     AlbumTracks(Result<Vec<Track>, api::ApiError>),
+    AudioDeviceSet(Option<String>, Result<(), String>),
+    ExclusiveSet(bool, Result<(), String>),
+    SaveSettings(u64),
     Lyrics {
         track_id: i64,
         lyrics: Option<api::Lyrics>,
@@ -458,6 +479,12 @@ struct Core {
     engine_duration_ms: i64,
     lyrics: Option<lyrics::SyncedLyrics>,
     active_line: Option<usize>,
+    settings: Settings,
+    /// Bumped per settings change; `saved_revision` is the last written.
+    settings_revision: u64,
+    saved_revision: u64,
+    /// An output device or exclusive mode change is running.
+    output_busy: bool,
 }
 
 impl Core {
@@ -468,6 +495,7 @@ impl Core {
         internal: UnboundedSender<Internal>,
     ) -> Self {
         let session_file = FileStorage::open(config.data_dir.join("session.json"));
+        let settings = config.settings.clone();
         Self {
             engine,
             config,
@@ -486,11 +514,58 @@ impl Core {
             engine_duration_ms: 0,
             lyrics: None,
             active_line: None,
+            settings,
+            settings_revision: 0,
+            saved_revision: 0,
+            output_busy: false,
         }
     }
 
     fn emit(&self, event: Event) {
         (self.sink)(event);
+    }
+
+    /// Applies `f` to the settings and schedules a save if anything changed.
+    fn update_settings(&mut self, f: impl FnOnce(&mut Settings)) {
+        let before = self.settings.clone();
+        f(&mut self.settings);
+        if self.settings == before {
+            return;
+        }
+        self.settings_revision += 1;
+        let revision = self.settings_revision;
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SETTINGS_SAVE_DELAY).await;
+            let _ = tx.send(Internal::SaveSettings(revision));
+        });
+    }
+
+    fn save_settings(&mut self) {
+        if self.saved_revision == self.settings_revision {
+            return;
+        }
+        match self.settings.save(&self.config.data_dir) {
+            Ok(()) => self.saved_revision = self.settings_revision,
+            Err(e) => tracing::warn!("saving settings: {e}"),
+        }
+    }
+
+    /// Runs an output change (device, exclusive) on a blocking thread.
+    fn change_output(
+        &mut self,
+        change: impl FnOnce(&dyn Engine) -> Result<(), String> + Send + 'static,
+        done: impl FnOnce(Result<(), String>) -> Internal + Send + 'static,
+    ) {
+        self.output_busy = true;
+        let engine = self.engine.clone();
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || change(engine.as_ref()))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(done(result));
+        });
     }
 
     async fn run(
@@ -508,6 +583,7 @@ impl Core {
                 _ = &mut shutdown => break,
             }
         }
+        self.save_settings();
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.close(Duration::from_secs(2)).await;
         }
@@ -620,6 +696,40 @@ impl Core {
                     self.emit(Event::Notice(e));
                 }
             }
+            Command::RefreshAudioDevices => {
+                let engine = self.engine.clone();
+                let sink = self.sink.clone();
+                tokio::spawn(async move {
+                    match tokio::task::spawn_blocking(move || engine.audio_devices()).await {
+                        Ok(Ok(devices)) => sink(Event::AudioDevices(devices)),
+                        Ok(Err(e)) => tracing::warn!("audio devices: {e}"),
+                        Err(e) => tracing::warn!("audio devices: {e}"),
+                    }
+                });
+            }
+            Command::SetAudioDevice(device) => {
+                let device = device.filter(|d| !d.is_empty() && d != "auto");
+                if self.output_busy || device == self.settings.audio_device {
+                    self.emit(Event::AudioDevice(self.settings.audio_device.clone()));
+                    return;
+                }
+                let name = device.clone().unwrap_or_else(|| "auto".into());
+                self.change_output(
+                    move |e| e.set_audio_device(&name),
+                    move |r| Internal::AudioDeviceSet(device, r),
+                );
+            }
+            Command::SetExclusive(enabled) => {
+                if self.output_busy || enabled == self.settings.exclusive {
+                    self.emit(Event::Exclusive(self.settings.exclusive));
+                    return;
+                }
+                self.change_output(
+                    move |e| e.set_exclusive(enabled),
+                    move |r| Internal::ExclusiveSet(enabled, r),
+                );
+            }
+            Command::SetShowLyrics(show) => self.update_settings(|s| s.show_lyrics = show),
             Command::LoadImage { key, path, px } => {
                 let Some(library) = &self.library else { return };
                 let images = library.images.clone();
@@ -814,7 +924,10 @@ impl Core {
                 }
                 self.emit(Event::Buffering(buffering));
             }
-            EngineEvent::Volume(volume) => self.emit(Event::Volume(volume)),
+            EngineEvent::Volume(volume) => {
+                self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
+                self.emit(Event::Volume(volume));
+            }
             EngineEvent::FileLoaded => self.loading = false,
             EngineEvent::EndFile { reason, error } => match reason {
                 EngineEnd::Stop => {}
@@ -956,6 +1069,27 @@ impl Core {
                 }
             }
             Internal::Notice(text) => self.emit(Event::Notice(text)),
+            Internal::AudioDeviceSet(device, result) => {
+                self.output_busy = false;
+                match result {
+                    Ok(()) => self.update_settings(|s| s.audio_device.clone_from(&device)),
+                    Err(e) => self.emit(Event::Notice(format!("切换输出设备失败：{e}"))),
+                }
+                self.emit(Event::AudioDevice(self.settings.audio_device.clone()));
+            }
+            Internal::ExclusiveSet(enabled, result) => {
+                self.output_busy = false;
+                match result {
+                    Ok(()) => self.update_settings(|s| s.exclusive = enabled),
+                    Err(e) => self.emit(Event::Notice(format!("切换独占模式失败：{e}"))),
+                }
+                self.emit(Event::Exclusive(self.settings.exclusive));
+            }
+            Internal::SaveSettings(revision) => {
+                if revision == self.settings_revision {
+                    self.save_settings();
+                }
+            }
         }
     }
 

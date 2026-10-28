@@ -11,6 +11,21 @@ pub trait Engine: Send + Sync + 'static {
     fn seek(&self, seconds: f64) -> Result<(), String>;
     /// 0-100.
     fn set_volume(&self, volume: f64) -> Result<(), String>;
+    /// Output devices (may block briefly; called off the core loop).
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String>;
+    /// `auto` = system default. May block while the output reopens.
+    fn set_audio_device(&self, name: &str) -> Result<(), String>;
+    /// Exclusive mode, also while playing; rolls back on failure.
+    /// May block while the output reopens.
+    fn set_exclusive(&self, enabled: bool) -> Result<(), String>;
+}
+
+/// An audio output device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioDevice {
+    /// Engine name (`wasapi/{guid}`, `auto`).
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -851,6 +851,7 @@ dependencies = [
  "image",
  "lru",
  "lyrics",
+ "serde",
  "serde_json",
  "session",
  "tokio",

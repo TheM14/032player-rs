@@ -26,7 +26,8 @@
 | 原始文件流 `/api/v1/tracks/{id}/stream`（bit-perfect 前提） | `ctrl` `getStreamUrl` | M0 | [x] |
 | 可选转码 `/api/v1/tracks/{id}/transcode.{format}` | 同上 | M2 | [ ] |
 | mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [ ] |
-| 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [ ] |
+| 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [x] 设置页 |
+| 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
 | 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [ ] |
 | 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [ ] |
 | 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |

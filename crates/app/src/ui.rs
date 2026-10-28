@@ -4,7 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use client_core::{Command, Commander, Event, LoginFailure, Rgba, SignOutReason, format};
+use client_core::{
+    AudioDevice, Command, Commander, Event, LoginFailure, Rgba, Settings, SignOutReason, format,
+};
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
     VecModel,
@@ -21,6 +23,47 @@ struct Ui {
     lyrics: Rc<VecModel<LyricLine>>,
     now_cover_key: RefCell<Option<String>>,
     notice_timer: Timer,
+    /// Engine names behind the device combo box; index 0 (`None`) is the
+    /// system default.
+    device_names: RefCell<Vec<Option<String>>>,
+    selected_device: RefCell<Option<String>>,
+}
+
+impl Ui {
+    fn device_index(&self) -> i32 {
+        let selected = self.selected_device.borrow();
+        self.device_names
+            .borrow()
+            .iter()
+            .position(|n| *n == *selected)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0)
+    }
+
+    /// Fills the device combo box; a saved device that is not connected
+    /// stays listed so the selection is not silently lost.
+    fn set_devices(&self, w: &AppWindow, devices: Vec<AudioDevice>) {
+        let mut names = vec![None];
+        let mut labels: Vec<SharedString> = vec!["系统默认".into()];
+        for d in devices.into_iter().filter(|d| d.name != "auto") {
+            let label = if d.description.is_empty() {
+                d.name.clone()
+            } else {
+                d.description
+            };
+            labels.push(label.into());
+            names.push(Some(d.name));
+        }
+        if let Some(selected) = self.selected_device.borrow().clone()
+            && !names.contains(&Some(selected.clone()))
+        {
+            labels.push(format!("{selected}（未连接）").into());
+            names.push(Some(selected));
+        }
+        *self.device_names.borrow_mut() = names;
+        w.set_audio_devices(ModelRc::new(VecModel::from(labels)));
+        w.set_audio_device_index(self.device_index());
+    }
 }
 
 thread_local! {
@@ -36,8 +79,12 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
     }
 }
 
-/// Wires callbacks and models.
-pub fn install(window: &AppWindow, commander: Commander) {
+/// Wires callbacks and models; `settings` are the saved ones.
+pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
+    #[allow(clippy::cast_possible_truncation)]
+    window.set_volume(settings.volume as f32);
+    window.set_show_lyrics(settings.show_lyrics);
+    window.set_exclusive(settings.exclusive);
     let albums = AlbumGridModel::new(commander.clone());
     let tracks = Rc::new(VecModel::<TrackRow>::default());
     let lyrics = Rc::new(VecModel::<LyricLine>::default());
@@ -60,6 +107,32 @@ pub fn install(window: &AppWindow, commander: Commander) {
     });
     let c = commander.clone();
     window.on_logout(move || c.send(Command::Logout));
+
+    let c = commander.clone();
+    window.on_show_lyrics_changed(move |show| c.send(Command::SetShowLyrics(show)));
+    let c = commander.clone();
+    window.on_settings_opened(move || c.send(Command::RefreshAudioDevices));
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_audio_device_selected(move |index| {
+        let name = UI.with(|cell| {
+            let ui = cell.borrow();
+            let names = ui.as_ref()?.device_names.borrow();
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| names.get(i).cloned())
+        });
+        match name {
+            Some(name) => c.send(Command::SetAudioDevice(name)),
+            None => {
+                if let Some(w) = weak.upgrade() {
+                    w.set_output_busy(false);
+                }
+            }
+        }
+    });
+    let c = commander.clone();
+    window.on_exclusive_toggled(move |on| c.send(Command::SetExclusive(on)));
 
     let grid = albums.clone();
     let weak = window.as_weak();
@@ -104,6 +177,8 @@ pub fn install(window: &AppWindow, commander: Commander) {
         lyrics,
         now_cover_key: RefCell::default(),
         notice_timer: Timer::default(),
+        device_names: RefCell::new(vec![None]),
+        selected_device: RefCell::new(settings.audio_device.clone()),
     });
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
 }
@@ -258,6 +333,16 @@ pub fn apply(event: Event) {
             w.set_lyrics_synced(synced);
             w.set_lyrics_active(-1);
             w.set_lyrics_source(source.unwrap_or_default().into());
+        }
+        Event::AudioDevices(devices) => ui.set_devices(w, devices),
+        Event::AudioDevice(device) => {
+            *ui.selected_device.borrow_mut() = device;
+            w.set_audio_device_index(ui.device_index());
+            w.set_output_busy(false);
+        }
+        Event::Exclusive(enabled) => {
+            w.set_exclusive(enabled);
+            w.set_output_busy(false);
         }
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));

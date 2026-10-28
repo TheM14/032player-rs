@@ -17,7 +17,7 @@
 1. 收尾 M0：向用户要剩余实测数据（内存、冷启动、滚动、输入法、播放记录），写进 `PLAN.md` 的 M0 小节，和 Electron 版对比，决定 D2（Slint）是否确认。
 2. M1（顺序建议，进度见下方 M1 小节）：
    1. ~~登录态持久化~~（已完成，[Win] 项留到 M1 整体验证）。
-   2. 设置持久化（音量、输出设备、独占模式、歌词面板开关），设置页里加输出设备和独占模式开关（`player` 已有接口）。
+   2. ~~设置持久化 + 设置页~~（已完成）。
    3. 队列：随机、单曲 / 列表循环、下一首播放、加到末尾、移除、清空；无缝播放（mpv `append` 预加载，验证 `prefetch-playlist`）。
    4. 上报补全：缓冲状态、播放失败、会话恢复（重启后续上同一条播放链）、重启时恢复队列。
    5. 系统集成：SMTC / 媒体键（`souvlaki`）、托盘、单实例。
@@ -36,6 +36,16 @@
 - [x] `os::secrets::Keyring`（`keyring` 4，纯 Rust，Windows target 编译检查通过）
 - [x] 测试 3 条（`crates/core/tests/sign_in.rs`）：恢复 + 退出、401 后只重填 API Token、已保存 Token 失效
 - [ ] 凭据管理器实测：重启后自动登录、退出登录后凭据管理器里条目消失 **[Win]**
+
+### 2. 设置
+
+- [x] `Settings`（`settings.json`，缺字段 / 损坏回落默认值）：音量、输出设备、独占模式、歌词面板开关
+- [x] app 启动先读设置再创建 mpv（设备、独占、音量作为初始化选项）；core 保存改动（500 ms 防抖，退出时补写）
+- [x] 音量以 mpv 回报的 `volume` 为准保存
+- [x] `Engine` 加 `audio_devices` / `set_audio_device` / `set_exclusive`，在 blocking 线程执行；失败提示并回到原值
+- [x] 设置页：输出设备下拉（系统默认 + mpv 设备列表，已保存但未连接的设备标"未连接"）、独占模式开关
+- [x] 测试：`crates/core/tests/settings.rs`、`Settings` 单元测试
+- [ ] 输出设备切换、独占模式播放中切换、重启后设置保留 **[Win]**
 
 ## M0 - 可行性验证
 
@@ -84,7 +94,7 @@
 - [x] 容器内 `cargo check --target x86_64-pc-windows-msvc` 验证下载 / 解压 / 缓存
 - [x] MSVC 链接 `mpv.lib`（由 `libmpv.dll.a` 复制而来）可用（CI 构建 app 通过）
 - [x] 实际播放（用户实测正常）
-- [ ] 独占模式切换（还没有界面入口，M1 设置页） **[Win]**
+- [ ] 独占模式切换（入口在 M1 设置页，随 M1 一起验证） **[Win]**
 
 ### 6. core + app
 

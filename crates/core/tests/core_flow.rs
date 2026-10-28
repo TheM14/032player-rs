@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use client_core::{
-    Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, LoginFailure, MemorySecrets,
+    AudioDevice, Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, LoginFailure,
+    MemorySecrets, Settings,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -41,6 +42,15 @@ impl Engine for FakeEngine {
     }
     fn set_volume(&self, volume: f64) -> Result<(), String> {
         self.push(format!("volume {volume}"))
+    }
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        Ok(Vec::new())
+    }
+    fn set_audio_device(&self, name: &str) -> Result<(), String> {
+        self.push(format!("device {name}"))
+    }
+    fn set_exclusive(&self, enabled: bool) -> Result<(), String> {
+        self.push(format!("exclusive {enabled}"))
     }
 }
 
@@ -156,6 +166,7 @@ async fn login_play_auto_advance_and_report() {
     let config = CoreConfig {
         data_dir,
         secrets: Arc::new(MemorySecrets::default()),
+        settings: Settings::default(),
     };
     let core = client_core::start(engine.clone(), config, move |e| {
         let _ = tx.lock().unwrap().send(e);
@@ -285,6 +296,7 @@ async fn login_failures_are_reported() {
         CoreConfig {
             data_dir: std::env::temp_dir(),
             secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
         },
         move |e| {
             let _ = tx.lock().unwrap().send(e);

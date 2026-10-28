@@ -254,4 +254,24 @@ fn main() {
     set(&inst, "page", Value::Number(1.0));
     set(&inst, "notice", s("播放失败：loading failed"));
     render(&window, size, &format!("{out}/tracks.png"));
+
+    set(&inst, "page", Value::Number(2.0));
+    set(&inst, "notice", s(""));
+    let devices: Vec<Value> = [
+        "系统默认",
+        "扬声器 (Realtek(R) Audio)",
+        "Topping E30 II",
+        "wasapi/{1234}（未连接）",
+    ]
+    .into_iter()
+    .map(s)
+    .collect();
+    set(
+        &inst,
+        "audio-devices",
+        Value::Model(ModelRc::new(VecModel::from(devices))),
+    );
+    set(&inst, "audio-device-index", Value::Number(2.0));
+    set(&inst, "exclusive", Value::Bool(true));
+    render(&window, size, &format!("{out}/settings.png"));
 }

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use client_core::{Command, CoreConfig, Engine, EngineEvent, SecretStore};
+use client_core::{Command, CoreConfig, Engine, EngineEvent, SecretStore, Settings};
 use slint::ComponentHandle;
 
 /// Code generated from `ui/*.slint`.
@@ -64,13 +64,20 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
     let data_dir = data_dir();
     tracing::info!(data_dir = %data_dir.display(), "starting");
+    let settings = Settings::load(&data_dir);
+    let player_options = player::PlayerOptions {
+        audio_device: settings.audio_device.clone(),
+        exclusive: settings.exclusive,
+        volume: settings.volume,
+        ..player::PlayerOptions::default()
+    };
 
     // The player callback runs on mpv's event thread; it forwards into the
     // core once the core exists.
     let forward: Arc<OnceLock<Forward>> = Arc::new(OnceLock::new());
     let player_forward = forward.clone();
     let (engine, engine_error): (Arc<dyn Engine>, Option<String>) =
-        match player::Player::new(&player::PlayerOptions::default(), move |event| {
+        match player::Player::new(&player_options, move |event| {
             if let (Some(f), Some(e)) = (player_forward.get(), engine::map_event(event)) {
                 f(e);
             }
@@ -88,6 +95,7 @@ fn main() -> Result<(), slint::PlatformError> {
         CoreConfig {
             data_dir: data_dir.clone(),
             secrets: Arc::new(SystemSecrets(os::secrets::Keyring)),
+            settings: settings.clone(),
         },
         |event| {
             let _ = slint::invoke_from_event_loop(move || ui::apply(event));
@@ -95,7 +103,7 @@ fn main() -> Result<(), slint::PlatformError> {
     );
     let _ = forward.set(Box::new(core.engine_sender()));
 
-    ui::install(&window, core.commander());
+    ui::install(&window, core.commander(), &settings);
 
     // Development: a complete set of M032_* variables signs in with them;
     // otherwise the saved sign-in is restored.

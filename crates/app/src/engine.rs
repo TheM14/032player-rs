@@ -1,6 +1,6 @@
 //! `client_core::Engine` on top of `player` (libmpv).
 
-use client_core::{Engine, EngineEnd, EngineEvent};
+use client_core::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use player::{EndReason, Player, PlayerEvent};
 
 pub struct MpvEngine(pub Player);
@@ -25,6 +25,25 @@ impl Engine for MpvEngine {
     fn set_volume(&self, volume: f64) -> Result<(), String> {
         self.0.set_volume(volume).map_err(|e| e.to_string())
     }
+
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        let devices = self.0.audio_devices().map_err(|e| e.to_string())?;
+        Ok(devices
+            .into_iter()
+            .map(|d| AudioDevice {
+                name: d.name,
+                description: d.description,
+            })
+            .collect())
+    }
+
+    fn set_audio_device(&self, name: &str) -> Result<(), String> {
+        self.0.set_audio_device(name).map_err(|e| e.to_string())
+    }
+
+    fn set_exclusive(&self, enabled: bool) -> Result<(), String> {
+        self.0.set_exclusive(enabled).map_err(|e| e.to_string())
+    }
 }
 
 /// Used when mpv could not start: every command reports why.
@@ -48,6 +67,18 @@ impl Engine for NullEngine {
     }
 
     fn set_volume(&self, _: f64) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        Err(self.0.clone())
+    }
+
+    fn set_audio_device(&self, _: &str) -> Result<(), String> {
+        Err(self.0.clone())
+    }
+
+    fn set_exclusive(&self, _: bool) -> Result<(), String> {
         Err(self.0.clone())
     }
 }

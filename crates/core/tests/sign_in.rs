@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use client_core::{
-    Command, CoreConfig, CoreHandle, Engine, Event, LoginFailure, MemorySecrets, SavedLogin,
-    SecretStore, SignOutReason,
+    AudioDevice, Command, CoreConfig, CoreHandle, Engine, Event, LoginFailure, MemorySecrets,
+    SavedLogin, SecretStore, Settings, SignOutReason,
 };
 use serde_json::json;
 use wiremock::matchers::{header, path};
@@ -28,6 +28,15 @@ impl Engine for NoEngine {
         Ok(())
     }
     fn set_volume(&self, _: f64) -> Result<(), String> {
+        Ok(())
+    }
+    fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
+        Ok(Vec::new())
+    }
+    fn set_audio_device(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_exclusive(&self, _: bool) -> Result<(), String> {
         Ok(())
     }
 }
@@ -88,6 +97,7 @@ impl Core {
         let config = CoreConfig {
             data_dir: data_dir.to_path_buf(),
             secrets: secrets.clone(),
+            settings: Settings::default(),
         };
         let handle = client_core::start(Arc::new(NoEngine), config, move |e| {
             let _ = tx.lock().unwrap().send(e);

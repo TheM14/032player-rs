@@ -3,6 +3,7 @@ import {
     AlbumCard, AlbumRow, TrackRow, LyricLine,
     LoginView, AlbumGrid, TrackList, LyricsPanel, PlayerBar,
 } from "views.slint";
+import { SettingsView } from "settings.slint";
 
 export { AlbumCard, AlbumRow, TrackRow, LyricLine }
 
@@ -52,7 +53,7 @@ export component AppWindow inherits Window {
     callback login(string, string, string);
     callback logout();
 
-    // Navigation: 0 albums, 1 tracks.
+    // Navigation: 0 albums, 1 tracks, 2 settings.
     in-out property <int> page: 0;
     in property <string> server-label;
 
@@ -95,6 +96,16 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-synced;
     in property <string> lyrics-source;
     in-out property <bool> show-lyrics: true;
+    callback show-lyrics-changed(bool);
+
+    // Settings.
+    in property <[string]> audio-devices: ["系统默认"];
+    in-out property <int> audio-device-index;
+    in-out property <bool> exclusive;
+    in-out property <bool> output-busy;
+    callback settings-opened();
+    callback audio-device-selected(int);
+    callback exclusive-toggled(bool);
 
     in property <string> notice;
 
@@ -145,6 +156,13 @@ export component AppWindow inherits Window {
                             root.page = 1;
                         }
                     }
+                    NavItem {
+                        text: "设置";
+                        selected: root.page == 2;
+                        clicked => {
+                            root.page = 2;
+                        }
+                    }
                 }
                 Text {
                     x: 12px;
@@ -191,6 +209,23 @@ export component AppWindow inherits Window {
                         root.play-track(i);
                     }
                 }
+                if root.page == 2: SettingsView {
+                    devices: root.audio-devices;
+                    device-index <=> root.audio-device-index;
+                    exclusive <=> root.exclusive;
+                    output-busy: root.output-busy;
+                    opened => {
+                        root.settings-opened();
+                    }
+                    device-selected(i) => {
+                        root.output-busy = true;
+                        root.audio-device-selected(i);
+                    }
+                    exclusive-toggled(on) => {
+                        root.output-busy = true;
+                        root.exclusive-toggled(on);
+                    }
+                }
             }
 
             if root.show-lyrics: LyricsPanel {
@@ -235,6 +270,7 @@ export component AppWindow inherits Window {
             }
             toggle-lyrics => {
                 root.show-lyrics = !root.show-lyrics;
+                root.show-lyrics-changed(root.show-lyrics);
             }
         }
     }
