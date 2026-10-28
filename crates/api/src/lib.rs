@@ -6,10 +6,14 @@ mod query;
 mod types;
 
 pub use client::{
-    API_REVISION, Client, MAX_PAGE_SIZE, authenticate, authenticate_client, normalize_base_url,
+    API_REVISION, ArtistTrackSort, Client, FavoriteKind, MAX_PAGE_SIZE, Transcode, authenticate,
+    authenticate_client, normalize_base_url,
 };
 pub use error::{ApiError, AuthError};
-pub use query::{AlbumListQuery, AlbumSort, Query, SortOrder, TrackListQuery, TrackSort};
+pub use query::{
+    AlbumListQuery, AlbumSort, ArtistListQuery, ArtistRole, ArtistSort, Query, RandomSeeds,
+    SortOrder, TrackListQuery, TrackSort, seed_key,
+};
 pub use reqwest::Method;
 pub use types::*;
 pub use url::Url;

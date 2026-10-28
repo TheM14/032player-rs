@@ -4,8 +4,80 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::error::{ApiError, AuthError};
-use crate::query::{AlbumListQuery, Query, TrackListQuery};
-use crate::types::{Album, Capabilities, ErrorBody, Lyrics, Page, Track};
+use crate::query::{AlbumListQuery, ArtistListQuery, Query, TrackListQuery};
+use crate::types::{
+    Album, AlbumDetail, Artist, ArtistDetail, Capabilities, ErrorBody, Items, Lyrics, Page,
+    Playlist, PlaylistArtwork, PlaylistDetail, PlaylistItemResult, SimilarTrack, Track,
+};
+
+/// What can be marked as favorite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FavoriteKind {
+    Album,
+    Track,
+    Artist,
+}
+
+impl FavoriteKind {
+    fn segment(self) -> &'static str {
+        match self {
+            Self::Album => "albums",
+            Self::Track => "tracks",
+            Self::Artist => "artists",
+        }
+    }
+}
+
+/// Sort of `/artists/{id}/tracks`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtistTrackSort {
+    /// Year, album, disc, track.
+    Album,
+    Plays,
+}
+
+/// Lossy transcode targets (`/tracks/{id}/transcode.{format}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Transcode {
+    /// MP3 at this bitrate (128, 192, 256, 320).
+    Mp3(u32),
+    /// Opus in Ogg at this bitrate (64 .. 256).
+    Ogg(u32),
+    /// FLAC limited to the 44.1 / 48 kHz family.
+    Flac48,
+}
+
+impl Transcode {
+    const MP3: [u32; 4] = [128, 192, 256, 320];
+    const OGG: [u32; 6] = [64, 96, 128, 160, 192, 256];
+
+    pub fn format(self) -> &'static str {
+        match self {
+            Self::Mp3(_) => "mp3",
+            Self::Ogg(_) => "ogg",
+            Self::Flac48 => "flac",
+        }
+    }
+
+    /// The highest allowed bitrate not above the requested one (like
+    /// `transcodeUrl`), or the lowest.
+    fn bitrate(self) -> Option<u32> {
+        let (allowed, want): (&[u32], u32) = match self {
+            Self::Mp3(b) => (&Self::MP3, b),
+            Self::Ogg(b) => (&Self::OGG, b),
+            Self::Flac48 => return None,
+        };
+        Some(
+            allowed
+                .iter()
+                .rev()
+                .find(|b| **b <= want)
+                .copied()
+                .unwrap_or(allowed[0]),
+        )
+    }
+}
 
 /// Largest page the 032 list endpoints accept (`capabilities.limits.maxPageSize`).
 pub const MAX_PAGE_SIZE: u32 = 500;
@@ -138,6 +210,43 @@ impl Client {
         decode(res).await
     }
 
+    /// Request whose answer body is not needed (204, favorites).
+    pub async fn send_empty<B: Serialize + Sync>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<(), ApiError> {
+        let json = body.map(erased::Json);
+        self.send(
+            method,
+            path,
+            &Query::new(),
+            json.as_ref().map(|j| j as &(dyn erased::Body + Sync)),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Every page of a list endpoint.
+    pub async fn get_all<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &Query,
+    ) -> Result<Vec<T>, ApiError> {
+        let mut out = Vec::new();
+        loop {
+            let mut q = query.clone();
+            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), MAX_PAGE_SIZE);
+            let page: Page<T> = self.get(path, &q).await?;
+            let n = page.items.len();
+            out.extend(page.items);
+            if n == 0 || i64::try_from(out.len()).unwrap_or(i64::MAX) >= page.total {
+                return Ok(out);
+            }
+        }
+    }
+
     /// Request with a JSON body, decoding a JSON response.
     pub async fn send_json<B: Serialize + Sync, T: DeserializeOwned>(
         &self,
@@ -181,6 +290,279 @@ impl Client {
         let (path, mut q) = query.source(browse);
         q.page(offset, limit);
         self.get(path, &q).await
+    }
+
+    /// Artists via `/browse/artists`, or legacy `/artists` when `browse` is false.
+    pub async fn artists(
+        &self,
+        browse: bool,
+        query: &ArtistListQuery,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Page<Artist>, ApiError> {
+        let (path, mut q) = query.source(browse);
+        q.page(offset, limit);
+        self.get(path, &q).await
+    }
+
+    /// Album with its tracks; albums with more tracks than embedded (500)
+    /// are completed through `/tracks?album=`.
+    pub async fn album(&self, album_id: i64) -> Result<AlbumDetail, ApiError> {
+        let mut detail: AlbumDetail = self
+            .get(&format!("/albums/{album_id}"), &Query::new())
+            .await?;
+        if detail.album.track_count > i64::try_from(detail.tracks.len()).unwrap_or(i64::MAX) {
+            let mut q = Query::new();
+            q.push("album", album_id);
+            detail.tracks = self.get_all("/tracks", &q).await?;
+        }
+        Ok(detail)
+    }
+
+    pub async fn artist(&self, artist_id: i64) -> Result<ArtistDetail, ApiError> {
+        self.get(&format!("/artists/{artist_id}"), &Query::new())
+            .await
+    }
+
+    /// Every track of an artist (performed or album artist).
+    pub async fn artist_tracks(
+        &self,
+        artist_id: i64,
+        sort: ArtistTrackSort,
+    ) -> Result<Vec<Track>, ApiError> {
+        let mut q = Query::new();
+        q.push(
+            "sort",
+            match sort {
+                ArtistTrackSort::Album => "album",
+                ArtistTrackSort::Plays => "plays",
+            },
+        );
+        self.get_all(&format!("/artists/{artist_id}/tracks"), &q)
+            .await
+    }
+
+    pub async fn set_favorite(
+        &self,
+        kind: FavoriteKind,
+        id: i64,
+        favorite: bool,
+    ) -> Result<(), ApiError> {
+        let method = if favorite {
+            Method::PUT
+        } else {
+            Method::DELETE
+        };
+        self.send_empty::<()>(method, &format!("/{}/{id}/favorite", kind.segment()), None)
+            .await
+    }
+
+    /// All favorite albums (`/albums` ignores `favorite=true`).
+    pub async fn favorite_albums(&self) -> Result<Vec<Album>, ApiError> {
+        self.get_all("/favorites/albums", &Query::new()).await
+    }
+
+    pub async fn favorite_tracks(&self) -> Result<Vec<Track>, ApiError> {
+        self.get_all("/favorites/tracks", &Query::new()).await
+    }
+
+    pub async fn favorite_artists(&self) -> Result<Vec<Artist>, ApiError> {
+        self.get_all("/favorites/artists", &Query::new()).await
+    }
+
+    pub async fn playlists(&self) -> Result<Vec<Playlist>, ApiError> {
+        self.get_all("/playlists", &Query::new()).await
+    }
+
+    pub async fn playlist(&self, playlist_id: i64) -> Result<PlaylistDetail, ApiError> {
+        self.get(&format!("/playlists/{playlist_id}"), &Query::new())
+            .await
+    }
+
+    pub async fn create_playlist(
+        &self,
+        name: &str,
+        description: &str,
+        track_ids: &[i64],
+    ) -> Result<Playlist, ApiError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Body<'a> {
+            name: &'a str,
+            description: &'a str,
+            #[serde(skip_serializing_if = "<[i64]>::is_empty")]
+            track_ids: &'a [i64],
+        }
+        let body = Body {
+            name,
+            description,
+            track_ids,
+        };
+        self.send_json(Method::POST, "/playlists", &body).await
+    }
+
+    /// Rename / change the description.
+    pub async fn update_playlist(
+        &self,
+        playlist_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "name": name, "description": description });
+        self.send_empty(
+            Method::PATCH,
+            &format!("/playlists/{playlist_id}"),
+            Some(&body),
+        )
+        .await
+    }
+
+    pub async fn delete_playlist(&self, playlist_id: i64) -> Result<(), ApiError> {
+        self.send_empty::<()>(Method::DELETE, &format!("/playlists/{playlist_id}"), None)
+            .await
+    }
+
+    /// Appends tracks (duplicates are skipped by the server).
+    pub async fn append_to_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+    ) -> Result<PlaylistItemResult, ApiError> {
+        let body = serde_json::json!({ "trackIds": track_ids });
+        self.send_json(
+            Method::POST,
+            &format!("/playlists/{playlist_id}/items/append"),
+            &body,
+        )
+        .await
+    }
+
+    /// Appends a whole album in disc / track order.
+    pub async fn append_album_to_playlist(
+        &self,
+        playlist_id: i64,
+        album_id: i64,
+    ) -> Result<PlaylistItemResult, ApiError> {
+        let body = serde_json::json!({ "albumId": album_id });
+        self.send_json(
+            Method::POST,
+            &format!("/playlists/{playlist_id}/items/append"),
+            &body,
+        )
+        .await
+    }
+
+    /// Removes tracks; 409 `playlist_conflict` when `revision` is stale.
+    pub async fn remove_from_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+        revision: i64,
+    ) -> Result<PlaylistItemResult, ApiError> {
+        let body = serde_json::json!({ "trackIds": track_ids, "expectedRevision": revision });
+        self.send_json(
+            Method::POST,
+            &format!("/playlists/{playlist_id}/items/remove"),
+            &body,
+        )
+        .await
+    }
+
+    /// New order of every track; 409 `playlist_conflict` when `revision` is stale.
+    pub async fn order_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+        revision: i64,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "trackIds": track_ids, "expectedRevision": revision });
+        self.send_empty(
+            Method::PUT,
+            &format!("/playlists/{playlist_id}/order"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Replaces the whole content (last writer wins).
+    pub async fn replace_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "trackIds": track_ids });
+        self.send_empty(
+            Method::PUT,
+            &format!("/playlists/{playlist_id}/items"),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Uploads custom artwork (JPEG / PNG / WebP, at most 10 MiB) as the
+    /// multipart field `image`.
+    pub async fn upload_playlist_artwork(
+        &self,
+        playlist_id: i64,
+        image: Vec<u8>,
+    ) -> Result<PlaylistArtwork, ApiError> {
+        let boundary = "032player-artwork-7d4a1e9c3b5f";
+        let mut body = Vec::with_capacity(image.len() + 256);
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"artwork\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(&image);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let url = self.api_url(&format!("/playlists/{playlist_id}/artwork"), &Query::new())?;
+        let res = self
+            .http
+            .put(url)
+            .bearer_auth(&self.api_token)
+            .header(header::ACCEPT, "application/json")
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            return Err(error_from_response(res).await);
+        }
+        decode(res).await
+    }
+
+    /// Back to the automatic artwork.
+    pub async fn reset_playlist_artwork(
+        &self,
+        playlist_id: i64,
+    ) -> Result<PlaylistArtwork, ApiError> {
+        let res = self
+            .send(
+                Method::DELETE,
+                &format!("/playlists/{playlist_id}/artwork"),
+                &Query::new(),
+                None,
+            )
+            .await?;
+        decode(res).await
+    }
+
+    /// Metadata-similar tracks (`limit` 1..=100). The seed track itself is
+    /// left out.
+    pub async fn similar_tracks(&self, track_id: i64, limit: u32) -> Result<Vec<Track>, ApiError> {
+        let mut q = Query::new();
+        q.push("limit", limit.clamp(1, 100));
+        let res: Items<SimilarTrack> = self.get(&format!("/tracks/{track_id}/similar"), &q).await?;
+        Ok(res
+            .items
+            .into_iter()
+            .map(|s| s.track)
+            .filter(|t| t.id != track_id)
+            .collect())
     }
 
     /// `POST /api/v1/playback/events`. Any HTTP status is a result (the
@@ -258,6 +640,26 @@ impl Client {
             Some(size) if size > 0 => self.media_url(path, &[("size", size.to_string())]),
             _ => self.media_url(path, &[]),
         }
+    }
+
+    /// Transcoded stream; `offset_ms` starts lossy formats later (they do
+    /// not support byte ranges).
+    pub fn transcode_url(&self, track_id: i64, transcode: Transcode, offset_ms: i64) -> Url {
+        let mut params = Vec::new();
+        match transcode.bitrate() {
+            Some(bitrate) => {
+                params.push(("bitrate", bitrate.to_string()));
+                if offset_ms > 0 {
+                    params.push(("offsetMs", offset_ms.to_string()));
+                }
+            }
+            None => params.push(("maxSampleRate", "48000".to_owned())),
+        }
+        self.media_url(
+            &format!("/api/v1/tracks/{track_id}/transcode.{}", transcode.format()),
+            &params,
+        )
+        .expect("base URL was validated")
     }
 
     pub fn artist_image_url(&self, artist_id: i64, size: Option<u32>) -> Url {

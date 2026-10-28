@@ -98,6 +98,130 @@ pub struct Track {
     pub channels: Option<i32>,
 }
 
+/// List entry of `/artists`, `/browse/artists`, `/favorites/artists`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Artist {
+    pub id: i64,
+    pub name: String,
+    pub image_url: String,
+    pub album_count: i64,
+    pub track_count: i64,
+    pub is_favorite: bool,
+}
+
+/// `artist` of `GET /artists/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArtistInfo {
+    pub id: i64,
+    pub name: String,
+    pub image_url: String,
+    pub is_favorite: bool,
+    pub album_count: i64,
+    pub track_count: i64,
+    pub biography: String,
+    pub biography_source: String,
+    pub country: String,
+    pub artist_type: String,
+    pub aliases: Vec<String>,
+    /// The requested id when it was merged into this artist.
+    pub merged_from: i64,
+}
+
+/// A release on the artist page; `relation` says how the artist is on it
+/// (own, collaboration, appearance, ...).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtistRelease {
+    #[serde(flatten)]
+    pub album: Album,
+    pub relation: String,
+}
+
+/// `GET /artists/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArtistDetail {
+    pub artist: ArtistInfo,
+    pub albums: Vec<Album>,
+    pub releases: Vec<ArtistRelease>,
+    /// Most played (`top_tracks_are_popular`) or the first ten in album order.
+    pub top_tracks: Vec<Track>,
+    pub top_tracks_are_popular: bool,
+    pub tracks_total: i64,
+}
+
+/// `GET /albums/{id}`: embeds at most 500 tracks.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlbumDetail {
+    pub album: Album,
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub item_count: i64,
+    /// Missing on servers older than the playlist-duration change.
+    pub duration_millis: Option<i64>,
+    pub artwork_url: String,
+    pub has_custom_artwork: bool,
+    /// Bumped per edit; remove / order send it as `expectedRevision`.
+    pub revision: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// `GET /playlists/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlaylistDetail {
+    pub playlist: Playlist,
+    pub tracks: Vec<Track>,
+}
+
+/// Result of append / insert / remove on playlist items.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlaylistItemResult {
+    pub added: i64,
+    pub removed: i64,
+    pub skipped_duplicate: i64,
+    pub skipped_invalid: i64,
+    pub total: i64,
+    pub revision: i64,
+}
+
+/// Answer of playlist artwork upload / reset.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlaylistArtwork {
+    pub artwork_url: String,
+    pub revision: i64,
+    pub has_custom_artwork: bool,
+}
+
+/// One entry of `GET /tracks/{id}/similar` (metadata similarity).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SimilarTrack {
+    pub track: Track,
+    pub distance: f64,
+    pub score: f64,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Items<T> {
+    pub items: Vec<T>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T> {
@@ -198,6 +322,13 @@ pub struct Capabilities {
 impl Capabilities {
     pub fn has(&self, feature: Feature) -> bool {
         self.features.get(feature.key()).copied().unwrap_or(false)
+    }
+
+    /// The server can transcode to `format` (`mp3`, `ogg`, `flac`).
+    pub fn can_transcode(&self, format: &str) -> bool {
+        self.transcode
+            .as_ref()
+            .is_some_and(|t| t.available && t.formats.get(format).is_some_and(|f| f.available))
     }
 
     /// clientKind to report: `desktop` when the server accepts it, else `web`.
