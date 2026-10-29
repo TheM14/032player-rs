@@ -456,159 +456,13 @@ export component TrackRowView inherits Rectangle {
     callback drop();
     property <length> press-y;
     property <bool> dragging;
-    property <bool> two-line: root.mode == 1 && root.track.credits.length > 0;
+    // Album and playlist pages show the credits under the title.
+    property <bool> two-line: (root.mode == 1 || root.mode == 2) && root.track.credits.length > 0;
     height: root.two-line ? 50px : 36px;
     background: root.dragging ? Theme.accent-dim : row-area.has-hover ? Theme.surface-hover : transparent;
 
-    HorizontalLayout {
-        padding-left: 32px;
-        padding-right: 32px;
-        spacing: 16px;
-        Text {
-            text: root.mode == 1 ? root.track.number : root.track.index + 1;
-            width: TrackColumns.number;
-            color: root.playing ? Theme.accent : Theme.text-faint;
-            vertical-alignment: center;
-        }
-        HorizontalLayout {
-            width: root.title-w;
-            spacing: 6px;
-            VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
-                Text {
-                    text: root.track.title;
-                    color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
-                    overflow: elide;
-                }
-                // Credits: names link to the artist (web album page).
-                if root.two-line: Rectangle {
-                    height: 16px;
-                    clip: true;
-                    HorizontalLayout {
-                        alignment: start;
-                        for part in root.track.credits: Text {
-                            text: part.text;
-                            color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
-                            font-size: 13px;
-                            credit-area := TouchArea {
-                                enabled: part.id > 0;
-                                mouse-cursor: part.id > 0 ? pointer : default;
-                                clicked => {
-                                    root.action("artist", part.id);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // "◆ OP": the track is used in a work (click: the work).
-            if root.track.tieup != "": Rectangle {
-                width: tieup-row.preferred-width + 12px;
-                height: 20px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 10px;
-                background: tieup-area.has-hover ? Theme.accent-dim : transparent;
-                border-width: 1px;
-                border-color: Theme.accent-dim;
-                tieup-row := HorizontalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
-                    spacing: 4px;
-                    Text {
-                        text: "◆ " + root.track.tieup;
-                        color: Theme.accent;
-                        font-size: 12px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                    if root.track.tieup-count > 1: Text {
-                        text: root.track.tieup-count;
-                        color: Theme.text-dim;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                }
-                tieup-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.action("tieup", 0);
-                    }
-                }
-            }
-            if root.track.tag != "": Rectangle {
-                width: tag-text.preferred-width + 10px;
-                height: 18px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 4px;
-                background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
-                tag-text := Text {
-                    text: root.track.tag;
-                    color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
-                    font-size: 12px;
-                }
-            }
-        }
-        Text {
-            text: root.track.artist;
-            width: root.artist-w;
-            color: Theme.text-dim;
-            overflow: elide;
-            vertical-alignment: center;
-        }
-        if root.mode != 1: Text {
-            text: root.mode == 3 ? root.track.note : root.track.album;
-            width: root.album-w;
-            color: Theme.text-dim;
-            overflow: elide;
-            vertical-alignment: center;
-        }
-        if root.mode == 4: Rectangle {
-            width: 64px;
-            Text {
-                text: root.track.blocked ? "已不再推荐" : "不再推荐";
-                color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
-                font-size: 12px;
-                visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
-            }
-            block-area := TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    root.action("block", root.track.blocked ? 0 : 1);
-                }
-            }
-        }
-        Rectangle {
-            width: TrackColumns.heart;
-            Icon {
-                visible: root.track.favorite || row-area.has-hover || heart-area.has-hover;
-                kind: root.track.favorite ? IconKind.heart : IconKind.heart-outline;
-                width: 14px;
-                height: 14px;
-                color: root.track.favorite ? Theme.accent : heart-area.has-hover ? Theme.text : Theme.text-faint;
-            }
-            heart-area := TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    root.action("favorite", root.track.favorite ? 0 : 1);
-                }
-            }
-        }
-        Text {
-            text: root.track.duration;
-            width: TrackColumns.duration;
-            color: Theme.text-dim;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-        }
-    }
-
-    if root.drop-mark != 0: Rectangle {
-        y: root.drop-mark < 0 ? 0 : parent.height - 2px;
-        height: 2px;
-        background: Theme.accent;
-    }
-
+    // Row menu, double click and drag. Declared first so the links,
+    // heart and tags in the row (drawn above it) get their clicks.
     ContextMenuArea {
         Menu {
             MenuItem {
@@ -701,6 +555,181 @@ export component TrackRowView inherits Rectangle {
             }
         }
     }
+
+    HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 32px;
+        spacing: 16px;
+        Text {
+            text: root.mode == 1 ? root.track.number : root.track.index + 1;
+            width: TrackColumns.number;
+            color: root.playing ? Theme.accent : Theme.text-faint;
+            vertical-alignment: center;
+        }
+        HorizontalLayout {
+            width: root.title-w;
+            spacing: 6px;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.track.title;
+                    color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
+                    overflow: elide;
+                }
+                // Credits: names link to the artist (web album page).
+                if root.two-line: Rectangle {
+                    height: 16px;
+                    clip: true;
+                    HorizontalLayout {
+                        alignment: start;
+                        for part in root.track.credits: Text {
+                            text: part.text;
+                            color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
+                            font-size: 13px;
+                            credit-area := TouchArea {
+                                enabled: part.id > 0;
+                                mouse-cursor: part.id > 0 ? pointer : default;
+                                clicked => {
+                                    root.action("artist", part.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // "◆ OP": the track is used in a work (click: the work).
+            if root.track.tieup != "": Rectangle {
+                width: tieup-row.preferred-width + 12px;
+                height: 20px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 10px;
+                background: tieup-area.has-hover ? Theme.accent-dim : transparent;
+                border-width: 1px;
+                border-color: Theme.accent-dim;
+                tieup-row := HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    spacing: 4px;
+                    Text {
+                        text: "◆ " + root.track.tieup;
+                        color: Theme.accent;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    if root.track.tieup-count > 1: Text {
+                        text: root.track.tieup-count;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                tieup-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("tieup", 0);
+                    }
+                }
+            }
+            if root.track.tag != "": Rectangle {
+                width: tag-text.preferred-width + 10px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
+                tag-text := Text {
+                    text: root.track.tag;
+                    color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
+                    font-size: 12px;
+                }
+            }
+        }
+        // Artist and album link to their pages (the text only, not the
+        // empty part of the column).
+        Rectangle {
+            width: root.artist-w;
+            Text {
+                x: 0;
+                width: min(self.preferred-width, root.artist-w);
+                text: root.track.artist;
+                color: root.track.artist-id > 0 && artist-area.has-hover ? Theme.accent : Theme.text-dim;
+                overflow: elide;
+                vertical-alignment: center;
+                artist-area := TouchArea {
+                    enabled: root.track.artist-id > 0;
+                    mouse-cursor: root.track.artist-id > 0 ? pointer : default;
+                    clicked => {
+                        root.action("artist", root.track.artist-id);
+                    }
+                }
+            }
+        }
+        if root.mode != 1: album-col := Rectangle {
+            width: root.album-w;
+            property <bool> link: root.mode != 3 && root.track.album-id > 0;
+            Text {
+                x: 0;
+                width: min(self.preferred-width, root.album-w);
+                text: root.mode == 3 ? root.track.note : root.track.album;
+                color: album-col.link && album-area.has-hover ? Theme.accent : Theme.text-dim;
+                overflow: elide;
+                vertical-alignment: center;
+                album-area := TouchArea {
+                    enabled: album-col.link;
+                    mouse-cursor: album-col.link ? pointer : default;
+                    clicked => {
+                        root.action("album", root.track.album-id);
+                    }
+                }
+            }
+        }
+        if root.mode == 4: Rectangle {
+            width: 64px;
+            Text {
+                text: root.track.blocked ? "已不再推荐" : "不再推荐";
+                color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
+                font-size: 12px;
+                visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
+            }
+            block-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("block", root.track.blocked ? 0 : 1);
+                }
+            }
+        }
+        Rectangle {
+            width: TrackColumns.heart;
+            Icon {
+                visible: root.track.favorite || row-area.has-hover || heart-area.has-hover;
+                kind: root.track.favorite ? IconKind.heart : IconKind.heart-outline;
+                width: 14px;
+                height: 14px;
+                color: root.track.favorite ? Theme.accent : heart-area.has-hover ? Theme.text : Theme.text-faint;
+            }
+            heart-area := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("favorite", root.track.favorite ? 0 : 1);
+                }
+            }
+        }
+        Text {
+            text: root.track.duration;
+            width: TrackColumns.duration;
+            color: Theme.text-dim;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.drop-mark != 0: Rectangle {
+        y: root.drop-mark < 0 ? 0 : parent.height - 2px;
+        height: 2px;
+        background: Theme.accent;
+    }
+
 }
 
 // Track list with a column header. `mode` as in `TrackRowView`.

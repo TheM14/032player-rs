@@ -682,6 +682,21 @@ fn main() {
         ),
     );
     render(&window, PhysicalSize::new(1600, 900), &format!("{out}/album-works.png"));
+    if std::env::var_os("CLICK_TEST").is_some() {
+        inst.set_callback("track-action", |args| {
+            println!("track-action {args:?}");
+            Value::Void
+        })
+        .unwrap();
+        for (x, y) in [(355.0, 358.0), (840.0, 349.0), (420.0, 349.0)] {
+            let position = slint::LogicalPosition::new(x, y);
+            let button = slint::platform::PointerEventButton::Left;
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+            window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+            println!("clicked {x},{y}");
+        }
+    }
     set(&inst, "panel-open", Value::Bool(true));
     render(&window, size, &format!("{out}/album-works-narrow.png"));
     set(&inst, "panel-open", Value::Bool(false));
