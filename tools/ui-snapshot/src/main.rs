@@ -587,7 +587,7 @@ fn main() {
                 let parts: &[(&str, f64)] = if i % 3 == 2 {
                     &[]
                 } else {
-                    &[("作词 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("作曲 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("编曲 ", 0.0), ("Ayase", 0.0), (", ", 0.0), ("Giga", 21.0)]
+                    &[("作词 ", 0.0), ("Paris Alexa, Sabrina Claudio, 星街すいせい", 22.0), (" · ", 0.0), ("作曲 ", 0.0), ("Paris Alexa, Sabrina Claudio, Sad Money, Xansei", 23.0), (" · ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("作曲 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("编曲 ", 0.0), ("Ayase", 0.0), (", ", 0.0), ("Giga", 21.0)]
                 };
                 row.set_field(
                     "credits".into(),
@@ -682,6 +682,17 @@ fn main() {
         ),
     );
     render(&window, PhysicalSize::new(1600, 900), &format!("{out}/album-works.png"));
+    set(
+        &inst,
+        "detail",
+        detail(2.0, "HOSHIMACHI SUISEI ARENA TOUR 2026 “Once Upon a Stellar”", "", "20 首 · 1 小时 14 分钟", "", "SETLIST"),
+    );
+    render(&window, PhysicalSize::new(1600, 900), &format!("{out}/playlist-credits.png"));
+    set(
+        &inst,
+        "detail",
+        detail(0.0, "CLANNAD ORIGINAL SOUNDTRACK", "麻枝准 / 戸越まごめ", "2004 · 64 首 · 3 小时 2 分钟 · Soundtrack", "最高 FLAC / 24bit / 96kHz", ""),
+    );
     if std::env::var_os("CLICK_TEST").is_some() {
         inst.set_callback("track-action", |args| {
             println!("track-action {args:?}");
@@ -698,7 +709,9 @@ fn main() {
         }
     }
     set(&inst, "panel-open", Value::Bool(true));
+    set(&inst, "sidebar-width", Value::Number(300.0));
     render(&window, size, &format!("{out}/album-works-narrow.png"));
+    set(&inst, "sidebar-width", Value::Number(210.0));
     set(&inst, "panel-open", Value::Bool(false));
     set(&inst, "album-works", model(Vec::new()));
     set(&inst, "album-release", model(Vec::new()));

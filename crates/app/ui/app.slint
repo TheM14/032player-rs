@@ -181,6 +181,9 @@ export component AppWindow inherits Window {
     in property <[AlbumRow]> playlist-rows;
     in property <int> playlist-count;
     callback new-playlist();
+    // Left sidebar width (dragged by its right edge, saved on release).
+    in-out property <length> sidebar-width: 210px;
+    callback sidebar-resized();
     // Sidebar playlists: name, "20 首 · 1 小时 14 分", cover.
     in property <[NamedItem]> side-playlists;
 
@@ -363,7 +366,7 @@ export component AppWindow inherits Window {
             // Sidebar (Electron left sidebar): search, library, playlists,
             // the current cover at the bottom when there is room.
             sidebar := Rectangle {
-                width: 210px;
+                width: clamp(root.sidebar-width, 180px, 400px);
                 background: Theme.surface;
                 // Window height, not the sidebar's (that would loop through the layout).
                 property <bool> show-cover: root.has-track && root.height >= 880px;
@@ -543,6 +546,30 @@ export component AppWindow inherits Window {
                             mouse-cursor: pointer;
                             clicked => {
                                 root.open-now-album();
+                            }
+                        }
+                    }
+                }
+                // Resize from the right edge (180-400px).
+                Rectangle {
+                    x: parent.width - 5px;
+                    width: 5px;
+                    property <length> press-x;
+                    background: side-edge.has-hover || side-edge.pressed ? Theme.accent-dim : transparent;
+                    side-edge := TouchArea {
+                        mouse-cursor: col-resize;
+                        pointer-event(e) => {
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                                parent.press-x = self.mouse-x;
+                            }
+                            if e.button == PointerEventButton.left && e.kind == PointerEventKind.up {
+                                root.sidebar-width = sidebar.width;
+                                root.sidebar-resized();
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.sidebar-width = clamp(sidebar.width + (self.mouse-x - parent.press-x), 180px, 400px);
                             }
                         }
                     }
@@ -1394,6 +1421,12 @@ export component AppWindow inherits Window {
         }
 
         PlayerBar {
+            exclusive: root.exclusive;
+            exclusive-busy: root.output-busy;
+            toggle-exclusive(on) => {
+                root.output-busy = true;
+                root.exclusive-toggled(on);
+            }
             has-track: root.has-track;
             show-cover: !sidebar.show-cover;
             title: root.np-title;

@@ -52,8 +52,6 @@ const PAGE_DETAIL: i32 = 10;
 /// Detail header cover size (logical px).
 const DETAIL_COVER: f32 = 200.0;
 /// Player bar cover (logical px).
-/// Sidebar cover: sidebar width minus padding (logical px).
-const NP_LARGE: f32 = 190.0;
 /// Queue thumbnails (logical px).
 const QUEUE_COVER: f32 = 40.0;
 const NP_COVER: f32 = 56.0;
@@ -1156,7 +1154,9 @@ impl Ui {
     /// The current cover at the sidebar width (Electron sidebar image).
     fn load_now_large(&self, w: &AppWindow, artwork: &str) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (NP_LARGE * self.scale(w)).round().max(1.0) as u32;
+        let px = ((w.get_sidebar_width() - 20.0) * self.scale(w))
+            .round()
+            .max(1.0) as u32;
         let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
         if *self.now_large_key.borrow() == key {
             return;
@@ -1278,6 +1278,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_panel_lyrics_first(panel.lyrics_first);
     window.set_panel_split(panel.split);
     window.set_panel_width(panel.width);
+    window.set_sidebar_width(settings.sidebar_width);
     window.set_exclusive(settings.exclusive);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_repeat(repeat_index(settings.repeat));
@@ -1580,6 +1581,18 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
                 split: w.get_panel_split(),
                 width: w.get_panel_width(),
             }));
+        }
+    });
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_sidebar_resized(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetSidebarWidth(w.get_sidebar_width()));
+            // The sidebar cover follows the width.
+            with_ui(|ui, w| {
+                let artwork = ui.now.borrow().as_ref().map(|n| n.artwork.clone());
+                ui.load_now_large(w, &artwork.unwrap_or_default());
+            });
         }
     });
     window.on_queue_search_changed(|text| {

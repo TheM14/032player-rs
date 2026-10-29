@@ -366,101 +366,119 @@ export component DetailHeader inherits Rectangle {
                 max-height: 34px;
             }
             // Work capsules (web album hero): poster, title, use.
-            if root.works.length > 0: HorizontalLayout {
-                spacing: 6px;
-                alignment: start;
+            // Clipped: its width must not widen the header (the title elides).
+            if root.works.length > 0: Rectangle {
+                min-width: 0px;
+                preferred-width: 0px;
                 height: 30px;
-                for w in root.works: Rectangle {
+                clip: true;
+                HorizontalLayout {
+                    x: 0;
+                    width: max(parent.width, self.preferred-width);
+                    spacing: 6px;
+                    alignment: start;
                     height: 30px;
-                    width: min(320px, capsule.preferred-width + 12px);
-                    border-radius: 15px;
-                    background: capsule-area.has-hover ? Theme.surface-hover : Theme.raised;
-                    capsule := HorizontalLayout {
-                        padding-left: 4px;
-                        padding-right: 6px;
-                        spacing: 6px;
-                        Rectangle {
-                            width: 16px;
-                            height: 24px;
-                            y: 3px;
-                            border-radius: 3px;
-                            background: Theme.surface;
-                            clip: true;
-                            Image {
-                                source: w.poster;
-                                width: 100%;
-                                height: 100%;
-                                image-fit: ImageFit.cover;
+                    for w in root.works: Rectangle {
+                        height: 30px;
+                        width: min(320px, capsule.preferred-width + 12px);
+                        border-radius: 15px;
+                        background: capsule-area.has-hover ? Theme.surface-hover : Theme.raised;
+                        capsule := HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 6px;
+                            spacing: 6px;
+                            Rectangle {
+                                width: 16px;
+                                height: 24px;
+                                y: 3px;
+                                border-radius: 3px;
+                                background: Theme.surface;
+                                clip: true;
+                                Image {
+                                    source: w.poster;
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: ImageFit.cover;
+                                }
+                            }
+                            Text {
+                                text: w.title;
+                                color: Theme.text;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                max-width: 160px;
+                            }
+                            if w.usage != "": Text {
+                                text: w.usage;
+                                color: w.ost ? Theme.text-dim : Theme.accent;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
                             }
                         }
-                        Text {
-                            text: w.title;
-                            color: Theme.text;
-                            font-size: 13px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            max-width: 160px;
-                        }
-                        if w.usage != "": Text {
-                            text: w.usage;
-                            color: w.ost ? Theme.text-dim : Theme.accent;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                    }
-                    capsule-area := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.action("work", w.id);
+                        capsule-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.action("work", w.id);
+                            }
                         }
                     }
                 }
             }
 
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
-                padding-top: 6px;
-                PrimaryButton {
-                    text: "播放";
-                    width: 96px;
-                    height: 32px;
-                    clicked => {
-                        root.action("play", 0);
-                    }
-                }
-                GhostButton {
-                    text: "随机播放";
-                    has-icon: true;
-                    icon: IconKind.shuffle;
-                    clicked => {
-                        root.action("shuffle", 0);
-                    }
-                }
-                if root.info.kind == 0 || root.info.kind == 1: IconButton {
-                    kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
-                    active: root.info.favorite;
-                    size: 32px;
-                    icon-size: 16px;
-                    clicked => {
-                        root.action("favorite", root.info.favorite ? 0 : 1);
-                    }
-                }
-                if root.info.kind != 2: add-button := GhostButton {
-                    text: root.info.kind == 3 ? "另存为歌单" : "添加到歌单";
-                    clicked => {
-                        if root.info.kind == 3 {
-                            root.action("new-playlist", 0);
-                        } else {
-                            add-menu.show();
+            // Clipped: its width must not widen the header (the title elides).
+            Rectangle {
+                min-width: 0px;
+                preferred-width: 0px;
+                height: 38px;
+                clip: true;
+                HorizontalLayout {
+                    x: 0;
+                    width: max(parent.width, self.preferred-width);
+                    spacing: 8px;
+                    alignment: start;
+                    padding-top: 6px;
+                    PrimaryButton {
+                        text: "播放";
+                        width: 96px;
+                        height: 32px;
+                        clicked => {
+                            root.action("play", 0);
                         }
                     }
-                }
-                more := GhostButton {
-                    text: "更多";
-                    clicked => {
-                        more-menu.show();
+                    GhostButton {
+                        text: "随机播放";
+                        has-icon: true;
+                        icon: IconKind.shuffle;
+                        clicked => {
+                            root.action("shuffle", 0);
+                        }
+                    }
+                    if root.info.kind == 0 || root.info.kind == 1: IconButton {
+                        kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
+                        active: root.info.favorite;
+                        size: 32px;
+                        icon-size: 16px;
+                        clicked => {
+                            root.action("favorite", root.info.favorite ? 0 : 1);
+                        }
+                    }
+                    if root.info.kind != 2: add-button := GhostButton {
+                        text: root.info.kind == 3 ? "另存为歌单" : "添加到歌单";
+                        clicked => {
+                            if root.info.kind == 3 {
+                                root.action("new-playlist", 0);
+                            } else {
+                                add-menu.show();
+                            }
+                        }
+                    }
+                    more := GhostButton {
+                        text: "更多";
+                        clicked => {
+                            more-menu.show();
+                        }
                     }
                 }
             }
