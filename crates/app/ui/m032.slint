@@ -324,16 +324,18 @@ component WorkCardH inherits Rectangle {
                 image-fit: ImageFit.cover;
             }
             if root.card.playing: Rectangle {
-                x: parent.width - 26px;
-                y: 6px;
-                width: 20px;
-                height: 20px;
-                border-radius: 10px;
-                background: Theme.accent;
+                // Electron `.card-badge`: dark pill, accent bars.
+                x: parent.width - 30px;
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.bg.with-alpha(0.78);
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #00000040;
                 PlayingBars {
-                    width: 10px;
-                    height: 9px;
-                    bar-color: #ffffff;
+                    width: 11px;
+                    height: 11px;
                 }
             }
             if area.has-hover: Rectangle {
@@ -2267,11 +2269,10 @@ export component SeriesDetailPage inherits Flickable {
             HorizontalLayout {
                 spacing: 10px;
                 alignment: start;
-                if Lib032.series-info.playing: Text {
-                    text: "♪";
-                    color: Theme.accent;
-                    font-size: 24px;
-                    vertical-alignment: center;
+                if Lib032.series-info.playing: PlayingBars {
+                    width: 18px;
+                    height: 18px;
+                    y: (parent.height - self.height) / 2;
                 }
                 Text {
                     text: root.loading && Lib032.series-info.title == "" ? "加载中…" : Lib032.series-info.title;

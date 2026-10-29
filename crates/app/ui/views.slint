@@ -225,16 +225,18 @@ export component CardView inherits Rectangle {
             }
 
             if root.card.playing: Rectangle {
+                // Electron `.card-badge`: dark pill, accent bars.
                 x: parent.width - 30px;
                 y: 8px;
                 width: 22px;
                 height: 22px;
                 border-radius: 11px;
-                background: Theme.accent;
+                background: Theme.bg.with-alpha(0.78);
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #00000040;
                 PlayingBars {
                     width: 11px;
-                    height: 10px;
-                    bar-color: #ffffff;
+                    height: 11px;
                 }
             }
 

@@ -132,6 +132,8 @@ pub struct CardGridModel {
     loaded: RefCell<VecDeque<usize>>,
     notify: ModelNotify,
     commander: Commander,
+    /// Ids marked as playing; also applied to cards added later.
+    playing: RefCell<std::collections::HashSet<i64>>,
 }
 
 impl CardGridModel {
@@ -148,6 +150,7 @@ impl CardGridModel {
             loaded: RefCell::default(),
             notify: ModelNotify::default(),
             commander,
+            playing: RefCell::default(),
         })
     }
 
@@ -172,7 +175,9 @@ impl CardGridModel {
             let mut entries = self.entries.borrow_mut();
             let mut by_path = self.by_path.borrow_mut();
             let old_len = entries.len();
-            for item in items {
+            let playing = self.playing.borrow();
+            for mut item in items {
+                item.playing = item.playing || playing.contains(&item.id);
                 if !item.artwork.is_empty() {
                     by_path
                         .entry(item.artwork.clone())
@@ -338,6 +343,7 @@ impl CardGridModel {
 
     /// Marks the cards whose id is in `ids` as playing.
     pub fn set_playing(&self, ids: &std::collections::HashSet<i64>) {
+        self.playing.borrow_mut().clone_from(ids);
         let columns = self.columns.get();
         let rows: Vec<usize> = {
             let mut entries = self.entries.borrow_mut();

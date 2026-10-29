@@ -42,6 +42,23 @@ const GRID_PLAYLISTS: usize = 7;
 /// 合作发行, 参与作品, 幕后参与), one grid each.
 const RELEASE_GRIDS: [usize; 7] = [GRID_RELEASES, 17, 18, 19, 20, 21, 22];
 const GRIDS: usize = 23;
+/// Grids of album cards: the card of the playing album gets the
+/// equalizer badge (Electron `useAlbumPlayState`).
+const ALBUM_GRIDS: [usize; 13] = [
+    GRID_ALBUMS,
+    GRID_FAV_ALBUMS,
+    GRID_SEARCH_ALBUMS,
+    GRID_RELEASES,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    GRID_HOME_ALBUMS,
+    GRID_CHRONICLE,
+    GRID_WORK_ALBUMS,
+];
 
 /// Pages of app.slint.
 const PAGE_ALBUMS: i32 = 0;
@@ -1172,6 +1189,16 @@ impl Ui {
         }
     }
 
+    fn mark_playing_album(&self, album_id: i64) {
+        let ids: std::collections::HashSet<i64> =
+            (album_id > 0).then_some(album_id).into_iter().collect();
+        for grid in ALBUM_GRIDS {
+            self.grids[grid].set_playing(&ids);
+        }
+        // Series pages list albums too.
+        self.grids[GRID_SERIES_ALBUMS].set_playing(&ids);
+    }
+
     /// The current cover at the sidebar width (Electron sidebar image).
     fn load_now_large(&self, w: &AppWindow, artwork: &str) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -2001,12 +2028,14 @@ pub fn apply(event: Event) {
             }
         }
         Event::NowPlaying(None) => {
+            ui.mark_playing_album(0);
             w.set_has_track(false);
             w.set_playing_id(-1);
             w.set_np_favorite(false);
             *ui.now.borrow_mut() = None;
         }
         Event::NowPlaying(Some(now)) => {
+            ui.mark_playing_album(now.album_id);
             w.set_has_track(true);
             w.set_playing_id(int(now.track_id));
             w.set_np_title(now.title.as_str().into());

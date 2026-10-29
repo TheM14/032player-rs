@@ -71,12 +71,14 @@ export component PlayingBars inherits Rectangle {
     in property <color> bar-color: Theme.accent;
     property <bool> moving: !Playback.paused;
     property <float> t: self.moving ? animation-tick() / 1ms : 0;
-    property <length> bar: floor(root.width / 4 / 1px) * 1px;
+    property <length> bar: max(2px, floor(root.width / 4 / 1px) * 1px);
     property <length> gap: (root.width - 3 * root.bar) / 2;
     for n[i] in 3: Rectangle {
         x: i * (root.bar + root.gap);
         width: root.bar;
-        height: root.height * (root.moving ? 0.3 + 0.7 * abs(sin(root.t * (0.21 + i * 0.07) * 1deg + i * 60deg)) : [0.55, 0.9, 0.4][i]);
+        // Electron keyframes: 4px -> 12px -> 4px over 0.9s, bars 0.25s
+        // apart; paused: all low.
+        height: root.height * (root.moving ? 1 / 3 + 2 / 3 * (0.5 - 0.5 * cos((root.t / 900) * 360deg - i * 100deg)) : 1 / 3);
         y: root.height - self.height;
         border-radius: 1px;
         background: root.bar-color;
