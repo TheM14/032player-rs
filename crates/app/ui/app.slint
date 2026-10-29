@@ -8,13 +8,14 @@ import {
     ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
 } from "library.slint";
 import { SettingsView } from "settings.slint";
-import { GhostButton, Icon, IconButton, IconKind, SearchField, Tab } from "controls.slint";
+import { Playback, GhostButton, Icon, IconButton, IconKind, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
     HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog, LinkText,
 } from "m032.slint";
 
+export { Playback }
 export { AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -478,7 +479,7 @@ export component AppWindow inherits Window {
                             width: side-list.width;
                             alignment: start;
                             for p in root.side-playlists: Rectangle {
-                                height: 46px;
+                                height: 58px;
                                 border-radius: Theme.radius;
                                 background: root.page == 10 && root.detail.kind == 2 && root.detail.id == p.id ? Theme.raised : p-area.has-hover ? Theme.surface-hover : transparent;
                                 HorizontalLayout {
@@ -486,8 +487,8 @@ export component AppWindow inherits Window {
                                     padding-right: 6px;
                                     spacing: 10px;
                                     Rectangle {
-                                        width: 36px;
-                                        height: 36px;
+                                        width: 48px;
+                                        height: 48px;
                                         y: 5px;
                                         border-radius: 4px;
                                         background: Theme.raised;

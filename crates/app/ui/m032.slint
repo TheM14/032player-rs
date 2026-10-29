@@ -5,7 +5,7 @@
 
 import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import {
+import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab,
 } from "controls.slint";
 import { AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
@@ -330,11 +330,10 @@ component WorkCardH inherits Rectangle {
                 height: 20px;
                 border-radius: 10px;
                 background: Theme.accent;
-                Icon {
-                    kind: IconKind.lyrics;
-                    width: 11px;
-                    height: 11px;
-                    color: #ffffff;
+                PlayingBars {
+                    width: 10px;
+                    height: 9px;
+                    bar-color: #ffffff;
                 }
             }
             if area.has-hover: Rectangle {
@@ -574,12 +573,16 @@ export component HomeRowView inherits Rectangle {
             Rectangle {
                 border-radius: Theme.radius;
                 background: art-area.has-hover || root.playing ? #00000080 : transparent;
+                if root.playing && !art-area.has-hover: PlayingBars {
+                    width: 16px;
+                    height: 14px;
+                }
                 Icon {
-                    visible: art-area.has-hover || root.playing;
-                    kind: root.playing ? IconKind.lyrics : IconKind.play;
+                    visible: art-area.has-hover;
+                    kind: IconKind.play;
                     width: 16px;
                     height: 16px;
-                    color: root.playing ? Theme.accent : #ffffff;
+                    color: #ffffff;
                 }
             }
             art-area := TouchArea {
@@ -1068,12 +1071,20 @@ component Spotlight inherits Rectangle {
                         padding-left: 6px;
                         padding-right: 6px;
                         spacing: 8px;
-                        Text {
-                            text: t.id == root.playing-id ? "♪" : t.number;
+                        Rectangle {
                             width: 32px;
-                            color: t.id == root.playing-id ? Theme.accent : Theme.text-faint;
-                            font-size: 13px;
-                            vertical-alignment: center;
+                            if t.id != root.playing-id: Text {
+                                x: 0;
+                                text: t.number;
+                                color: Theme.text-faint;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            if t.id == root.playing-id: PlayingBars {
+                                x: 2px;
+                                width: 12px;
+                                height: 11px;
+                            }
                         }
                         VerticalLayout {
                             alignment: center;

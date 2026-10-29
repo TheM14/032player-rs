@@ -973,7 +973,7 @@ impl Ui {
         w.set_side_playlists(ModelRc::from(model.clone()));
         for (i, p) in items.iter().enumerate() {
             let model = model.clone();
-            self.bind_image(w, Bind::Side, &p.artwork, 36.0, move |image| {
+            self.bind_image(w, Bind::Side, &p.artwork, 48.0, move |image| {
                 if let Some(mut row) = model.row_data(i) {
                     row.cover = image.clone();
                     model.set_row_data(i, row);

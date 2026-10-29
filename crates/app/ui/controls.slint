@@ -59,6 +59,30 @@ export component ValueBar inherits Rectangle {
     }
 }
 
+// Playback state for indicators anywhere in the UI.
+export global Playback {
+    in property <bool> paused: true;
+}
+
+// "Now playing" equalizer bars (Electron playing indicator): three bars
+// bouncing while playing, still while paused. Redraws continuously only
+// while shown and playing (`animation-tick`).
+export component PlayingBars inherits Rectangle {
+    in property <color> bar-color: Theme.accent;
+    property <bool> moving: !Playback.paused;
+    property <float> t: self.moving ? animation-tick() / 1ms : 0;
+    property <length> bar: floor(root.width / 4 / 1px) * 1px;
+    property <length> gap: (root.width - 3 * root.bar) / 2;
+    for n[i] in 3: Rectangle {
+        x: i * (root.bar + root.gap);
+        width: root.bar;
+        height: root.height * (root.moving ? 0.3 + 0.7 * abs(sin(root.t * (0.21 + i * 0.07) * 1deg + i * 60deg)) : [0.55, 0.9, 0.4][i]);
+        y: root.height - self.height;
+        border-radius: 1px;
+        background: root.bar-color;
+    }
+}
+
 export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout }
 
 // Vector icons (no icon font dependency). Transport icons are filled,

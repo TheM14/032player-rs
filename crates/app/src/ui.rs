@@ -1236,12 +1236,16 @@ impl Ui {
                         }
                     }
                 }
-                if let Some(now) = self.now.borrow_mut().as_mut()
-                    && now.track_id == id
-                {
-                    now.favorite = favorite;
+                let mut now = self.now.borrow_mut();
+                let current = now.as_ref().is_some_and(|n| n.track_id == id)
+                    || i64::from(w.get_playing_id()) == id;
+                if current {
+                    if let Some(now) = now.as_mut() {
+                        now.favorite = favorite;
+                    }
                     w.set_np_favorite(favorite);
                 }
+                tracing::debug!(id, favorite, current, "track favorite changed");
             }
             FavoriteKind::Album | FavoriteKind::Artist => {
                 for grid in &self.grids {
@@ -2040,7 +2044,10 @@ pub fn apply(event: Event) {
             w.set_position_text(format::duration(position_ms).into());
             w.set_duration_text(format::duration(duration_ms).into());
         }
-        Event::Paused(paused) => w.set_paused(paused),
+        Event::Paused(paused) => {
+            w.set_paused(paused);
+            w.global::<crate::Playback>().set_paused(paused);
+        }
         Event::Buffering(buffering) => w.set_buffering(buffering),
         #[allow(clippy::cast_possible_truncation)]
         Event::Volume(volume) => w.set_volume(volume as f32),
