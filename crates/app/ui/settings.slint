@@ -63,6 +63,9 @@ export component SettingsView inherits Rectangle {
     // Signed-in server; logout (moved here from the sidebar).
     in property <string> server-label;
     callback logout();
+    // "0.1.0"; the log folder (bug reports).
+    in property <string> app-version;
+    callback open-logs();
 
     init => {
         root.opened();
@@ -100,6 +103,18 @@ export component SettingsView inherits Rectangle {
                     text: "退出登录";
                     clicked => {
                         root.logout();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "032player " + root.app-version;
+                description: "反馈问题时请附上日志文件（logs/032player.log）。";
+                GhostButton {
+                    y: (parent.height - self.height) / 2;
+                    text: "打开日志文件夹";
+                    clicked => {
+                        root.open-logs();
                     }
                 }
             }

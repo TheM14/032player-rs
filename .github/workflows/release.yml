@@ -1,0 +1,91 @@
+name: Release
+
+# Formal release: push a tag `vX.Y.Z` matching the workspace version.
+# Builds the Windows installer (Inno Setup) and a portable zip, and
+# publishes them as a GitHub release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Static CRT: runs without the VC++ redistributable.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $line = Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1
+          $version = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $version) { throw "tag $tag does not match the workspace version $version" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Cache libmpv
+        uses: actions/cache@v4
+        with:
+          path: target/libmpv
+          key: libmpv-${{ hashFiles('crates/player/build.rs') }}
+
+      - name: Build
+        run: cargo build -p app --release --target x86_64-pc-windows-msvc
+
+      - name: Inno Setup
+        run: choco install innosetup --version 6.7.1 -y --no-progress
+
+      - name: Installer and portable zip
+        shell: pwsh
+        run: |
+          $out = (Resolve-Path "target/x86_64-pc-windows-msvc/release").Path
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $dist = (Resolve-Path dist).Path
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DSourceDir=$out" "/DOutputDir=$dist" packaging/windows/032player.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+          $name = "032player-$env:VERSION-windows-x64-portable"
+          $dir = "dist/$name"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "$out/032player.exe" $dir
+          Copy-Item "$out/libmpv-2.dll" $dir
+          Copy-Item LICENSE "$dir/LICENSE.txt"
+          Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
+          Get-ChildItem dist -File | ForEach-Object { "$($_.Name) $($_.Length)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 032player-${{ env.VERSION }}
+          path: |
+            dist/*.exe
+            dist/*.zip
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          032player $env:VERSION
+
+          - 032player-$env:VERSION-windows-x64-setup.exe: 安装包（当前用户安装，不需要管理员权限）
+          - 032player-$env:VERSION-windows-x64-portable.zip: 免安装版，解压后运行 032player.exe
+
+          设置保存在 %APPDATA%\032player\data（登录凭据在 Windows 凭据管理器），卸载时保留；日志在其中的 logs 文件夹（设置页"打开日志文件夹"）。
+          "@
+          gh release create "${{ github.ref_name }}" (Get-ChildItem dist -File).FullName `
+            --title "032player $env:VERSION" --notes $notes --verify-tag

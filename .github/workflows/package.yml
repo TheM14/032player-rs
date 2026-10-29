@@ -1,6 +1,6 @@
 name: Package
 
-# Portable Windows build for testing (installer comes in M4).
+# Portable Windows build for testing (formal releases: release.yml).
 # Run from the Actions tab ("Run workflow"); the zip is attached to the
 # "preview" pre-release and kept as a workflow artifact.
 
@@ -48,7 +48,7 @@ jobs:
           @"
           032player $sha (preview)
 
-          Run 032player.exe. The console window shows the log; keep it for bug reports.
+          Run 032player.exe. Log: %APPDATA%\032player\data\logs\032player.log (settings page: 打开日志文件夹); attach it to bug reports.
           Optional: set M032_SERVER_URL, M032_API_TOKEN and M032_MEDIA_TOKEN to sign in automatically.
           "@ | Set-Content "$dir/README.txt" -Encoding utf8
           Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"

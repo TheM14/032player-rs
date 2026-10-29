@@ -1,8 +1,10 @@
 //! 032player: native desktop client for 032 Music Server.
 //!
-//! The console stays visible in every build during M0 so logs (startup
-//! timing, errors) can be collected; packaged builds hide it in M4 with
-//! `windows_subsystem = "windows"`.
+//! Release builds on Windows have no console window; the log goes to
+//! `<data dir>/logs/032player.log` (settings page: "打开日志文件夹") and,
+//! in debug builds, to the console as well.
+
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod cards;
 mod engine;
@@ -25,6 +27,47 @@ mod generated {
 pub use generated::*;
 
 type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
+
+/// Log directory (also opened from the settings page).
+pub fn log_dir() -> PathBuf {
+    data_dir().join("logs")
+}
+
+/// Log to `logs/032player.log` (appended; moved to `032player.old.log`
+/// past 2 MB) and to stderr; panics are logged too.
+fn init_logging(data_dir: &std::path::Path) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,wgpu=warn,naga=warn".into());
+    let dir = data_dir.join("logs");
+    let path = dir.join("032player.log");
+    let file = std::fs::create_dir_all(&dir).ok().and_then(|()| {
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 2 * 1024 * 1024) {
+            // Fails while another instance writes it; then keep appending.
+            let _ = std::fs::rename(&path, dir.join("032player.old.log"));
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()
+    });
+    let file_layer = file.map(|f| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(f))
+    });
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(file_layer)
+        .init();
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!("panic: {info}");
+    }));
+}
 
 fn data_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "032player").map_or_else(
@@ -56,14 +99,8 @@ fn env(name: &str) -> String {
 
 fn main() -> Result<(), slint::PlatformError> {
     let started = Instant::now();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,wgpu=warn,naga=warn".into()),
-        )
-        .init();
-
     let data_dir = data_dir();
+    init_logging(&data_dir);
     tracing::info!(data_dir = %data_dir.display(), "starting");
     // A second start shows the running instance's window and exits.
     let _instance = match os::instance::acquire(&data_dir, system::activate) {

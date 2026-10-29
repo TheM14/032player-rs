@@ -201,7 +201,12 @@ Electron：播放条"队列"按钮开关整个右栏；右栏里队列和歌词�
 - [ ] 032 Light / Dark 主题、跟随系统、强调色（`shared/themes/music032-*`）
 - [ ] 全屏播放器（原图封面不带 `size`、元数据区音质、歌词 / 队列页签）
 - [ ] 全局快捷键
-- [ ] 自动更新（本仓库 GitHub Releases）、Windows 安装包、release 隐藏控制台
+- [x] Windows 安装包：`packaging/windows/032player.iss`（Inno Setup 6.7，当前用户安装、简体中文界面、开始菜单 / 可选桌面快捷方式），
+  `.github/workflows/release.yml` 在推送 `vX.Y.Z` 标签时构建安装包 + 免安装 zip 并发布 GitHub Release（标签须与 workspace 版本一致）
+- [x] release 隐藏控制台（`windows_subsystem`），日志写 `<数据目录>/logs/032player.log`（超过 2 MB 转存 `.old.log`，panic 也记录），设置页显示版本和"打开日志文件夹"
+- [x] exe 图标和版本信息（`winresource`，`assets/icon.ico`）
+- [ ] 自动更新（本仓库 GitHub Releases）
+- [ ] 代码签名（没有证书时 SmartScreen 会提示"未知发布者"）
 - [ ] i18n：zh-Hans / zh-Hant / en
 - [ ] M4 验证清单 **[Win]**
 

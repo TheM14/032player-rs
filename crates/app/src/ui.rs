@@ -1279,6 +1279,11 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_panel_split(panel.split);
     window.set_panel_width(panel.width);
     window.set_sidebar_width(settings.sidebar_width);
+    window.set_app_version(env!("CARGO_PKG_VERSION").into());
+    window.on_open_logs(|| {
+        let dir = crate::log_dir();
+        os::browser::open_url(&dir.to_string_lossy());
+    });
     window.set_exclusive(settings.exclusive);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_repeat(repeat_index(settings.repeat));

@@ -123,7 +123,7 @@ UI 框架备选（D2 在 M0 不过关时再选）：
 - 与 Electron 版的界面 / 能力对齐（见 `TASKS.md` M4 P0 / P1）
 - 032 Light / Dark 主题、强调色
 - 全屏播放器、音质标识
-- 自动更新、安装包（Windows 优先）
+- 安装包（Windows，Inno Setup，`v0.1.0` 起按标签发布）；自动更新未做
 - i18n 三语补全
 
 ## 风险
