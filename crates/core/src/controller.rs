@@ -193,6 +193,8 @@ pub enum Command {
     SetExclusive(bool),
     /// Layout of the right panel (queue / lyrics).
     SetRightPanel(crate::settings::RightPanel),
+    /// Left sidebar width (logical px, clamped).
+    SetSidebarWidth(f32),
     SetCloseToTray(bool),
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
@@ -1470,6 +1472,9 @@ impl Core {
                 );
             }
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
+            Command::SetSidebarWidth(width) => {
+                self.update_settings(|s| s.sidebar_width = crate::settings::sidebar_width(width));
+            }
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {

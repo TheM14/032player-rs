@@ -18,6 +18,8 @@ pub struct Settings {
     /// WASAPI exclusive mode (`audio-exclusive`).
     pub exclusive: bool,
     pub right_panel: RightPanel,
+    /// Left sidebar width in logical px (dragged by its right edge).
+    pub sidebar_width: f32,
     pub repeat: Repeat,
     pub shuffle: bool,
     /// Closing the window hides it to the tray (Windows).
@@ -75,6 +77,18 @@ impl RightPanel {
     }
 }
 
+/// Default left sidebar width (logical px).
+pub const SIDEBAR_WIDTH: f32 = 210.0;
+
+/// Sidebar width limits (Electron allows dragging between these).
+pub fn sidebar_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(180.0, 400.0)
+    } else {
+        SIDEBAR_WIDTH
+    }
+}
+
 /// How translated lyrics show (`lyrics.translationDisplayMode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +127,7 @@ impl Default for Settings {
             audio_device: None,
             exclusive: false,
             right_panel: RightPanel::default(),
+            sidebar_width: SIDEBAR_WIDTH,
             repeat: Repeat::Off,
             shuffle: false,
             close_to_tray: false,
@@ -138,6 +153,7 @@ impl Settings {
         }
         settings.volume = settings.volume.clamp(0.0, 100.0);
         settings.right_panel.sanitize();
+        settings.sidebar_width = sidebar_width(settings.sidebar_width);
         settings.audio_device = settings
             .audio_device
             .filter(|d| !d.is_empty() && d != "auto");
@@ -180,6 +196,7 @@ mod tests {
                 split: 0.3,
                 width: 420.0,
             },
+            sidebar_width: 260.0,
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
@@ -210,6 +227,9 @@ mod tests {
         .unwrap();
         let loaded = Settings::load(&dir).right_panel;
         assert_eq!((loaded.split, loaded.width), (0.85, 260.0));
+
+        fs::write(Settings::path(&dir), br#"{"sidebarWidth": 900}"#).unwrap();
+        assert_eq!(Settings::load(&dir).sidebar_width, 400.0);
 
         fs::write(Settings::path(&dir), b"nope").unwrap();
         assert_eq!(Settings::load(&dir), Settings::default());
