@@ -187,10 +187,21 @@ fn main() -> Result<(), slint::PlatformError> {
             "window shown (first event loop turn)"
         );
     });
+    // Last size; maximized again after the window exists.
+    window.window().set_size(slint::LogicalSize::new(
+        settings.window.width,
+        settings.window.height,
+    ));
     window.show()?;
+    if settings.window.maximized {
+        window.window().set_maximized(true);
+    }
     system::install(&window, core.commander());
     // Runs until quit (closing may only hide the window to the tray).
     slint::run_event_loop_until_quit()?;
+    if let Some(state) = ui::window_state() {
+        core.send(Command::SetWindow(state));
+    }
     let _ = window.hide();
 
     tracing::info!("shutting down");

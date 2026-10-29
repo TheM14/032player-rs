@@ -262,6 +262,8 @@ struct Ui {
     /// re-decoded when the window moves to a screen with another scale.
     scale_timer: Timer,
     last_scale: Cell<f32>,
+    /// Window size seen last while shown and not minimized (saved on quit).
+    window_state: Cell<client_core::WindowState>,
     /// The whole queue (play order) and the current position; the queue
     /// model holds the entries matching the queue search.
     queue_all: RefCell<(Vec<client_core::QueueEntry>, Option<usize>)>,
@@ -1111,6 +1113,25 @@ impl Ui {
         w.set_queue_current(row_index(current_row));
     }
 
+    /// Remembers the window size; a maximized window keeps the size it
+    /// had before maximizing.
+    fn record_window(&self, w: &AppWindow) {
+        let win = w.window();
+        if !win.is_visible() || win.is_minimized() {
+            return;
+        }
+        let mut state = self.window_state.get();
+        state.maximized = win.is_maximized() || win.is_fullscreen();
+        if !state.maximized {
+            let size = win.size().to_logical(win.scale_factor());
+            if size.width > 0.0 && size.height > 0.0 {
+                state.width = size.width;
+                state.height = size.height;
+            }
+        }
+        self.window_state.set(state);
+    }
+
     fn check_scale(&self, w: &AppWindow) {
         let scale = self.scale(w);
         if (scale - self.last_scale.replace(scale)).abs() < f32::EPSILON {
@@ -1257,6 +1278,16 @@ thread_local! {
     static UI: RefCell<Option<Rc<Ui>>> = const { RefCell::new(None) };
 }
 
+/// Window size to save on quit (`None` before the UI is installed).
+pub fn window_state() -> Option<client_core::WindowState> {
+    let mut state = None;
+    with_ui(|ui, w| {
+        ui.record_window(w);
+        state = Some(ui.window_state.get());
+    });
+    state
+}
+
 fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
     let ui = UI.with(|cell| cell.borrow().clone());
     if let Some(ui) = ui
@@ -1333,6 +1364,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         queue_paths: Rc::default(),
         queue_search: RefCell::default(),
         last_scale: Cell::new(window.window().scale_factor()),
+        window_state: Cell::new(settings.window),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
     });
@@ -1377,7 +1409,12 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     ui.scale_timer.start(
         slint::TimerMode::Repeated,
         std::time::Duration::from_secs(1),
-        || with_ui(Ui::check_scale),
+        || {
+            with_ui(|ui, w| {
+                ui.check_scale(w);
+                ui.record_window(w);
+            });
+        },
     );
     UI.with(|cell| *cell.borrow_mut() = Some(ui));
 
