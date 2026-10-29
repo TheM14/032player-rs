@@ -195,6 +195,8 @@ pub enum Command {
     SetRightPanel(crate::settings::RightPanel),
     /// Left sidebar width (logical px, clamped).
     SetSidebarWidth(f32),
+    /// Main window size, sent when the app quits.
+    SetWindow(crate::settings::WindowState),
     SetCloseToTray(bool),
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
@@ -1238,7 +1240,10 @@ impl Core {
         mut shutdown: tokio::sync::oneshot::Receiver<()>,
     ) {
         loop {
+            // Biased: commands sent right before shutdown (the window
+            // size on quit) are handled first.
             tokio::select! {
+                biased;
                 Some(command) = commands.recv() => self.command(command),
                 Some(event) = engine.recv() => self.engine_event(event),
                 Some(msg) = internal.recv() => self.internal(msg),
@@ -1472,6 +1477,10 @@ impl Core {
                 );
             }
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
+            Command::SetWindow(mut window) => {
+                window.sanitize();
+                self.update_settings(|s| s.window = window);
+            }
             Command::SetSidebarWidth(width) => {
                 self.update_settings(|s| s.sidebar_width = crate::settings::sidebar_width(width));
             }

@@ -20,6 +20,8 @@ pub struct Settings {
     pub right_panel: RightPanel,
     /// Left sidebar width in logical px (dragged by its right edge).
     pub sidebar_width: f32,
+    /// Main window size when it was last closed.
+    pub window: WindowState,
     pub repeat: Repeat,
     pub shuffle: bool,
     /// Closing the window hides it to the tray (Windows).
@@ -77,6 +79,42 @@ impl RightPanel {
     }
 }
 
+/// Main window size (logical px, the size before maximizing) and whether
+/// it was maximized.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            width: 1280.0,
+            height: 800.0,
+            maximized: false,
+        }
+    }
+}
+
+impl WindowState {
+    /// At least the window's minimum size (960 x 600), at most 8K.
+    pub fn sanitize(&mut self) {
+        let d = Self::default();
+        let fix = |v: f32, min: f32, default: f32| {
+            if v.is_finite() {
+                v.clamp(min, 7680.0)
+            } else {
+                default
+            }
+        };
+        self.width = fix(self.width, 960.0, d.width);
+        self.height = fix(self.height, 600.0, d.height);
+    }
+}
+
 /// Default left sidebar width (logical px).
 pub const SIDEBAR_WIDTH: f32 = 210.0;
 
@@ -128,6 +166,7 @@ impl Default for Settings {
             exclusive: false,
             right_panel: RightPanel::default(),
             sidebar_width: SIDEBAR_WIDTH,
+            window: WindowState::default(),
             repeat: Repeat::Off,
             shuffle: false,
             close_to_tray: false,
@@ -154,6 +193,7 @@ impl Settings {
         settings.volume = settings.volume.clamp(0.0, 100.0);
         settings.right_panel.sanitize();
         settings.sidebar_width = sidebar_width(settings.sidebar_width);
+        settings.window.sanitize();
         settings.audio_device = settings
             .audio_device
             .filter(|d| !d.is_empty() && d != "auto");
@@ -197,6 +237,11 @@ mod tests {
                 width: 420.0,
             },
             sidebar_width: 260.0,
+            window: WindowState {
+                width: 1600.0,
+                height: 1000.0,
+                maximized: true,
+            },
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
@@ -230,6 +275,14 @@ mod tests {
 
         fs::write(Settings::path(&dir), br#"{"sidebarWidth": 900}"#).unwrap();
         assert_eq!(Settings::load(&dir).sidebar_width, 400.0);
+
+        fs::write(
+            Settings::path(&dir),
+            br#"{"window": {"width": 100, "height": 1e9}}"#,
+        )
+        .unwrap();
+        let w = Settings::load(&dir).window;
+        assert_eq!((w.width, w.height, w.maximized), (960.0, 7680.0, false));
 
         fs::write(Settings::path(&dir), b"nope").unwrap();
         assert_eq!(Settings::load(&dir), Settings::default());
