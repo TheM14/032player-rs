@@ -5,6 +5,7 @@
 
 ## 当前状态（2026-10-28）
 
+- **v0.1.0 已发布**（2026-10-29，`568b340`）：https://github.com/lux032/032player-rs/releases/tag/v0.1.0 ，安装包 + 免安装 zip。
 - **M4 进行中**：用户看过 M1-M3，基本功能可用；M4 先做界面细节和能力与 Electron 版对齐，再做主题 / 打包 / i18n。任务见下方"M4 - 对齐与打磨"。
   P0 五项的主体已完成并提交（`5fd3e29`），preview 包已更新（`032player-windows-x64-5fd3e29.zip`），ui-snapshot 检查过（`home-*.png`、`queue*.png`、`artist.png`、`album-works*.png`），等用户按"M4 验证清单"验证。
 - **M3 代码完成**，已提交（`466003b`），preview 包已更新（`032player-windows-x64-466003b.zip`，约 75 MB）（主页、作品、系列、每日推荐、播放记录、正在播放标识、歌词搜索 / 纠正 / 翻译 / 偏移 / 点击跳转、
