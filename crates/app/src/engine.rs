@@ -5,12 +5,27 @@ use player::{EndReason, Player, PlayerEvent};
 
 pub struct MpvEngine(pub Player);
 
+impl MpvEngine {
+    /// mpv ignores the system proxy; route each stream the way reqwest
+    /// routes API requests. Also applies to appended (prefetched) entries,
+    /// which all come from the same server.
+    fn apply_proxy(&self, url: &str) -> Result<(), String> {
+        let proxy = os::proxy::http_proxy_for(url);
+        tracing::debug!(proxy = proxy.as_deref().unwrap_or("direct"), "stream proxy");
+        self.0
+            .set_http_proxy(proxy.as_deref())
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl Engine for MpvEngine {
     fn load(&self, url: &str) -> Result<(), String> {
+        self.apply_proxy(url)?;
         self.0.load(url).map_err(|e| e.to_string())
     }
 
     fn append(&self, url: &str) -> Result<(), String> {
+        self.apply_proxy(url)?;
         self.0.append(url).map_err(|e| e.to_string())
     }
 

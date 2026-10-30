@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+http.workspace = true
+hyper-util.workspace = true
 keyring.workspace = true
 open.workspace = true
 rfd.workspace = true

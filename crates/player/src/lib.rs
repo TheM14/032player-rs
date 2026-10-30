@@ -192,6 +192,12 @@ impl Player {
         Ok(self.mpv.command("loadfile", &[url, "append"])?)
     }
 
+    /// HTTP proxy (`http://host:port`) for streams opened from now on;
+    /// `None` connects directly.
+    pub fn set_http_proxy(&self, proxy: Option<&str>) -> Result<()> {
+        Ok(self.mpv.set_property("http-proxy", proxy.unwrap_or(""))?)
+    }
+
     /// Drops every playlist entry after the current one.
     pub fn clear_upcoming(&self) -> Result<()> {
         let pos: i64 = self.mpv.get_property("playlist-pos")?;

@@ -202,6 +202,14 @@ Electron：播放条"队列"按钮开关整个右栏；右栏里队列和歌词�
   在当前曲所属专辑上显示角标（`useAlbumPlayState`，网格记住"正在播放"集合，后加载的卡片也带上）；作品 / 系列卡片按播放来源；
   角标改成 Electron `.card-badge` 样式（深色半透明圆底 + 强调色音柱）；系列详情标题前的标记；动画按 Electron 关键帧（0.9s，柱间 0.25s，暂停时都放低）
 
+#### 11. 播放流走系统代理（服务器只通过 mihomo 分流的 Tailscale 访问）
+
+- [x] reqwest（API）本来就走系统代理（`system-proxy` feature）；mpv 不读 Windows 代理设置，播放流会直连。
+  `os::proxy::http_proxy_for` 用和 reqwest 相同的 hyper-util 匹配器（环境变量 → 注册表 `Internet Settings`，含绕过列表），
+  `MpvEngine` 每次 `load` / `append` 前设 mpv `http-proxy`。只支持 `http://` 代理，SOCKS / 带账号密码的代理不转给 mpv（记 warn 日志）
+- [ ] 验证 **[Win]**：mihomo 只开系统代理（不开 TUN），服务器地址填 tailnet 地址，登录、浏览、封面、播放、无缝切歌都正常；
+  关掉系统代理后播放失败，重新打开后下一首恢复。已知：API 客户端在登录时建立，启动后再开关系统代理，API 要重新登录或重启才跟上
+
 ### P1 - 核对中发现的差异
 
 - [x] 侧栏：导航图标、侧栏歌单列表、底部当前播放封面、顶部搜索框（前进 / 后退仍在页面左上角）
