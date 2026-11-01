@@ -1130,8 +1130,8 @@ impl Ui {
         w.set_queue_current(row_index(current_row));
     }
 
-    /// Remembers the window size; a maximized window keeps the size it
-    /// had before maximizing.
+    /// Remembers the window size and position; a maximized window keeps
+    /// the ones it had before maximizing.
     fn record_window(&self, w: &AppWindow) {
         let win = w.window();
         if !win.is_visible() || win.is_minimized() {
@@ -1145,6 +1145,8 @@ impl Ui {
                 state.width = size.width;
                 state.height = size.height;
             }
+            let pos = win.position();
+            (state.x, state.y) = (Some(pos.x), Some(pos.y));
         }
         self.window_state.set(state);
     }

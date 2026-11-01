@@ -79,13 +79,16 @@ impl RightPanel {
     }
 }
 
-/// Main window size (logical px, the size before maximizing) and whether
-/// it was maximized.
+/// Main window size (logical px), position (outer top-left, physical px;
+/// `None`: let the system place it), both from before maximizing, and
+/// whether it was maximized.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WindowState {
     pub width: f32,
     pub height: f32,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
     pub maximized: bool,
 }
 
@@ -94,6 +97,8 @@ impl Default for WindowState {
         Self {
             width: 1280.0,
             height: 800.0,
+            x: None,
+            y: None,
             maximized: false,
         }
     }
@@ -112,6 +117,14 @@ impl WindowState {
         };
         self.width = fix(self.width, 960.0, d.width);
         self.height = fix(self.height, 600.0, d.height);
+        // Both or neither; absurd values (e.g. a minimized window's
+        // -32000 on Windows) fall back to the system placement.
+        let sane = |v: Option<i32>| v.filter(|v| (-20_000..=40_000).contains(v));
+        if let (Some(x), Some(y)) = (sane(self.x), sane(self.y)) {
+            (self.x, self.y) = (Some(x), Some(y));
+        } else {
+            (self.x, self.y) = (None, None);
+        }
     }
 }
 
@@ -240,6 +253,8 @@ mod tests {
             window: WindowState {
                 width: 1600.0,
                 height: 1000.0,
+                x: Some(-1800),
+                y: Some(40),
                 maximized: true,
             },
             repeat: Repeat::One,
@@ -283,6 +298,18 @@ mod tests {
         .unwrap();
         let w = Settings::load(&dir).window;
         assert_eq!((w.width, w.height, w.maximized), (960.0, 7680.0, false));
+        assert_eq!((w.x, w.y), (None, None));
+
+        fs::write(
+            Settings::path(&dir),
+            br#"{"window": {"x": -32000, "y": -32000}}"#,
+        )
+        .unwrap();
+        let w = Settings::load(&dir).window;
+        assert_eq!((w.x, w.y), (None, None));
+
+        fs::write(Settings::path(&dir), br#"{"window": {"x": 120}}"#).unwrap();
+        assert_eq!(Settings::load(&dir).window.x, None);
 
         fs::write(Settings::path(&dir), b"nope").unwrap();
         assert_eq!(Settings::load(&dir), Settings::default());

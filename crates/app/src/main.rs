@@ -187,14 +187,23 @@ fn main() -> Result<(), slint::PlatformError> {
             "window shown (first event loop turn)"
         );
     });
-    // Last size; maximized again after the window exists.
+    // Last size and position; maximized again after the window exists.
     window.window().set_size(slint::LogicalSize::new(
         settings.window.width,
         settings.window.height,
     ));
+    let restored = settings.window.x.zip(settings.window.y);
+    if let Some((x, y)) = restored {
+        window
+            .window()
+            .set_position(slint::PhysicalPosition::new(x, y));
+    }
     window.show()?;
     if settings.window.maximized {
         window.window().set_maximized(true);
+    }
+    if restored.is_some() {
+        keep_on_screen(&window);
     }
     system::install(&window, core.commander());
     // Runs until quit (closing may only hide the window to the tray).
@@ -208,4 +217,65 @@ fn main() -> Result<(), slint::PlatformError> {
     core.shutdown();
     drop(engine);
     Ok(())
+}
+
+/// Moves the window back onto a monitor when its restored position is off
+/// every screen (e.g. it was last closed on a monitor that is now gone).
+fn keep_on_screen(window: &AppWindow) {
+    use slint::winit_030::{WinitWindowAccessor, winit};
+    let weak = window.as_weak();
+    let task = slint::spawn_local(async move {
+        let Some(w) = weak.upgrade() else { return };
+        let Ok(winit) = w.window().winit_window().await else {
+            return;
+        };
+        let Ok(pos) = winit.outer_position() else {
+            return;
+        };
+        let width = i32::try_from(winit.outer_size().width).unwrap_or(i32::MAX);
+        // The title bar must be reachable: the top strip overlaps a monitor
+        // by at least 100 px horizontally.
+        let reachable = winit.available_monitors().any(|m| {
+            let (mp, ms) = (m.position(), m.size());
+            let (mw, mh) = (
+                i32::try_from(ms.width).unwrap_or(i32::MAX),
+                i32::try_from(ms.height).unwrap_or(i32::MAX),
+            );
+            let top = pos.y + 8;
+            let overlap = (pos.x + width).min(mp.x + mw) - pos.x.max(mp.x);
+            top >= mp.y && top < mp.y + mh && overlap >= 100
+        });
+        if reachable {
+            return;
+        }
+        let Some(monitor) = winit
+            .primary_monitor()
+            .or_else(|| winit.available_monitors().next())
+        else {
+            return;
+        };
+        let (mp, ms, size) = (monitor.position(), monitor.size(), winit.outer_size());
+        let center = |origin: i32, total: u32, own: u32| {
+            origin + i32::try_from(total.saturating_sub(own) / 2).unwrap_or(0)
+        };
+        tracing::info!(
+            x = pos.x,
+            y = pos.y,
+            "window was off screen, moving it back"
+        );
+        let maximized = winit.is_maximized();
+        if maximized {
+            winit.set_maximized(false);
+        }
+        winit.set_outer_position(winit::dpi::PhysicalPosition::new(
+            center(mp.x, ms.width, size.width),
+            center(mp.y, ms.height, size.height),
+        ));
+        if maximized {
+            winit.set_maximized(true);
+        }
+    });
+    if let Err(e) = task {
+        tracing::warn!("cannot check the window position: {e}");
+    }
 }
