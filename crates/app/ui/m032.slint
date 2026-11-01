@@ -13,6 +13,7 @@ import { CardRows } from "library.slint";
 
 // A small row with a cover on the home page (接着听, 最近播放, 主题曲,
 // 今日推荐). `percent` < 0: no progress bar. `link`: the work of a song.
+// `covers`: 2x2 mosaic of a daily mix (four covers, else `cover` is used).
 export struct HomeRow {
     index: int,
     id: int,
@@ -30,6 +31,7 @@ export struct HomeRow {
     percent: int,
     duration: string,
     dimmed: bool,
+    covers: [image],
 }
 
 // An album tab of the spotlight. `tab`: 0 recent, 1 listening, 3 random;
@@ -568,9 +570,22 @@ export component HomeRowView inherits Rectangle {
         Rectangle {
             width: 48px;
             height: 48px;
-            Cover {
+            if root.item.covers.length < 4: Cover {
                 source: root.item.cover;
                 placeholder: root.mix ? "♪" : "032";
+            }
+            if root.item.covers.length >= 4: Rectangle {
+                border-radius: Theme.radius;
+                background: Theme.raised;
+                clip: true;
+                for img[i] in root.item.covers: Image {
+                    x: mod(i, 2) * parent.width / 2;
+                    y: floor(i / 2) * parent.height / 2;
+                    width: parent.width / 2;
+                    height: parent.height / 2;
+                    source: img;
+                    image-fit: ImageFit.cover;
+                }
             }
             Rectangle {
                 border-radius: Theme.radius;

@@ -586,12 +586,37 @@ impl Ui {
 
     pub(super) fn home_mixes(&self, w: &AppWindow, generating: bool, items: &[views::MixItem]) {
         w.global::<Home>().set_mixes_generating(generating);
-        self.home_mixes.set_vec(mix_rows(items));
-        let covers: Vec<String> = items
-            .iter()
-            .map(|m| m.covers.first().cloned().unwrap_or_default())
-            .collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_mixes, &covers);
+        self.set_mix_rows(w, Bind::Home, &self.home_mixes, items);
+    }
+
+    /// Daily mix rows: a 2x2 mosaic of the first four covers, or the first
+    /// cover alone when there are fewer (Electron `DailyMixCovers`).
+    fn set_mix_rows(
+        &self,
+        w: &AppWindow,
+        group: Bind,
+        model: &std::rc::Rc<VecModel<HomeRow>>,
+        items: &[views::MixItem],
+    ) {
+        let mut rows = mix_rows(items);
+        let mut single = Vec::with_capacity(items.len());
+        for (row, m) in rows.iter_mut().zip(items) {
+            if m.covers.len() >= 4 {
+                let tiles = std::rc::Rc::new(VecModel::from(vec![Image::default(); 4]));
+                row.covers = ModelRc::from(tiles.clone());
+                for (i, path) in m.covers.iter().take(4).enumerate() {
+                    let tiles = tiles.clone();
+                    self.bind_image(w, group, path, ROW_COVER / 2.0, move |image| {
+                        tiles.set_row_data(i, image.clone());
+                    });
+                }
+                single.push(String::new());
+            } else {
+                single.push(m.covers.first().cloned().unwrap_or_default());
+            }
+        }
+        model.set_vec(rows);
+        self.bind_row_covers(w, group, model, &single);
     }
 
     pub(super) fn chronicle(&self, w: &AppWindow, c: views::ChronicleView) {
@@ -1118,13 +1143,7 @@ impl Ui {
                         covers.set_row_data(i, image.clone());
                     });
                 }
-                self.mix_others.set_vec(mix_rows(&v.others));
-                let paths: Vec<String> = v
-                    .others
-                    .iter()
-                    .map(|m| m.covers.first().cloned().unwrap_or_default())
-                    .collect();
-                self.bind_row_covers(w, Bind::Detail, &self.mix_others, &paths);
+                self.set_mix_rows(w, Bind::Detail, &self.mix_others, &v.others);
                 // Rows: 新发现, missing files, 不再推荐.
                 for (i, row) in v.rows.iter().enumerate().take(rows) {
                     if let Some(mut r) = self.detail_tracks.row_data(i) {

@@ -316,6 +316,7 @@ fn home_rows(kind: &str) -> Value {
                     ("cover", Value::Image(cover(i as u32 + 2))),
                     ("percent", n(-1.0)),
                     ("duration", s("4:21")),
+                    ("covers", model(Vec::new())),
                 ];
                 match kind {
                     "resume" => {
@@ -332,6 +333,11 @@ fn home_rows(kind: &str) -> Value {
                     "mix" => {
                         f.push(("subtitle", s("安静 · 流行 · 30 首 · 1 小时 52 分")));
                         f.push(("dimmed", Value::Bool(i == 2)));
+                        // Mosaic except on the last row (fewer than four covers).
+                        if i + 1 < rows.len() {
+                            let tiles = (0..4).map(|k| Value::Image(cover(i as u32 * 4 + k)));
+                            f.push(("covers", model(tiles.collect())));
+                        }
                     }
                     _ => f.push(("note", s("2026年10月28日 09:15"))),
                 }
