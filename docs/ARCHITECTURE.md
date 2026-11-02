@@ -99,7 +99,8 @@
   作品 / 系列海报和主页货架复用 `CardGridModel`（卡片 kind 3 / 4 为 2:3 海报）；主页小行、聚焦卡、每日推荐封面用按图片 key 回填的绑定
   （`ui/m032.rs` `bind_image`，按组在换数据时丢弃）。主页货架用左右翻页按钮，不嵌套 Flickable。
 - 「在网页中打开」：`os::browser::open_url`（`open` crate）。
-- 字体：`app/src/fonts.rs` 把内嵌的 Inter + Noto Sans JP（与 Electron 版同一套，`assets/fonts`）注册到 Slint 共享的 fontique 集合，
+- 字体：`app/src/fonts.rs` 把内嵌的 Inter + Noto Sans JP（与 Electron 版同一套）+ Noto Sans SC（简体缺字回退，`assets/fonts`）注册到 Slint 共享的 fontique 集合，
+  艺人页和主页的中文区块标题显式指定 Noto Sans SC，避免 JP 覆盖不全导致同一标题混排；日文内容仍优先 JP。
   设为 sans-serif / system-ui 的字体栈（需要 slint 的 `unstable-fontique-011` 特性；先 `BackendSelector::select()`，再注册，再建窗口）。ui-snapshot 用同一个文件。
 - 主页聚焦卡背景：`core::backdrop` 把封面缩小、模糊、提饱和度成小图，Slint 拉伸铺底（Slint 没有模糊滤镜）。
 

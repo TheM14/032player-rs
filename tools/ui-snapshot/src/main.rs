@@ -728,7 +728,7 @@ fn main() {
         &inst,
         "artist-groups",
         model(
-            [("专辑", 6usize), ("单曲与 EP", 3), ("参与作品", 2), ("幕后参与", 4)]
+            [("专辑", 6usize), ("合辑与现场", 3), ("参与作品", 2), ("幕后参与", 4)]
                 .iter()
                 .enumerate()
                 .map(|(i, (title, count))| {
