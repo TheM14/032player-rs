@@ -7,7 +7,8 @@ import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
     ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
 } from "library.slint";
-import { SettingsView } from "settings.slint";
+import { SettingsView, ShortcutRow } from "settings.slint";
+export { ShortcutRow } from "settings.slint";
 import { Playback, GhostButton, Icon, IconButton, IconKind, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -318,6 +319,14 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-translation-available;
     callback lyrics-settings-changed();
 
+    in property <[ShortcutRow]> shortcuts;
+    in-out property <int> recording-shortcut: -1;
+    changed page => { root.recording-shortcut = -1; }
+    callback shortcut-key(KeyEvent) -> bool;
+    callback capture-shortcut(KeyEvent) -> bool;
+    callback clear-shortcut(int);
+    callback reset-shortcuts();
+    forward-focus: shortcut-scope;
     // Settings.
     in property <[string]> audio-devices: ["系统默认"];
     in-out property <int> audio-device-index;
@@ -348,6 +357,18 @@ export component AppWindow inherits Window {
     function count(n: int, unit: string) -> string {
         return n == 0 ? "" : n + " " + unit;
     }
+
+    shortcut-scope := FocusScope {
+        width: root.width;
+        height: root.height;
+        capture-key-pressed(e) => {
+            if root.recording-shortcut >= 0 { return root.capture-shortcut(e) ? accept : reject; }
+            return reject;
+        }
+        key-pressed(e) => {
+            if root.logged-in && root.dialog == 0 { return root.shortcut-key(e) ? accept : reject; }
+            return reject;
+        }
 
     if !root.logged-in: LoginView {
         server <=> root.login-server;
@@ -1244,6 +1265,11 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 2: SettingsView {
+                    shortcuts: root.shortcuts;
+                    recording: root.recording-shortcut;
+                    record-shortcut(i) => { root.recording-shortcut = i; }
+                    clear-shortcut(i) => { root.clear-shortcut(i); }
+                    reset-shortcuts => { root.reset-shortcuts(); }
                     server-label: root.server-label;
                     logout => {
                         root.logout();
@@ -1559,6 +1585,8 @@ export component AppWindow inherits Window {
             root.dialog = 0;
         }
     }
+
+    } // shortcut-scope
 
     // Toast.
     if root.notice != "": Rectangle {

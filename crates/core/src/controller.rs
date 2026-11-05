@@ -193,6 +193,7 @@ pub enum Command {
     SetExclusive(bool),
     /// Layout of the right panel (queue / lyrics).
     SetRightPanel(crate::settings::RightPanel),
+    SetShortcuts(crate::shortcuts::Shortcuts),
     /// Left sidebar width (logical px, clamped).
     SetSidebarWidth(f32),
     /// Main window size, sent when the app quits.
@@ -1477,6 +1478,7 @@ impl Core {
                 );
             }
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
+            Command::SetShortcuts(keys) => self.update_settings(|s| s.shortcuts = keys),
             Command::SetWindow(mut window) => {
                 window.sanitize();
                 self.update_settings(|s| s.window = window);

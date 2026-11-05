@@ -30,6 +30,7 @@ pub struct Settings {
     /// the bit-perfect default). Ignored when the server cannot.
     pub transcode: Option<api::Transcode>,
     pub lyrics: LyricsSettings,
+    pub shortcuts: crate::shortcuts::Shortcuts,
 }
 
 /// The right panel: queue and lyrics stacked (Electron `sidebar-play-queue`:
@@ -185,6 +186,7 @@ impl Default for Settings {
             close_to_tray: false,
             transcode: None,
             lyrics: LyricsSettings::default(),
+            shortcuts: crate::shortcuts::Shortcuts::default(),
         }
     }
 }
@@ -260,6 +262,7 @@ mod tests {
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
+            shortcuts: crate::shortcuts::Shortcuts::default(),
             transcode: Some(api::Transcode::Mp3(320)),
             lyrics: LyricsSettings {
                 translation_language: "en".into(),

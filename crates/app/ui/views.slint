@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
 
@@ -55,6 +55,7 @@ export struct TrackRow {
     credits: [CreditPart],
     tieup: string,
     tieup-count: int,
+    tieup-tooltip: string,
 }
 
 // `translation`: shown under the line (bilingual).
@@ -557,6 +558,36 @@ export component TrackRowView inherits Rectangle {
         }
     }
 
+    add-track-menu := PopupWindow {
+        x: max(0px, root.width - 280px);
+        y: root.height;
+        width: 220px;
+        height: min(360px, 70px + root.playlists.length * 32px);
+        Rectangle {
+            background: Theme.raised;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.border;
+            ScrollView {
+            VerticalLayout {
+                padding: 6px;
+                Text { text: "添加到歌单"; color: Theme.text-dim; }
+                Rectangle {
+                    height: 32px;
+                    Text { text: "新建歌单…"; color: Theme.text; vertical-alignment: center; height: 100%; }
+                    TouchArea { clicked => { add-track-menu.close(); root.action("new-playlist", 0); } }
+                }
+                for p in root.playlists: Rectangle {
+                    height: 32px;
+                    background: add-area.has-hover ? Theme.surface-hover : transparent;
+                    Text { text: p.name; color: Theme.text; overflow: elide; vertical-alignment: center; height: 100%; }
+                    add-area := TouchArea { clicked => { add-track-menu.close(); root.action("add", p.id); } }
+                }
+            }
+            }
+        }
+    }
+
     HorizontalLayout {
         padding-left: 32px;
         padding-right: 32px;
@@ -621,6 +652,22 @@ export component TrackRowView inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 border-radius: 10px;
                 background: tieup-area.has-hover ? Theme.accent-dim : transparent;
+                Tooltip {
+                    Rectangle {
+                        background: Theme.raised;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        border-radius: Theme.radius;
+                        width: 340px;
+                        height: tip.preferred-height + 24px;
+                        tip := Text {
+                            x: 12px; y: 12px; width: parent.width - 24px;
+                            text: root.track.tieup-tooltip;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
                 border-width: 1px;
                 border-color: Theme.accent-dim;
                 tieup-row := HorizontalLayout {
@@ -717,6 +764,17 @@ export component TrackRowView inherits Rectangle {
         }
         Rectangle {
             width: TrackColumns.heart;
+            if root.mode == 1: IconButton {
+                kind: IconKind.playlist-add;
+                size: 28px;
+                icon-size: 16px;
+                y: (parent.height - self.height) / 2;
+                Tooltip { text: @markdown("添加到歌单"); }
+                clicked => { add-track-menu.show(); }
+            }
+        }
+        Rectangle {
+            width: TrackColumns.heart;
             Icon {
                 visible: root.track.favorite || row-area.has-hover || heart-area.has-hover;
                 kind: root.track.favorite ? IconKind.heart : IconKind.heart-outline;
@@ -759,7 +817,7 @@ export component TrackList inherits Rectangle {
     // (action, row index, argument)
     callback action(string, int, int);
     // 32px side padding, fixed columns, 5 gaps of 16px.
-    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px - (root.mode == 4 ? 80px : 0px));
+    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px - (root.mode == 1 ? 44px : 0px) - (root.mode == 4 ? 80px : 0px));
     property <length> title-w: root.mode == 1 ? root.flex * 0.62 : root.flex * 0.42;
     property <length> artist-w: root.mode == 1 ? root.flex * 0.38 - 16px : root.flex * 0.24;
     property <length> album-w: root.flex * 0.34;
@@ -778,6 +836,7 @@ export component TrackList inherits Rectangle {
             Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
             if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
             if root.mode == 4: Rectangle { width: 64px; }
+            if root.mode == 1: Rectangle { width: TrackColumns.heart; }
             Rectangle { width: TrackColumns.heart; }
             Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 13px; horizontal-alignment: right; vertical-alignment: center; }
         }

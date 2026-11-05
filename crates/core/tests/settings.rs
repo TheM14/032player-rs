@@ -119,6 +119,9 @@ async fn output_changes_and_volume_are_saved() {
         ..RightPanel::default()
     };
     core.send(Command::SetRightPanel(panel));
+    let mut shortcuts = client_core::shortcuts::Shortcuts::default();
+    assert!(shortcuts.set("next", "Alt+N".into()));
+    core.send(Command::SetShortcuts(shortcuts.clone()));
     wait(&rx, "volume", |e| *e == Event::Volume(35.0));
     // Debounced write; shutdown flushes anything pending.
     tokio::task::spawn_blocking(move || core.shutdown())
@@ -136,6 +139,7 @@ async fn output_changes_and_volume_are_saved() {
             audio_device: Some("wasapi/{a}".into()),
             exclusive: true,
             right_panel: panel,
+            shortcuts,
             ..Settings::default()
         }
     );

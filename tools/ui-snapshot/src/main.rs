@@ -9,9 +9,8 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::{Platform, WindowAdapter};
 use slint::{
-    Model,
-    ComponentHandle, Image, ModelRc, PhysicalSize, Rgba8Pixel, SharedPixelBuffer, SharedString,
-    VecModel,
+    ComponentHandle, Image, Model, ModelRc, PhysicalSize, Rgba8Pixel, SharedPixelBuffer,
+    SharedString, VecModel,
 };
 use slint_interpreter::{Compiler, ComponentInstance, Struct, Value};
 
@@ -78,7 +77,10 @@ fn recent_rows(columns: usize, count: usize) -> Value {
                 for i in 0..items.row_count() {
                     if let Some(Value::Struct(mut card)) = items.row_data(i) {
                         card.set_field("year".into(), s(""));
-                        card.set_field("added".into(), s(["入库于 5 小时前", "入库于 1 天前", "入库于 3 天前"][i % 3]));
+                        card.set_field(
+                            "added".into(),
+                            s(["入库于 5 小时前", "入库于 1 天前", "入库于 3 天前"][i % 3]),
+                        );
                         items.set_row_data(i, Value::Struct(card));
                     }
                 }
@@ -113,8 +115,14 @@ fn album_rows_n(columns: usize, count: usize) -> Value {
             card.set_field("year".into(), s(year));
             card.set_field("artist-id".into(), Value::Number(5.0));
             card.set_field("favorite".into(), Value::Bool(i % 3 == 0));
-            card.set_field("badge".into(), s(if i % 7 == 2 { "原声集 OST" } else { "" }));
-            card.set_field("note".into(), s(if i % 4 == 1 { "OP 1 · ED 2" } else { "" }));
+            card.set_field(
+                "badge".into(),
+                s(if i % 7 == 2 { "原声集 OST" } else { "" }),
+            );
+            card.set_field(
+                "note".into(),
+                s(if i % 4 == 1 { "OP 1 · ED 2" } else { "" }),
+            );
             card.set_field("playing".into(), Value::Bool(i == 1));
             card.set_field(
                 "cover".into(),
@@ -289,10 +297,30 @@ fn n(v: f64) -> Value {
 
 fn home_rows(kind: &str) -> Value {
     let rows = [
-        ("夜に駆ける", "YOASOBI · THE BOOK", "OP", "进击的巨人 The Final Season"),
-        ("春日影", "MyGO!!!!! · 迷跡波", "ED", "BanG Dream! It's MyGO!!!!!"),
-        ("only my railgun", "fripSide · infinite synthesis", "插曲", "某科学的超电磁炮"),
-        ("だんご大家族", "茶太 · CLANNAD ORIGINAL SOUNDTRACK", "主题曲", "CLANNAD"),
+        (
+            "夜に駆ける",
+            "YOASOBI · THE BOOK",
+            "OP",
+            "进击的巨人 The Final Season",
+        ),
+        (
+            "春日影",
+            "MyGO!!!!! · 迷跡波",
+            "ED",
+            "BanG Dream! It's MyGO!!!!!",
+        ),
+        (
+            "only my railgun",
+            "fripSide · infinite synthesis",
+            "插曲",
+            "某科学的超电磁炮",
+        ),
+        (
+            "だんご大家族",
+            "茶太 · CLANNAD ORIGINAL SOUNDTRACK",
+            "主题曲",
+            "CLANNAD",
+        ),
         ("晴天", "周杰伦 · 叶惠美", "OP", "不能说的秘密"),
     ];
     model(
@@ -418,6 +446,51 @@ fn main() {
     let inst = def.create().unwrap();
     inst.show().unwrap();
     set(&inst, "logged-in", Value::Bool(true));
+    if std::env::var_os("CLICK_TEST").is_some() {
+        let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+        let h = hits.clone();
+        inst.set_callback("shortcut-key", move |_| {
+            h.set(h.get() + 1);
+            Value::Bool(true)
+        })
+        .unwrap();
+        let key = || {
+            window.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: " ".into() });
+            window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: " ".into() });
+        };
+        render(&window, size, &format!("{out}/keyboard-test.png"));
+        key();
+        assert_eq!(hits.get(), 1, "Space must reach the window shortcut scope");
+        set(&inst, "page", n(6.0));
+        render(&window, size, &format!("{out}/keyboard-search-test.png"));
+        key();
+        assert_eq!(
+            hits.get(),
+            1,
+            "Typing Space in search must not trigger playback"
+        );
+        let captures = std::rc::Rc::new(std::cell::Cell::new(0));
+        let c = captures.clone();
+        inst.set_callback("capture-shortcut", move |_| {
+            c.set(c.get() + 1);
+            Value::Bool(true)
+        })
+        .unwrap();
+        set(&inst, "recording-shortcut", n(0.0));
+        key();
+        assert_eq!(
+            captures.get(),
+            1,
+            "Recording must intercept keys before focused editors"
+        );
+        assert_eq!(hits.get(), 1);
+        set(&inst, "recording-shortcut", n(-1.0));
+        inst.set_callback("shortcut-key", |_| Value::Bool(false))
+            .unwrap();
+        set(&inst, "search-text", s(""));
+        set(&inst, "page", n(0.0));
+        println!("keyboard focus checks passed");
+    }
     set(&inst, "server-label", s("https://music.example.com"));
     set(&inst, "browse", Value::Bool(true));
     set(
@@ -497,19 +570,30 @@ fn main() {
         &inst,
         "side-playlists",
         model(
-            [("HOSHIMACHI SUISEI ARCHIVE", "20 首 · 1 小时 14 分"), ("音乃瀬奏", "1 首 · 3 分 12 秒"), ("通勤", "86 首 · 5 小时 2 分")]
-                .iter()
-                .enumerate()
-                .map(|(i, (t, m))| {
-                    st(&[
-                        ("id", n(i as f64 + 1.0)),
-                        ("title", s(t)),
-                        ("meta", s(m)),
-                        ("year", s("")),
-                        ("cover", Value::Image(if i == 2 { Image::default() } else { cover(30 + i as u32) })),
-                    ])
-                })
-                .collect(),
+            [
+                ("HOSHIMACHI SUISEI ARCHIVE", "20 首 · 1 小时 14 分"),
+                ("音乃瀬奏", "1 首 · 3 分 12 秒"),
+                ("通勤", "86 首 · 5 小时 2 分"),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, (t, m))| {
+                st(&[
+                    ("id", n(i as f64 + 1.0)),
+                    ("title", s(t)),
+                    ("meta", s(m)),
+                    ("year", s("")),
+                    (
+                        "cover",
+                        Value::Image(if i == 2 {
+                            Image::default()
+                        } else {
+                            cover(30 + i as u32)
+                        }),
+                    ),
+                ])
+            })
+            .collect(),
         ),
     );
     set(&inst, "position-ms", Value::Number(83_000.0));
@@ -593,21 +677,58 @@ fn main() {
                 let parts: &[(&str, f64)] = if i % 3 == 2 {
                     &[]
                 } else {
-                    &[("作词 ", 0.0), ("Paris Alexa, Sabrina Claudio, 星街すいせい", 22.0), (" · ", 0.0), ("作曲 ", 0.0), ("Paris Alexa, Sabrina Claudio, Sad Money, Xansei", 23.0), (" · ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("作曲 ", 0.0), ("Ayase", 20.0), (" · ", 0.0), ("编曲 ", 0.0), ("Ayase", 0.0), (", ", 0.0), ("Giga", 21.0)]
+                    &[
+                        ("作词 ", 0.0),
+                        ("Paris Alexa, Sabrina Claudio, 星街すいせい", 22.0),
+                        (" · ", 0.0),
+                        ("作曲 ", 0.0),
+                        ("Paris Alexa, Sabrina Claudio, Sad Money, Xansei", 23.0),
+                        (" · ", 0.0),
+                        ("Ayase", 20.0),
+                        (" · ", 0.0),
+                        ("作曲 ", 0.0),
+                        ("Ayase", 20.0),
+                        (" · ", 0.0),
+                        ("编曲 ", 0.0),
+                        ("Ayase", 0.0),
+                        (", ", 0.0),
+                        ("Giga", 21.0),
+                    ]
                 };
                 row.set_field(
                     "credits".into(),
-                    model(parts.iter().map(|(t, id)| st(&[("text", s(t)), ("id", n(*id))])).collect()),
+                    model(
+                        parts
+                            .iter()
+                            .map(|(t, id)| st(&[("text", s(t)), ("id", n(*id))]))
+                            .collect(),
+                    ),
                 );
-                row.set_field("tieup".into(), s(match i % 4 { 0 => "OP", 1 => "ED", _ => "" }));
+                row.set_field(
+                    "tieup".into(),
+                    s(match i % 4 {
+                        0 => "OP",
+                        1 => "ED",
+                        _ => "",
+                    }),
+                );
                 row.set_field("tieup-count".into(), n(if i == 0 { 2.0 } else { 1.0 }));
+                row.set_field(
+                    "tieup-tooltip".into(),
+                    s("作品标题 / 作品譯名\nOP · TV 动画 · 2024\n\n第二部作品\nED · 剧场版 · 2025"),
+                );
                 m.set_row_data(i, Value::Struct(row));
             }
         }
     }
     set(&inst, "detail-tracks", album_tracks);
     let uses = |items: &[(&str, &str)]| {
-        model(items.iter().map(|(l, t)| st(&[("label", s(l)), ("title", s(t))])).collect())
+        model(
+            items
+                .iter()
+                .map(|(l, t)| st(&[("label", s(l)), ("title", s(t))]))
+                .collect(),
+        )
     };
     set(
         &inst,
@@ -622,7 +743,15 @@ fn main() {
                 ("usage", s("OST · OP · ED")),
                 ("ost", Value::Bool(false)),
                 ("poster", Value::Image(cover(11))),
-                ("uses", uses(&[("OP", "メグメル"), ("ED", "だんご大家族"), ("插曲", "小さなてのひら"), ("ED", "TORCH")])),
+                (
+                    "uses",
+                    uses(&[
+                        ("OP", "メグメル"),
+                        ("ED", "だんご大家族"),
+                        ("插曲", "小さなてのひら"),
+                        ("ED", "TORCH"),
+                    ]),
+                ),
             ]),
             st(&[
                 ("id", n(2.0)),
@@ -638,7 +767,12 @@ fn main() {
         ]),
     );
     let facts = |items: &[(&str, &str)]| {
-        model(items.iter().map(|(l, v)| st(&[("label", s(l)), ("value", s(v))])).collect())
+        model(
+            items
+                .iter()
+                .map(|(l, v)| st(&[("label", s(l)), ("value", s(v))]))
+                .collect(),
+        )
     };
     set(
         &inst,
@@ -661,18 +795,30 @@ fn main() {
         &inst,
         "album-people",
         model(
-            [("麻枝准", "作曲 · 作词 · 64 首"), ("戸越まごめ", "作曲 · 32 首"), ("茶太", "演唱 · 2 首"), ("Lia", "演唱 · 1 首")]
-                .iter()
-                .enumerate()
-                .map(|(i, (name, roles))| {
-                    st(&[
-                        ("id", n(i as f64 + 1.0)),
-                        ("name", s(name)),
-                        ("roles", s(roles)),
-                        ("avatar", Value::Image(if i == 2 { Image::default() } else { cover(20 + i as u32) })),
-                    ])
-                })
-                .collect(),
+            [
+                ("麻枝准", "作曲 · 作词 · 64 首"),
+                ("戸越まごめ", "作曲 · 32 首"),
+                ("茶太", "演唱 · 2 首"),
+                ("Lia", "演唱 · 1 首"),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, (name, roles))| {
+                st(&[
+                    ("id", n(i as f64 + 1.0)),
+                    ("name", s(name)),
+                    ("roles", s(roles)),
+                    (
+                        "avatar",
+                        Value::Image(if i == 2 {
+                            Image::default()
+                        } else {
+                            cover(20 + i as u32)
+                        }),
+                    ),
+                ])
+            })
+            .collect(),
         ),
     );
     set(
@@ -687,17 +833,39 @@ fn main() {
             "",
         ),
     );
-    render(&window, PhysicalSize::new(1600, 900), &format!("{out}/album-works.png"));
-    set(
-        &inst,
-        "detail",
-        detail(2.0, "HOSHIMACHI SUISEI ARENA TOUR 2026 “Once Upon a Stellar”", "", "20 首 · 1 小时 14 分钟", "", "SETLIST"),
+    render(
+        &window,
+        PhysicalSize::new(1600, 900),
+        &format!("{out}/album-works.png"),
     );
-    render(&window, PhysicalSize::new(1600, 900), &format!("{out}/playlist-credits.png"));
     set(
         &inst,
         "detail",
-        detail(0.0, "CLANNAD ORIGINAL SOUNDTRACK", "麻枝准 / 戸越まごめ", "2004 · 64 首 · 3 小时 2 分钟 · Soundtrack", "最高 FLAC / 24bit / 96kHz", ""),
+        detail(
+            2.0,
+            "HOSHIMACHI SUISEI ARENA TOUR 2026 “Once Upon a Stellar”",
+            "",
+            "20 首 · 1 小时 14 分钟",
+            "",
+            "SETLIST",
+        ),
+    );
+    render(
+        &window,
+        PhysicalSize::new(1600, 900),
+        &format!("{out}/playlist-credits.png"),
+    );
+    set(
+        &inst,
+        "detail",
+        detail(
+            0.0,
+            "CLANNAD ORIGINAL SOUNDTRACK",
+            "麻枝准 / 戸越まごめ",
+            "2004 · 64 首 · 3 小时 2 分钟 · Soundtrack",
+            "最高 FLAC / 24bit / 96kHz",
+            "",
+        ),
     );
     if std::env::var_os("CLICK_TEST").is_some() {
         inst.set_callback("track-action", |args| {
@@ -705,14 +873,30 @@ fn main() {
             Value::Void
         })
         .unwrap();
-        for (x, y) in [(355.0, 358.0), (840.0, 349.0), (420.0, 349.0)] {
+        for (x, y) in [
+            (355.0, 358.0),
+            (840.0, 349.0),
+            (420.0, 349.0),
+            (1106.0, 350.0),
+        ] {
             let position = slint::LogicalPosition::new(x, y);
             let button = slint::platform::PointerEventButton::Left;
             window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
-            window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
-            window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
             println!("clicked {x},{y}");
         }
+        render(
+            &window,
+            PhysicalSize::new(1600, 900),
+            &format!("{out}/track-add-menu.png"),
+        );
+        let position = slint::LogicalPosition::new(1035.0, 424.0);
+        let button = slint::platform::PointerEventButton::Left;
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
     }
     set(&inst, "panel-open", Value::Bool(true));
     set(&inst, "sidebar-width", Value::Number(300.0));
@@ -728,24 +912,31 @@ fn main() {
         &inst,
         "artist-groups",
         model(
-            [("专辑", 6usize), ("合辑与现场", 3), ("参与作品", 2), ("幕后参与", 4)]
-                .iter()
-                .enumerate()
-                .map(|(i, (title, count))| {
-                    st(&[
-                        ("title", s(title)),
-                        ("count", n(*count as f64)),
-                        ("grid", n(i as f64)),
-                        ("rows", album_rows_n(5, *count)),
-                    ])
-                })
-                .collect(),
+            [
+                ("专辑", 6usize),
+                ("合辑与现场", 3),
+                ("参与作品", 2),
+                ("幕后参与", 4),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, (title, count))| {
+                st(&[
+                    ("title", s(title)),
+                    ("count", n(*count as f64)),
+                    ("grid", n(i as f64)),
+                    ("rows", album_rows_n(5, *count)),
+                ])
+            })
+            .collect(),
         ),
     );
     set(
         &inst,
         "artist-about",
-        s("YOASOBI 是日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成，以\u{201c}将小说化为音乐\u{201d}为概念，2019 年以《夜に駆ける》出道。\n\n来源：Last.fm"),
+        s(
+            "YOASOBI 是日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成，以\u{201c}将小说化为音乐\u{201d}为概念，2019 年以《夜に駆ける》出道。\n\n来源：Last.fm",
+        ),
     );
     set(
         &inst,
@@ -759,7 +950,11 @@ fn main() {
             "别名：ヨアソビ",
         ),
     );
-    render(&window, PhysicalSize::new(1280, 2200), &format!("{out}/artist.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 2200),
+        &format!("{out}/artist.png"),
+    );
     set(
         &inst,
         "detail",
@@ -800,6 +995,28 @@ fn main() {
         ]),
     );
     set(&inst, "lyrics-translation-available", Value::Bool(true));
+    set(
+        &inst,
+        "shortcuts",
+        model(
+            [
+                ("播放 / 暂停", "Space"),
+                ("上一首", "Ctrl+Left"),
+                ("下一首", "Ctrl+Right"),
+                ("后退 10 秒", "Left"),
+                ("前进 10 秒", "Right"),
+                ("增加音量", "Ctrl+Up"),
+                ("降低音量", "Ctrl+Down"),
+                ("切换随机播放", "Ctrl+S"),
+                ("切换循环模式", "Ctrl+R"),
+                ("显示 / 隐藏队列", "Ctrl+Q"),
+                ("搜索曲库", "Ctrl+K"),
+            ]
+            .into_iter()
+            .map(|(title, binding)| st(&[("title", s(title)), ("binding", s(binding))]))
+            .collect(),
+        ),
+    );
     render(&window, size, &format!("{out}/settings.png"));
 
     // 032 home.
@@ -885,7 +1102,11 @@ fn main() {
         ]),
     );
     set(&inst, "page", n(20.0));
-    render(&window, PhysicalSize::new(1280, 2500), &format!("{out}/home.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 2500),
+        &format!("{out}/home.png"),
+    );
     // Breakpoints (page width = window - 200px sidebar). The app's model
     // re-chunks 最近添加 by the reported columns; here it is done by hand.
     for (window_w, height) in [(900, 2800), (1180, 2700), (1700, 2000), (2300, 1900)] {
@@ -903,7 +1124,11 @@ fn main() {
         } else {
             3
         };
-        let max = if page_w <= 1040 && page_w > 700 { 6 } else { cols * 2 };
+        let max = if page_w <= 1040 && page_w > 700 {
+            6
+        } else {
+            cols * 2
+        };
         set_g(&inst, "Home", "recent-albums", recent_rows(cols, max));
         render(
             &window,
@@ -952,7 +1177,10 @@ fn main() {
         &inst,
         "Home",
         "series-works",
-        model(vec![item("MyGO!!!!!", "动画 · 2023"), item("Ave Mujica", "动画 · 2025")]),
+        model(vec![
+            item("MyGO!!!!!", "动画 · 2023"),
+            item("Ave Mujica", "动画 · 2025"),
+        ]),
     );
     set_g(
         &inst,
@@ -964,7 +1192,11 @@ fn main() {
         ]),
     );
     set_g(&inst, "Home", "mixes", home_rows("mix"));
-    render(&window, PhysicalSize::new(1280, 900), &format!("{out}/home-series.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 900),
+        &format!("{out}/home-series.png"),
+    );
 
     // Works, series, history.
     set_g(&inst, "Lib032", "works", album_rows(5));
@@ -979,7 +1211,14 @@ fn main() {
     if let Value::Model(m) = &history {
         for i in 0..m.row_count() {
             if let Some(Value::Struct(mut row)) = m.row_data(i) {
-                row.set_field("tag".into(), s(if i % 3 == 0 { "已中断" } else { "播放完成" }));
+                row.set_field(
+                    "tag".into(),
+                    s(if i % 3 == 0 {
+                        "已中断"
+                    } else {
+                        "播放完成"
+                    }),
+                );
                 row.set_field(
                     "note".into(),
                     s("2026年10月28日 09:15 · 1:04 / 4:21 · 播放 3 次"),
@@ -1026,7 +1265,11 @@ fn main() {
     set(&inst, "detail-tracks", collected);
     set(&inst, "detail", detail(4.0, "Fate/Zero", "", "", "", ""));
     set(&inst, "page", n(10.0));
-    render(&window, PhysicalSize::new(1280, 1200), &format!("{out}/work.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 1200),
+        &format!("{out}/work.png"),
+    );
 
     // Series detail.
     set_g(
@@ -1047,7 +1290,11 @@ fn main() {
     set_g(&inst, "Lib032", "series-members", album_rows(5));
     set_g(&inst, "Lib032", "series-albums", album_rows(5));
     set(&inst, "detail", detail(5.0, "Fate系列", "", "", "", ""));
-    render(&window, PhysicalSize::new(1280, 1300), &format!("{out}/series-detail.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 1300),
+        &format!("{out}/series-detail.png"),
+    );
 
     // Daily mix.
     set_g(
@@ -1061,7 +1308,10 @@ fn main() {
             ("kicker", s("情绪 · 今日推荐")),
             ("subtitle", s("安静 · 器乐 · 30 首 · 1 小时 52 分")),
             ("rating", n(-1.0)),
-            ("disliked-note", s("已记录：太重复、风格太跳。再点一次可撤销。")),
+            (
+                "disliked-note",
+                s("已记录：太重复、风格太跳。再点一次可撤销。"),
+            ),
             ("current", Value::Bool(true)),
             ("replacements-left", n(2.0)),
             ("saved-playlist-id", n(9.0)),
@@ -1099,7 +1349,11 @@ fn main() {
         }
     }
     set(&inst, "detail-tracks", mix_tracks);
-    set(&inst, "detail", detail(6.0, "深夜的钢琴与弦乐", "", "", "", ""));
+    set(
+        &inst,
+        "detail",
+        detail(6.0, "深夜的钢琴与弦乐", "", "", "", ""),
+    );
     render(&window, size, &format!("{out}/mix.png"));
 
     // Lyrics with translation and the search dialog.
@@ -1129,13 +1383,28 @@ fn main() {
         "results",
         model(
             [
-                ("夜に駆ける", "YOASOBI", "NetEase — 1409311773 — 同步", "98.20%"),
+                (
+                    "夜に駆ける",
+                    "YOASOBI",
+                    "NetEase — 1409311773 — 同步",
+                    "98.20%",
+                ),
                 ("夜に駆ける", "YOASOBI", "LRCLIB — 2045 — 同步", "95.00%"),
-                ("夜に駆ける (Live)", "YOASOBI", "NetEase — 77 — 非同步", "61.50%"),
+                (
+                    "夜に駆ける (Live)",
+                    "YOASOBI",
+                    "NetEase — 77 — 非同步",
+                    "61.50%",
+                ),
             ]
             .iter()
             .map(|(t, a, m, sc)| {
-                st(&[("title", s(t)), ("artist", s(a)), ("meta", s(m)), ("score", s(sc))])
+                st(&[
+                    ("title", s(t)),
+                    ("artist", s(a)),
+                    ("meta", s(m)),
+                    ("score", s(sc)),
+                ])
             })
             .collect(),
         ),

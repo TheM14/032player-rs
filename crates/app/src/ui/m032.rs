@@ -971,6 +971,34 @@ impl Ui {
             };
             let id = i64::from(row.id);
             if let Some((_, label, count)) = tieups.iter().find(|(t, ..)| *t == id) {
+                row.tieup_tooltip = works
+                    .iter()
+                    .filter_map(|wk| {
+                        let uses: Vec<_> = wk
+                            .tracks
+                            .iter()
+                            .filter(|u| u.track_id == id)
+                            .map(|u| u.label.as_str())
+                            .collect();
+                        if uses.is_empty() {
+                            return None;
+                        }
+                        let translated = if wk.translated.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", wk.translated)
+                        };
+                        Some(format!(
+                            "{}{}\n{} · {}",
+                            wk.title,
+                            translated,
+                            uses.join(" / "),
+                            wk.meta
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+                    .into();
                 row.tieup = s(label);
                 row.tieup_count = i32::try_from(*count).unwrap_or(i32::MAX);
                 self.detail_tracks.set_row_data(i, row);

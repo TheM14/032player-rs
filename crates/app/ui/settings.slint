@@ -37,7 +37,14 @@ component SettingRow inherits Rectangle {
     }
 }
 
+export struct ShortcutRow { title: string, binding: string }
+
 export component SettingsView inherits Rectangle {
+    in property <[ShortcutRow]> shortcuts;
+    in property <int> recording: -1;
+    callback record-shortcut(int);
+    callback clear-shortcut(int);
+    callback reset-shortcuts();
     // Output devices for display; index 0 is the system default.
     in property <[string]> devices;
     in-out property <int> device-index;
@@ -166,6 +173,34 @@ export component SettingsView inherits Rectangle {
                         root.transcode-selected(self.current-index);
                     }
                 }
+            }
+
+            Text {
+                text: "快捷键";
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            Text {
+                text: "仅在应用窗口内生效，输入文字时不触发。点击按键录入新组合，Esc 取消；支持 Ctrl、Alt、Shift。";
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+            for key[i] in root.shortcuts: SettingRow {
+                title: key.title;
+                GhostButton {
+                    width: 180px;
+                    text: root.recording == i ? "请按快捷键…" : key.binding == "" ? "未设置" : key.binding;
+                    clicked => { root.record-shortcut(i); }
+                }
+                GhostButton {
+                    text: "清除";
+                    clicked => { root.clear-shortcut(i); }
+                }
+            }
+            GhostButton {
+                text: "恢复默认快捷键";
+                clicked => { root.reset-shortcuts(); }
             }
 
             Text {

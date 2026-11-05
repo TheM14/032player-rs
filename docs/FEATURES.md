@@ -77,7 +77,7 @@
 |------|------|--------|------|
 | 列表（`durationMillis`，未知时隐藏时长）、详情、曲目 | `ctrl` `getPlaylist*` | M2 | [x] |
 | 新建、改名、删除 | `ctrl` `createPlaylist` / `updatePlaylist` / `deletePlaylist` | M2 | [x] |
-| 添加 `items/append`、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [x] 替换只在 api（UI 用不到） |
+| 添加 `items/append`（含专辑单曲行按钮）、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [x] 替换只在 api（UI 用不到） |
 | 封面上传 / 删除（`features.playlistArtwork`） | `ctrl` `uploadPlaylistImage` | M2 | [x] |
 | 同一首歌只出现一次（服务端跳过重复） | `MUSIC032_CHANGES.md` | - | - |
 
@@ -114,6 +114,7 @@
 | SMTC（Windows）/ MPRIS（Linux）/ macOS Now Playing、媒体键 | `main/features/linux/mpris.ts`、`main/features/core/player/media-keys.ts` | M1 | [x] `souvlaki` |
 | 托盘、最小化到托盘 | `main/index.ts` | M1 | [x] Windows；关闭到托盘（最小化到托盘未做），Linux 托盘未做 |
 | 单实例 | `main/index.ts` | M1 | [x] |
+| 窗口内快捷键及自定义（录入 / 清除 / 恢复默认 / 冲突检测） | `renderer/store/settings.store.ts` `hotkeys` | M4 | [x] 设置页；空格播放 / 暂停，切歌、进度、音量、随机、循环、队列、搜索 |
 | 全局快捷键 | `main/index.ts` | M4 | [ ] |
 | 自动更新（读本仓库 GitHub Releases） | `main/fork-config.ts` | M4 | [ ] |
 | 设置导出 / 导入 | `renderer/components/export-import-settings-modal/` | 待定 | [ ] |

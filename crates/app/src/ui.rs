@@ -1,6 +1,7 @@
 //! UI-thread state: models, callbacks, navigation and applying core events.
 
 mod m032;
+mod shortcuts;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -1333,6 +1334,7 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
 /// Wires callbacks and models; `settings` are the saved ones.
 #[allow(clippy::too_many_lines)]
 pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
+    shortcuts::install(window, settings);
     #[allow(clippy::cast_possible_truncation)]
     window.set_volume(settings.volume as f32);
     let panel = settings.right_panel;

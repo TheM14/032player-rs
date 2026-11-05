@@ -204,6 +204,10 @@ export component Field inherits VerticalLayout {
         background: Theme.bg;
         border-width: 1px;
         border-color: input.has-focus ? Theme.accent : Theme.border;
+        editor-scope := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            key-pressed(e) => { return e.text == Key.Tab ? reject : accept; }
         input := TextInput {
             x: 12px;
             width: parent.width - 24px;
@@ -222,6 +226,7 @@ export component Field inherits VerticalLayout {
             }
         }
 
+        }
         Text {
             x: 12px;
             visible: root.text == "" && !input.has-focus;
@@ -295,6 +300,10 @@ export component SearchField inherits Rectangle {
         color: Theme.text-faint;
     }
 
+    editor-scope := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => { return e.text == Key.Tab ? reject : accept; }
     input := TextInput {
         x: 30px;
         width: parent.width - 30px - 28px;
@@ -312,6 +321,7 @@ export component SearchField inherits Rectangle {
         }
     }
 
+    }
     Text {
         x: 30px;
         visible: root.text == "";
@@ -397,6 +407,10 @@ export component SmallInput inherits Rectangle {
     background: Theme.bg;
     border-width: 1px;
     border-color: input.has-focus ? Theme.accent : Theme.border;
+    editor-scope := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => { return e.text == Key.Tab ? reject : accept; }
     input := TextInput {
         x: 8px;
         width: parent.width - 16px;
@@ -409,6 +423,7 @@ export component SmallInput inherits Rectangle {
         edited => {
             root.edited();
         }
+    }
     }
     Text {
         x: 8px;

@@ -11,6 +11,7 @@ mod queue;
 mod reporter;
 mod secrets;
 mod settings;
+pub mod shortcuts;
 mod storage;
 
 pub use api::{
