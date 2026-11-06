@@ -77,7 +77,7 @@
 |------|------|--------|------|
 | 列表（`durationMillis`，未知时隐藏时长）、详情、曲目 | `ctrl` `getPlaylist*` | M2 | [x] |
 | 新建、改名、删除 | `ctrl` `createPlaylist` / `updatePlaylist` / `deletePlaylist` | M2 | [x] |
-| 添加 `items/append`（含专辑单曲行按钮）、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [x] 替换只在 api（UI 用不到） |
+| 添加 `items/append`（含专辑单曲右键入口）、移除 `items/remove`、排序 `order`、替换 | `ctrl` | M2 | [x] 替换只在 api（UI 用不到） |
 | 封面上传 / 删除（`features.playlistArtwork`） | `ctrl` `uploadPlaylistImage` | M2 | [x] |
 | 同一首歌只出现一次（服务端跳过重复） | `MUSIC032_CHANGES.md` | - | - |
 

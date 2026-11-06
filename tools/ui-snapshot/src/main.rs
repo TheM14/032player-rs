@@ -877,7 +877,6 @@ fn main() {
             (355.0, 358.0),
             (840.0, 349.0),
             (420.0, 349.0),
-            (1106.0, 350.0),
         ] {
             let position = slint::LogicalPosition::new(x, y);
             let button = slint::platform::PointerEventButton::Left;
@@ -888,15 +887,13 @@ fn main() {
                 .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
             println!("clicked {x},{y}");
         }
-        render(
-            &window,
-            PhysicalSize::new(1600, 900),
-            &format!("{out}/track-add-menu.png"),
-        );
-        let position = slint::LogicalPosition::new(1035.0, 424.0);
-        let button = slint::platform::PointerEventButton::Left;
+        let position = slint::LogicalPosition::new(270.0, 349.0);
+        let button = slint::platform::PointerEventButton::Right;
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-context-menu.png"));
+        window.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: slint::platform::Key::Escape.into() });
+        window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: slint::platform::Key::Escape.into() });
     }
     set(&inst, "panel-open", Value::Bool(true));
     set(&inst, "sidebar-width", Value::Number(300.0));

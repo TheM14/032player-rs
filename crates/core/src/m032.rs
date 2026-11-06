@@ -1243,6 +1243,60 @@ pub fn mix_view(detail: &DailyMixDetail, list: Option<&api::DailyMixList>) -> Mi
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tieups_include_every_work_role_and_multiple_works() {
+        let roles = [
+            "op",
+            "ed",
+            "insert",
+            "theme",
+            "character",
+            "image_song",
+            "ost",
+            "other",
+            "custom",
+        ];
+        let works: Vec<_> = roles
+            .iter()
+            .enumerate()
+            .map(|(i, role)| {
+                let label = super::usage_label("", &[*role]);
+                super::AlbumWorkEntry {
+                    id: i64::try_from(i).unwrap(),
+                    tracks: vec![super::WorkUse {
+                        track_id: i64::try_from(i).unwrap(),
+                        label: if label.is_empty() {
+                            "相关".into()
+                        } else {
+                            label
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let tags = super::track_tieups(&works);
+        let labels: Vec<_> = tags.iter().map(|(_, label, _)| label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "OP",
+                "ED",
+                "插曲",
+                "主题曲",
+                "角色歌",
+                "印象曲",
+                "OST",
+                "相关",
+                "CUSTOM"
+            ]
+        );
+        let mut works = works;
+        works.push(works[2].clone());
+        assert_eq!(super::track_tieups(&works)[2].2, 2);
+    }
+
     use api::{DailyMixTag, DailyMixTrack, PlayRef, SeriesStats};
 
     use super::*;
