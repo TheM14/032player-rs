@@ -602,8 +602,31 @@ impl Core {
                 self.emit(Event::SeriesAppended { items, total });
             }
             Loaded::HistoryPage(records, total) => self.history_page(records, total),
+            Loaded::Related(track_id, tracks) => {
+                let items = tracks.iter().map(track_item).collect();
+                self.set_list(TrackList::Related, tracks);
+                self.emit(Event::Related {
+                    track_id,
+                    tracks: items,
+                });
+            }
             home => self.home_loaded(home),
         }
+    }
+
+    /// Similar songs of the current track for the full-screen player.
+    pub(super) fn load_related(&mut self, id: i64) {
+        let Some((client, tx)) = self.request() else {
+            return;
+        };
+        let seq = self.next_seq(Target::Related);
+        tokio::spawn(async move {
+            let msg = match client.similar_tracks(id, SIMILAR_COUNT).await {
+                Ok(tracks) => Internal::Loaded(Target::Related, seq, Loaded::Related(id, tracks)),
+                Err(e) => Self::failed(&client, "加载相关歌曲", e),
+            };
+            let _ = tx.send(msg);
+        });
     }
 
     pub(super) fn set_list(&mut self, list: TrackList, tracks: Vec<Track>) {

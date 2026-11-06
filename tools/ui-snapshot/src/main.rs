@@ -1373,6 +1373,18 @@ fn main() {
     set(&inst, "lyrics-translation-shown", Value::Bool(true));
     set(&inst, "lyrics-offset", n(150.0));
     render(&window, size, &format!("{out}/lyrics.png"));
+
+    // Full-screen player: lyrics, up next and related tabs.
+    set(&inst, "full-cover", Value::Image(cover(3)));
+    set(&inst, "full-open", Value::Bool(true));
+    set(&inst, "full-tab", n(2.0));
+    render(&window, size, &format!("{out}/full-lyrics.png"));
+    set(&inst, "full-tab", n(0.0));
+    render(&window, size, &format!("{out}/full-queue.png"));
+    set(&inst, "full-related", tracks());
+    set(&inst, "full-tab", n(1.0));
+    render(&window, PhysicalSize::new(1000, 640), &format!("{out}/full-related-small.png"));
+    set(&inst, "full-open", Value::Bool(false));
     set_g(&inst, "LyricsSearch", "name", s("夜に駆ける"));
     set_g(&inst, "LyricsSearch", "artist", s("YOASOBI"));
     set_g(

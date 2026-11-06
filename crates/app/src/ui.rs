@@ -248,6 +248,12 @@ struct Ui {
     played: Rc<VecModel<TrackRow>>,
     /// Preview tracks of the shown spotlight tab.
     pane_tracks: Rc<VecModel<TrackRow>>,
+    /// Related songs in the full-screen player (`TrackList::Related`).
+    related: Rc<VecModel<TrackRow>>,
+    /// Track the related songs were requested for (0: none).
+    related_for: Cell<i64>,
+    /// The original cover in the full-screen player.
+    full_cover_key: RefCell<Option<String>>,
     home_mixes: Rc<VecModel<HomeRow>>,
     home_recent: Rc<VecModel<HomeRow>>,
     home_resume: Rc<VecModel<HomeRow>>,
@@ -344,6 +350,7 @@ impl Ui {
             TrackList::Search => &self.search_tracks,
             TrackList::Spotlight(_) => &self.pane_tracks,
             TrackList::History => &self.played,
+            TrackList::Related => &self.related,
             TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
         })
     }
@@ -390,6 +397,11 @@ impl Ui {
     }
 
     fn show(&self, w: &AppWindow, route: Route) {
+        // Going to a page (album / artist links, menus) leaves full screen.
+        if w.get_full_open() {
+            w.set_full_open(false);
+            self.full_changed(w);
+        }
         self.route.set(route);
         w.set_can_go_back(!self.history.borrow().is_empty());
         let (kind, id) = match route {
@@ -1223,6 +1235,62 @@ impl Ui {
         *self.now_large_key.borrow_mut() = key;
     }
 
+    /// Full-screen player opened, closed, resized, switched tabs or the
+    /// track changed: the original cover at the shown size and, on the
+    /// related tab, the current track's similar songs.
+    fn full_changed(&self, w: &AppWindow) {
+        if !w.get_full_open() {
+            // Free the large image; it is reloaded (byte cache) on reopen.
+            *self.full_cover_key.borrow_mut() = None;
+            w.set_full_cover(Image::default());
+            w.set_full_backdrop(Image::default());
+            return;
+        }
+        let (artwork, track_id) = self
+            .now
+            .borrow()
+            .as_ref()
+            .map(|n| (n.artwork.clone(), n.track_id))
+            .unwrap_or_default();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let px = (w.get_full_cover_side() * self.scale(w)).round().max(1.0) as u32;
+        let key = (!artwork.is_empty() && w.get_full_cover_side() > 0.0)
+            .then(|| format!("full|{}", image_key(&artwork, px)));
+        if *self.full_cover_key.borrow() != key {
+            match &key {
+                Some(key) => {
+                    let same_art = self
+                        .full_cover_key
+                        .borrow()
+                        .as_deref()
+                        .is_some_and(|old| old.ends_with(&format!("|{artwork}")));
+                    if !same_art {
+                        // Until it arrives: the player bar copy, blurred too.
+                        let small = w.get_np_cover();
+                        w.set_full_backdrop(m032::hero_backdrop(&small));
+                        w.set_full_cover(small);
+                    }
+                    self.send(Command::LoadOriginalImage {
+                        key: key.clone(),
+                        path: artwork.clone(),
+                        px,
+                    });
+                }
+                None => {
+                    w.set_full_cover(Image::default());
+                    w.set_full_backdrop(Image::default());
+                }
+            }
+            *self.full_cover_key.borrow_mut() = key;
+        }
+        if w.get_full_tab() == 1 && track_id > 0 && self.related_for.get() != track_id {
+            self.related_for.set(track_id);
+            self.related.set_vec(Vec::new());
+            w.set_full_related_loading(true);
+            self.send(Command::LoadRelated(track_id));
+        }
+    }
+
     fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let px = (DETAIL_COVER * self.scale(w)).round() as u32;
@@ -1255,6 +1323,7 @@ impl Ui {
                     &self.search_tracks,
                     &self.played,
                     &self.pane_tracks,
+                    &self.related,
                 ] {
                     for i in 0..model.row_count() {
                         if let Some(mut row) = model.row_data(i)
@@ -1369,6 +1438,9 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         search_tracks: new_tracks(),
         played: new_tracks(),
         pane_tracks: new_tracks(),
+        related: new_tracks(),
+        related_for: Cell::new(0),
+        full_cover_key: RefCell::default(),
         home_mixes: Rc::new(VecModel::default()),
         home_recent: Rc::new(VecModel::default()),
         home_resume: Rc::new(VecModel::default()),
@@ -1416,6 +1488,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_detail_tracks(ModelRc::from(ui.detail_tracks.clone()));
     window.set_search_tracks(ModelRc::from(ui.search_tracks.clone()));
     window.set_queue(ModelRc::from(ui.queue.clone()));
+    window.set_full_related(ModelRc::from(ui.related.clone()));
+    window.on_full_changed(|| with_ui(|ui, w| ui.full_changed(w)));
     {
         let home = window.global::<Home>();
         home.set_pane_tracks(ModelRc::from(ui.pane_tracks.clone()));
@@ -1897,6 +1971,10 @@ pub fn apply(event: Event) {
                 SignOutReason::Expired => "API Token 已失效，请重新输入".into(),
             });
             w.set_dialog(0);
+            w.set_full_open(false);
+            ui.full_changed(w);
+            ui.related_for.set(0);
+            ui.related.set_vec(Vec::new());
             *ui.now_cover_key.borrow_mut() = None;
             *ui.now_large_key.borrow_mut() = None;
             *ui.now.borrow_mut() = None;
@@ -2030,6 +2108,10 @@ pub fn apply(event: Event) {
             if ui.now_large_key.borrow().as_deref() == Some(key.as_str()) {
                 w.set_np_cover_large(image.clone());
             }
+            if ui.full_cover_key.borrow().as_deref() == Some(key.as_str()) {
+                w.set_full_backdrop(m032::hero_backdrop(&image));
+                w.set_full_cover(image.clone());
+            }
             if ui.detail_cover_key.borrow().as_deref() == Some(key.as_str()) {
                 w.set_detail_cover(image);
             }
@@ -2040,6 +2122,7 @@ pub fn apply(event: Event) {
             w.set_playing_id(-1);
             w.set_np_favorite(false);
             *ui.now.borrow_mut() = None;
+            ui.full_changed(w);
         }
         Event::NowPlaying(Some(now)) => {
             ui.mark_playing_album(now.album_id);
@@ -2070,6 +2153,13 @@ pub fn apply(event: Event) {
             *ui.now_cover_key.borrow_mut() = key;
             ui.load_now_large(w, &now.artwork);
             *ui.now.borrow_mut() = Some(now);
+            ui.full_changed(w);
+        }
+        Event::Related { track_id, tracks } => {
+            if ui.related_for.get() == track_id {
+                ui.related.set_vec(track_rows(tracks, 0));
+                w.set_full_related_loading(false);
+            }
         }
         Event::Position {
             position_ms,

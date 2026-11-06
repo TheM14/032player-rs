@@ -211,6 +211,15 @@ pub enum Command {
         path: String,
         px: u32,
     },
+    /// Like [`Command::LoadImage`], but downloads the original artwork (no
+    /// `size`; the full-screen player) and decodes it to `px`.
+    LoadOriginalImage {
+        key: String,
+        path: String,
+        px: u32,
+    },
+    /// Songs similar to track `id` ([`Event::Related`], `TrackList::Related`).
+    LoadRelated(i64),
     /// Play just this row (接着听 rows start at their saved position).
     PlayTrack(TrackList, usize),
     /// The 032 home ([`Event::Home`] or [`Event::HomeUnavailable`]), its
@@ -639,6 +648,11 @@ pub enum Event {
     },
     /// Works / series / mix the current track belongs to.
     PlayingSources(PlayingSources),
+    /// Songs similar to `track_id` (`TrackList::Related`).
+    Related {
+        track_id: i64,
+        tracks: Vec<TrackItem>,
+    },
     /// Something the user should see (load failure, playback error).
     Notice(String),
 }
@@ -763,6 +777,7 @@ enum Target {
     SeriesList,
     History,
     LyricsPreview,
+    Related,
 }
 
 enum Loaded {
@@ -794,6 +809,8 @@ enum Loaded {
     HistoryPage(Vec<api::PlaybackRecord>, usize),
     /// Works linked to the open album.
     AlbumWorks(i64, Vec<crate::m032::AlbumWorkEntry>),
+    /// Similar songs of a track.
+    Related(i64, Vec<Track>),
 }
 
 /// Handle to the running core. Dropping it does not stop the core; call
@@ -1539,21 +1556,32 @@ impl Core {
             Command::SetLyricsOffset(ms) => self.set_lyrics_offset(ms),
             Command::SeekToLyric(index) => self.seek_to_lyric(index),
             Command::SetLyricsSettings(lyrics) => self.set_lyrics_settings(lyrics),
-            Command::LoadImage { key, path, px } => {
-                let Some(library) = &self.library else { return };
-                let images = library.images.clone();
-                let Some(url) = images.url(&path, px) else {
-                    return;
-                };
-                let sink = self.sink.clone();
-                tokio::spawn(async move {
-                    match images.load(url, px).await {
-                        Ok(image) => sink(Event::Image { key, image }),
-                        Err(e) => tracing::debug!("artwork {path}: {e}"),
-                    }
-                });
-            }
+            Command::LoadRelated(id) => self.load_related(id),
+            Command::LoadImage { key, path, px } => self.load_image(key, path, px, false),
+            Command::LoadOriginalImage { key, path, px } => self.load_image(key, path, px, true),
         }
+    }
+
+    /// Loads artwork for display at `px`; `original`: the uploaded file
+    /// rather than a server-rendered size.
+    fn load_image(&self, key: String, path: String, px: u32, original: bool) {
+        let Some(library) = &self.library else { return };
+        let images = library.images.clone();
+        let url = if original {
+            images.original_url(&path)
+        } else {
+            images.url(&path, px)
+        };
+        let Some(url) = url else {
+            return;
+        };
+        let sink = self.sink.clone();
+        tokio::spawn(async move {
+            match images.load(url, px).await {
+                Ok(image) => sink(Event::Image { key, image }),
+                Err(e) => tracing::debug!("artwork {path}: {e}"),
+            }
+        });
     }
 
     // ------------------------------------------------------------ playback

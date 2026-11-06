@@ -49,6 +49,7 @@ pub(super) fn track_list(id: i32) -> TrackList {
         8 => TrackList::HomeRecent,
         9 => TrackList::HomeSongs,
         10 => TrackList::History,
+        11 => TrackList::Related,
         _ => TrackList::Library,
     }
 }
@@ -1453,7 +1454,7 @@ pub(super) fn set_row_favorite(model: &VecModel<HomeRow>, id: i64, favorite: boo
 }
 
 /// Blurred, saturated copy of the spotlight cover for the card background.
-fn hero_backdrop(cover: &Image) -> Image {
+pub(super) fn hero_backdrop(cover: &Image) -> Image {
     cover
         .to_rgba8()
         .and_then(|buffer| {

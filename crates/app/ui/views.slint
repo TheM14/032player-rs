@@ -1108,10 +1108,12 @@ export component LyricsPanel inherits Rectangle {
     callback move-panel(int);
     callback close-panel();
     in property <bool> lines-have-translation;
+    // Full-screen player: no panel header, larger centered lines.
+    in property <bool> large;
     background: Theme.surface;
 
     VerticalLayout {
-        HorizontalLayout {
+        if !root.large: HorizontalLayout {
             padding-left: 16px;
             padding-right: 8px;
             padding-top: 10px;
@@ -1246,7 +1248,8 @@ export component LyricsPanel inherits Rectangle {
                         Text {
                             text: line.text;
                             wrap: word-wrap;
-                            font-size: 18px;
+                            horizontal-alignment: root.large ? center : left;
+                            font-size: root.large ? 26px : 18px;
                             font-weight: 700;
                             color: on ? Theme.text : Theme.text.with-alpha(0.32);
                             animate color { duration: 300ms; }
@@ -1254,7 +1257,8 @@ export component LyricsPanel inherits Rectangle {
                         if line.translation != "": Text {
                             text: line.translation;
                             wrap: word-wrap;
-                            font-size: 15px;
+                            horizontal-alignment: root.large ? center : left;
+                            font-size: root.large ? 19px : 15px;
                             font-weight: 600;
                             color: on ? Theme.text-dim : Theme.text.with-alpha(0.25);
                             animate color { duration: 300ms; }
@@ -1283,14 +1287,16 @@ export component LyricsPanel inherits Rectangle {
                     Text {
                         text: line.text;
                         wrap: word-wrap;
-                        font-size: 16px;
+                        horizontal-alignment: root.large ? center : left;
+                        font-size: root.large ? 20px : 16px;
                         font-weight: 600;
                         color: Theme.text-dim;
                     }
                     if line.translation != "": Text {
                         text: line.translation;
                         wrap: word-wrap;
-                        font-size: 14px;
+                        horizontal-alignment: root.large ? center : left;
+                        font-size: root.large ? 16px : 14px;
                         color: Theme.text-faint;
                     }
                 }
@@ -1399,6 +1405,9 @@ export component PlayerBar inherits Rectangle {
     callback seek(int);
     callback volume-changed(float);
     callback toggle-lyrics();
+    // The cover opens / closes the full-screen player.
+    in property <bool> full-open;
+    callback toggle-full();
     height: 84px;
     background: Theme.surface;
 
@@ -1430,6 +1439,22 @@ export component PlayerBar inherits Rectangle {
                     width: 100%;
                     height: 100%;
                     image-fit: ImageFit.cover;
+                }
+                cover-area := TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.toggle-full();
+                    }
+                }
+                if cover-area.has-hover: Rectangle {
+                    background: #00000066;
+                    Icon {
+                        kind: root.full-open ? IconKind.chevron-down : IconKind.arrow-up;
+                        width: 20px;
+                        height: 20px;
+                        color: #ffffff;
+                    }
                 }
             }
 

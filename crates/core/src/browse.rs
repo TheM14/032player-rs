@@ -130,6 +130,8 @@ pub enum TrackList {
     HomeSongs,
     /// The playback history page.
     History,
+    /// Songs similar to the current track (full-screen player).
+    Related,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

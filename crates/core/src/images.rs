@@ -46,6 +46,11 @@ impl Images {
         self.client.image_url(path, server_size(px))
     }
 
+    /// The artwork as uploaded (no `size`; `size=0` is rejected).
+    pub(crate) fn original_url(&self, path: &str) -> Option<Url> {
+        self.client.image_url(path, None)
+    }
+
     /// Fetches (or reuses) the artwork at `url` and decodes it to at most `px`.
     pub(crate) async fn load(&self, url: Url, px: u32) -> Result<Rgba, String> {
         let cached = self.lock().get(&url).cloned();

@@ -8,6 +8,7 @@ import {
     ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
 } from "library.slint";
 import { SettingsView, ShortcutRow } from "settings.slint";
+import { FullScreenPlayer } from "fullscreen.slint";
 export { ShortcutRow } from "settings.slint";
 import { Playback, GhostButton, Icon, IconButton, IconKind, SearchField, Tab } from "controls.slint";
 import {
@@ -284,6 +285,27 @@ export component AppWindow inherits Window {
     callback open-now-album();
     callback open-now-artist();
 
+    // Full-screen player: tab 0 up next, 1 related, 2 lyrics. Rust loads
+    // the original cover (at `full-cover-side`) and the related songs
+    // (track list 11) on `full-changed`.
+    in-out property <bool> full-open;
+    in-out property <int> full-tab;
+    in property <image> full-cover;
+    in property <image> full-backdrop;
+    in property <[TrackRow]> full-related;
+    in property <bool> full-related-loading;
+    in-out property <length> full-cover-side;
+    callback full-changed();
+    function open-full(tab: int) {
+        root.full-open = true;
+        root.full-tab = tab;
+        root.full-changed();
+    }
+    function close-full() {
+        root.full-open = false;
+        root.full-changed();
+    }
+
     // Lyrics.
     in property <[LyricLine]> lyrics;
     in property <int> lyrics-active: -1;
@@ -368,6 +390,10 @@ export component AppWindow inherits Window {
             return reject;
         }
         key-pressed(e) => {
+            if root.logged-in && root.dialog == 0 && root.full-open && e.text == Key.Escape {
+                root.close-full();
+                return accept;
+            }
             if root.logged-in && root.dialog == 0 { return root.shortcut-key(e) ? accept : reject; }
             return reject;
         }
@@ -571,7 +597,7 @@ export component AppWindow inherits Window {
                         TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
-                                root.open-now-album();
+                                root.open-full(0);
                             }
                         }
                     }
@@ -1470,7 +1496,15 @@ export component AppWindow inherits Window {
                 root.exclusive-toggled(on);
             }
             has-track: root.has-track;
-            show-cover: !sidebar.show-cover;
+            show-cover: !sidebar.show-cover || root.full-open;
+            full-open: root.full-open;
+            toggle-full => {
+                if root.full-open {
+                    root.close-full();
+                } else {
+                    root.open-full(0);
+                }
+            }
             title: root.np-title;
             artist: root.np-artist;
             album: root.np-album;
@@ -1484,7 +1518,7 @@ export component AppWindow inherits Window {
             paused: root.paused;
             buffering: root.buffering;
             volume: root.volume;
-            lyrics-open: root.panel-open && root.panel-lyrics;
+            lyrics-open: root.full-open && root.full-tab == 2;
             queue-open: root.panel-open;
             shuffle: root.shuffle;
             repeat: root.repeat;
@@ -1533,15 +1567,121 @@ export component AppWindow inherits Window {
                 root.volume-changed(v);
             }
             toggle-lyrics => {
-                // Until the full-screen player exists: show / hide the
-                // lyrics pane of the right panel.
-                if root.panel-open && root.panel-lyrics {
-                    root.panel-lyrics = false;
+                // Electron: the lyrics tab of the full-screen player.
+                if root.full-open && root.full-tab == 2 {
+                    root.close-full();
                 } else {
-                    root.panel-open = true;
-                    root.panel-lyrics = true;
+                    root.open-full(2);
                 }
-                root.panel-changed();
+            }
+        }
+    }
+
+    if root.logged-in && root.full-open: full := FullScreenPlayer {
+        x: 0;
+        y: 0;
+        width: root.width;
+        // The player bar stays visible.
+        height: root.height - 84px;
+        cover: root.full-cover;
+        backdrop: root.full-backdrop;
+        has-track: root.has-track;
+        title: root.np-title;
+        artist: root.np-artist;
+        album: root.np-album;
+        quality: root.np-quality;
+        tab: root.full-tab;
+        tab-selected(i) => {
+            root.full-tab = i;
+            root.full-changed();
+        }
+        close => {
+            root.close-full();
+        }
+        open-album => {
+            root.open-now-album();
+        }
+        open-artist => {
+            root.open-now-artist();
+        }
+        cover-resized(side) => {
+            root.full-cover-side = side;
+            root.full-changed();
+        }
+
+        if root.full-tab == 0: QueuePanel {
+            x: 0;
+            y: 0;
+            width: full.pane-width;
+            height: full.pane-height;
+            background: transparent;
+            rows: root.queue;
+            total: root.queue-total;
+            current: root.queue-current;
+            search <=> root.queue-search;
+            search-changed(text) => {
+                root.queue-search-changed(text);
+            }
+            save => {
+                root.save-queue();
+            }
+            play(uid) => {
+                root.play-queue-item(uid);
+            }
+            remove(uid) => {
+                root.remove-queue-item(uid);
+            }
+            move(uid, to) => {
+                root.move-queue-item(uid, to);
+            }
+            clear => {
+                root.clear-queue();
+            }
+        }
+        if root.full-tab == 1: TrackList {
+            x: 0;
+            y: 0;
+            width: full.pane-width;
+            height: full.pane-height;
+            rows: root.full-related;
+            mode: 1;
+            playing-id: root.playing-id;
+            playlists: root.playlist-choices;
+            loading: root.full-related-loading;
+            empty-text: root.has-track ? "没有相关歌曲" : "";
+            action(what, i, arg) => {
+                root.track-action(11, what, i, arg);
+            }
+        }
+        if root.full-tab == 2: LyricsPanel {
+            x: 0;
+            y: 0;
+            width: full.pane-width;
+            height: full.pane-height;
+            background: transparent;
+            large: true;
+            lines: root.lyrics;
+            active: root.lyrics-active;
+            synced: root.lyrics-synced;
+            source: root.lyrics-source;
+            has-track: root.has-track;
+            lines-have-translation: root.lyrics-translated-lines;
+            can-search: root.lyrics-can-search;
+            can-translate: root.lyrics-can-translate;
+            translation-shown: root.lyrics-translation-shown;
+            translating: root.lyrics-translating;
+            offset-ms: root.lyrics-offset;
+            seek-line(i) => {
+                root.lyrics-seek(i);
+            }
+            tool(what) => {
+                if what == "search" {
+                    root.dialog = 5;
+                }
+                root.lyrics-tool(what);
+            }
+            offset(ms) => {
+                root.lyrics-offset-changed(ms);
             }
         }
     }

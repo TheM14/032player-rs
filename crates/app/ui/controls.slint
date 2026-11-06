@@ -85,7 +85,7 @@ export component PlayingBars inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down }
 
 // Vector icons (no icon font dependency). Transport icons are filled,
 // the others are drawn with a stroke in the same color.
@@ -100,7 +100,8 @@ export component Icon inherits Path {
         || root.kind == IconKind.playlist-add || root.kind == IconKind.home || root.kind == IconKind.disc
         || root.kind == IconKind.note || root.kind == IconKind.person || root.kind == IconKind.people
         || root.kind == IconKind.work || root.kind == IconKind.layers || root.kind == IconKind.history
-        || root.kind == IconKind.gear || root.kind == IconKind.list || root.kind == IconKind.logout;
+        || root.kind == IconKind.gear || root.kind == IconKind.list || root.kind == IconKind.logout
+        || root.kind == IconKind.chevron-down;
     viewbox-width: 24;
     viewbox-height: 24;
     fill: root.stroked ? transparent : root.color;
@@ -137,6 +138,7 @@ export component Icon inherits Path {
         : root.kind == IconKind.gear ? "M 9 12 A 3 3 0 1 0 15 12 A 3 3 0 1 0 9 12 Z M 12 2.5 L 12 5 M 12 19 L 12 21.5 M 2.5 12 L 5 12 M 19 12 L 21.5 12 M 5.3 5.3 L 7 7 M 17 17 L 18.7 18.7 M 5.3 18.7 L 7 17 M 17 7 L 18.7 5.3 M 5.5 12 A 6.5 6.5 0 1 0 18.5 12 A 6.5 6.5 0 1 0 5.5 12 Z"
         : root.kind == IconKind.list ? "M 8 6 L 20 6 M 8 12 L 20 12 M 8 18 L 20 18 M 4 6 L 4.5 6 M 4 12 L 4.5 12 M 4 18 L 4.5 18"
         : root.kind == IconKind.logout ? "M 14 4 L 19 4 L 19 20 L 14 20 M 10 8 L 6 12 L 10 16 M 6 12 L 15 12"
+        : root.kind == IconKind.chevron-down ? "M 6 9 L 12 15 L 18 9"
         : "M 4 6 L 20 6 L 20 8 L 4 8 Z M 4 11 L 16 11 L 16 13 L 4 13 Z M 4 16 L 18 16 L 18 18 L 4 18 Z";
 }
 
