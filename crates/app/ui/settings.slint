@@ -82,6 +82,9 @@ export component SettingsView inherits Rectangle {
     callback logout();
     // "0.1.0"; the log folder (bug reports).
     in property <string> app-version;
+    // A newer release (tag) and its page; empty: none known.
+    in property <string> update-version;
+    callback open-update();
     callback open-logs();
 
     init => {
@@ -126,7 +129,15 @@ export component SettingsView inherits Rectangle {
 
             SettingRow {
                 title: "032player " + root.app-version;
-                description: "反馈问题时请附上日志文件（logs/032player.log）。";
+                description: root.update-version != "" ? "有新版本 " + root.update-version + "，点击\"下载新版本\"打开发布页。"
+                    : "反馈问题时请附上日志文件（logs/032player.log）。";
+                if root.update-version != "": GhostButton {
+                    y: (parent.height - self.height) / 2;
+                    text: "下载新版本";
+                    clicked => {
+                        root.open-update();
+                    }
+                }
                 GhostButton {
                     y: (parent.height - self.height) / 2;
                     text: "打开日志文件夹";

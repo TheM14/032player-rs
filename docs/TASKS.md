@@ -142,7 +142,8 @@
 
 #### E. 更新提示
 
-- [ ] 启动时查本仓库 GitHub Releases 最新版本，比当前新时在设置页 / 侧栏提示并给下载链接
+- [x] 启动时查本仓库 GitHub Releases 最新正式版（`/releases/latest`，不含 `preview` 预发布），比当前新时弹提示，设置页"032player"一行显示新版本和"下载新版本"（打开发布页）；`api::latest_release` / `api::is_newer` 带测试
+- [ ] **[Win]** 下一个正式版发布后，旧版本启动时出现提示
 
 不做（2026-11-06 决定）：均衡器 / 压缩器、ReplayGain、i18n、静音按钮、全局快捷键、最小化到托盘、代码签名。
 
@@ -291,7 +292,7 @@ Electron：播放条"队列"按钮开关整个右栏；右栏里队列和歌词�
   `.github/workflows/release.yml` 在推送 `vX.Y.Z` 标签时构建安装包 + 免安装 zip 并发布 GitHub Release（标签须与 workspace 版本一致）
 - [x] release 隐藏控制台（`windows_subsystem`），日志写 `<数据目录>/logs/032player.log`（超过 2 MB 转存 `.old.log`，panic 也记录），设置页显示版本和"打开日志文件夹"
 - [x] exe 图标和版本信息（`winresource`，`assets/icon.ico`）
-- [ ] 自动更新（本仓库 GitHub Releases）
+- [x] 更新提示（只提示和打开发布页，见"M4 后续" E）
 - 代码签名、i18n：不做（2026-11-06，只有用户自己用）
 - [ ] M4 验证清单 **[Win]**
 

@@ -5,6 +5,7 @@ mod error;
 mod m032;
 mod query;
 mod types;
+mod update;
 
 pub use client::{
     API_REVISION, ArtistTrackSort, Client, FavoriteKind, MAX_PAGE_SIZE, Transcode, authenticate,
@@ -18,4 +19,5 @@ pub use query::{
 };
 pub use reqwest::Method;
 pub use types::*;
+pub use update::{GITHUB_API, RELEASE_REPO, Release, is_newer, latest_release};
 pub use url::Url;

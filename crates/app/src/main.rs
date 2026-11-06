@@ -167,6 +167,7 @@ fn main() -> Result<(), slint::PlatformError> {
         env("M032_API_TOKEN"),
         env("M032_MEDIA_TOKEN"),
     );
+    core.send(Command::CheckUpdate);
     if server.is_empty() || api_token.is_empty() || media_token.is_empty() {
         core.send(Command::Restore);
     } else {

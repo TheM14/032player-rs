@@ -298,6 +298,8 @@ struct Ui {
     queue_covers: Rc<RefCell<HashMap<String, Image>>>,
     /// Artwork path of each row in the queue model.
     queue_paths: Rc<RefCell<Vec<String>>>,
+    /// Release page of a newer version.
+    update_url: RefCell<String>,
     /// Engine names behind the device combo box; index 0 (`None`) is the
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
@@ -1491,6 +1493,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         queue_search: RefCell::default(),
         last_scale: Cell::new(window.window().scale_factor()),
         window_state: Cell::new(settings.window),
+        update_url: RefCell::default(),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
     });
@@ -1509,6 +1512,14 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_full_related(ModelRc::from(ui.related.clone()));
     window.set_artist_favs(ModelRc::from(ui.artist_favs.clone()));
     window.on_full_changed(|| with_ui(|ui, w| ui.full_changed(w)));
+    window.on_open_update(|| {
+        with_ui(|ui, _| {
+            let url = ui.update_url.borrow().clone();
+            if !url.is_empty() {
+                os::browser::open_url(&url);
+            }
+        });
+    });
     let c = commander.clone();
     window.on_now_info(move || c.send(Command::NowTrackInfo));
     {
@@ -2183,6 +2194,11 @@ pub fn apply(event: Event) {
             ui.load_now_large(w, &now.artwork);
             *ui.now.borrow_mut() = Some(now);
             ui.full_changed(w);
+        }
+        Event::UpdateAvailable { version, url } => {
+            ui.notice(format!("发现新版本 {version}，可在设置页下载"));
+            w.set_update_version(version.into());
+            *ui.update_url.borrow_mut() = url;
         }
         Event::TrackInfo { title: _, facts } => {
             w.set_info_rows(ModelRc::new(VecModel::from(

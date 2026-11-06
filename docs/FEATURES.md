@@ -117,7 +117,7 @@
 | 单实例 | `main/index.ts` | M1 | [x] |
 | 窗口内快捷键及自定义（录入 / 清除 / 恢复默认 / 冲突检测） | `renderer/store/settings.store.ts` `hotkeys` | M4 | [x] 设置页；空格播放 / 暂停，切歌、进度、音量、随机、循环、队列、搜索 |
 | 全局快捷键 | `main/index.ts` | - | - 不做（2026-11-06） |
-| 更新提示（读本仓库 GitHub Releases，只提示和给链接） | `main/fork-config.ts` | M4 | [ ] |
+| 更新提示（读本仓库 GitHub Releases，只提示和给链接） | `main/fork-config.ts` | M4 | [x] |
 | 设置导出 / 导入 | `renderer/components/export-import-settings-modal/` | 待定 | [ ] |
 
 ## 外观与本地化

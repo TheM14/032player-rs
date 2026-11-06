@@ -190,6 +190,8 @@ export component AppWindow inherits Window {
     in-out property <length> sidebar-width: 210px;
     callback sidebar-resized();
     in property <string> app-version;
+    in property <string> update-version;
+    callback open-update();
     callback open-logs();
     // Sidebar playlists: name, "20 首 · 1 小时 14 分", cover.
     in property <[NamedItem]> side-playlists;
@@ -1386,6 +1388,10 @@ export component AppWindow inherits Window {
                         root.logout();
                     }
                     app-version: root.app-version;
+                    update-version: root.update-version;
+                    open-update => {
+                        root.open-update();
+                    }
                     open-logs => {
                         root.open-logs();
                     }

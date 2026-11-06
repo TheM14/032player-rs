@@ -203,6 +203,8 @@ pub enum Command {
     /// Volume fade on play / pause.
     SetFadeOnPause(bool),
     SetTheme(crate::settings::ThemeMode),
+    /// Looks for a newer GitHub release ([`Event::UpdateAvailable`]).
+    CheckUpdate,
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
     /// Load artwork `path` for display at `px` physical pixels (long side);
@@ -656,6 +658,13 @@ pub enum Event {
     },
     /// Works / series / mix the current track belongs to.
     PlayingSources(PlayingSources),
+    /// A newer release than this build is published.
+    UpdateAvailable {
+        /// Tag, e.g. `v0.1.7`.
+        version: String,
+        /// Release page.
+        url: String,
+    },
     /// The track info dialog: title and (label, value) rows.
     TrackInfo {
         title: String,
@@ -1541,6 +1550,22 @@ impl Core {
             }
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
             Command::SetTheme(theme) => self.update_settings(|s| s.theme = theme),
+            Command::CheckUpdate => {
+                let sink = self.sink.clone();
+                tokio::spawn(async move {
+                    match api::latest_release(api::GITHUB_API, api::RELEASE_REPO).await {
+                        Ok(release) if api::is_newer(&release.tag, env!("CARGO_PKG_VERSION")) => {
+                            tracing::info!(tag = %release.tag, "update available");
+                            sink(Event::UpdateAvailable {
+                                version: release.tag,
+                                url: release.url,
+                            });
+                        }
+                        Ok(release) => tracing::debug!(tag = %release.tag, "up to date"),
+                        Err(e) => tracing::debug!("update check: {e}"),
+                    }
+                });
+            }
             Command::SetFadeOnPause(on) => {
                 self.update_settings(|s| s.fade_on_pause = on);
                 if !on && !self.paused {

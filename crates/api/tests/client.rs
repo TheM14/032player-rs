@@ -327,3 +327,27 @@ fn media_urls_carry_the_media_token_never_the_api_token() {
         "https://music.example.com/api/v1/artists/4/image?mediaToken=m+t%26"
     );
 }
+
+#[tokio::test]
+async fn latest_release_reads_tag_and_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/lux032/032player-rs/releases/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tag_name": "v9.9.9",
+            "html_url": "https://github.com/lux032/032player-rs/releases/tag/v9.9.9",
+            "draft": false,
+            "prerelease": false,
+        })))
+        .mount(&server)
+        .await;
+    let release = api::latest_release(&server.uri(), api::RELEASE_REPO)
+        .await
+        .unwrap();
+    assert_eq!(release.tag, "v9.9.9");
+    assert!(release.url.ends_with("/v9.9.9"));
+    assert!(api::is_newer(&release.tag, "0.1.6"));
+
+    let missing = api::latest_release(&server.uri(), "nobody/none").await;
+    assert_eq!(missing.unwrap_err().status(), Some(404));
+}
