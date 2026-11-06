@@ -980,11 +980,8 @@ fn main() {
             Value::Void
         })
         .unwrap();
-        for (x, y) in [
-            (355.0, 358.0),
-            (840.0, 349.0),
-            (420.0, 349.0),
-        ] {
+        // First album row (1600x900): credits link, artist, empty title area.
+        for (x, y) in [(300.0, 558.0), (846.0, 543.0), (600.0, 533.0)] {
             let position = slint::LogicalPosition::new(x, y);
             let button = slint::platform::PointerEventButton::Left;
             window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
@@ -994,12 +991,13 @@ fn main() {
                 .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
             println!("clicked {x},{y}");
         }
-        let position = slint::LogicalPosition::new(270.0, 349.0);
+        let position = slint::LogicalPosition::new(190.0, 543.0);
         let button = slint::platform::PointerEventButton::Right;
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
         render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-context-menu.png"));
-        let position = slint::LogicalPosition::new(360.0, 440.0);
+        // "添加到播放队列末尾", the third menu item.
+        let position = slint::LogicalPosition::new(290.0, 634.0);
         let button = slint::platform::PointerEventButton::Left;
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
@@ -1007,7 +1005,8 @@ fn main() {
         assert_eq!(queue_adds.get(), 1, "Right click must open a working queue menu");
         println!("track right-click queue action passed");
         render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-menu-closed.png"));
-        let position = slint::LogicalPosition::new(775.0, 349.0);
+        // The "◆ OP 2" chip.
+        let position = slint::LogicalPosition::new(283.0, 533.0);
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         slint::platform::update_timers_and_animations();
         std::thread::sleep(std::time::Duration::from_millis(900));
@@ -1019,7 +1018,7 @@ fn main() {
         render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-tieup-popover.png"));
         window.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: slint::platform::Key::Escape.into() });
         window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: slint::platform::Key::Escape.into() });
-        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(270.0, 310.0) });
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(190.0, 480.0) });
     }
     set(&inst, "panel-open", Value::Bool(true));
     set(&inst, "sidebar-width", Value::Number(300.0));

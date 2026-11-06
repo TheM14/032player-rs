@@ -1,5 +1,5 @@
 import { ComboBox, Switch } from "std-widgets.slint";
-import { Fonts, Theme } from "theme.slint";
+import { Fonts, Theme, Shell } from "theme.slint";
 import { GhostButton } from "controls.slint";
 
 component SettingRow inherits Rectangle {
@@ -92,8 +92,8 @@ export component SettingsView inherits Rectangle {
         content-height: settings-page.preferred-height + 24px;
         settings-page := VerticalLayout {
             width: parent.width;
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             padding-top: 24px;
             spacing: 12px;
             alignment: start;

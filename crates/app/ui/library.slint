@@ -1,7 +1,8 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
-import { Fonts, Theme } from "theme.slint";
+import { Fonts, Theme, Shell } from "theme.slint";
 import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
+    BigTitle, RoundIconButton,
 } from "controls.slint";
 import { AlbumRow, PlaylistChoice, CardView } from "views.slint";
 
@@ -88,9 +89,8 @@ export component ListToolbar inherits HorizontalLayout {
     property <string> search: root.query.search;
     property <string> year-from: root.query.year-from;
     property <string> year-to: root.query.year-to;
-    spacing: 8px;
-    alignment: start;
-    height: 32px;
+    spacing: 10px;
+    height: 40px;
 
     function commit(sort: int, desc: bool) {
         debounce.running = false;
@@ -112,7 +112,9 @@ export component ListToolbar inherits HorizontalLayout {
     }
 
     if root.show-search: SearchField {
-        width: 220px;
+        horizontal-stretch: 0;
+        width: 300px;
+        height: 40px;
         text <=> root.search;
         edited => {
             debounce.restart();
@@ -123,7 +125,9 @@ export component ListToolbar inherits HorizontalLayout {
     }
 
     if root.sort-labels.length > 0: ComboBox {
+        horizontal-stretch: 0;
         width: 150px;
+        height: 40px;
         model: root.sort-labels;
         current-index: root.query.sort;
         selected => {
@@ -131,18 +135,31 @@ export component ListToolbar inherits HorizontalLayout {
         }
     }
 
-    if root.show-order && root.sort-labels.length > 0: IconButton {
-        kind: root.query.desc ? IconKind.arrow-down : IconKind.arrow-up;
-        size: 32px;
-        icon-size: 16px;
-        clicked => {
-            root.commit(root.query.sort, !root.query.desc);
+    if root.show-order && root.sort-labels.length > 0: Rectangle {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        background: order-area.has-hover ? Theme.bar : Theme.raised;
+        Icon {
+            kind: root.query.desc ? IconKind.sort-desc : IconKind.arrow-up;
+            width: 17px;
+            height: 17px;
+            color: Theme.text-dim;
+        }
+        order-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.commit(root.query.sort, !root.query.desc);
+            }
         }
     }
 
     if root.show-years: HorizontalLayout {
-        spacing: 4px;
+        horizontal-stretch: 0;
+        spacing: 6px;
         SmallInput {
+            width: 76px;
+            height: 40px;
             placeholder: "起始年";
             text <=> root.year-from;
             edited => {
@@ -151,10 +168,14 @@ export component ListToolbar inherits HorizontalLayout {
         }
         Text {
             text: "–";
+            width: 10px;
+            horizontal-alignment: center;
             color: Theme.text-faint;
             vertical-alignment: center;
         }
         SmallInput {
+            width: 76px;
+            height: 40px;
             placeholder: "结束年";
             text <=> root.year-to;
             edited => {
@@ -164,45 +185,68 @@ export component ListToolbar inherits HorizontalLayout {
     }
 
     if root.filter-label != "": Chip {
-        y: 2px;
+        y: 3px;
         text: root.filter-label;
         removed => {
             root.clear-filter();
         }
     }
 
+    // Page actions on the right (随机播放全部, 新建歌单).
+    Rectangle {
+        horizontal-stretch: 1;
+    }
     @children
 }
 
-// Page title with a count on the right and a toolbar row below.
+// Page title (64 / 850) with its count, then the filter bar (the children)
+// over a rule (v3 Editorial list pages).
 export component PageHeader inherits VerticalLayout {
     in property <string> title;
     in property <string> count;
     vertical-stretch: 0;
-    padding-left: 32px;
-    padding-right: 32px;
-    padding-top: 24px;
-    padding-bottom: 12px;
-    spacing: 12px;
+    padding-left: Shell.pad;
+    padding-right: Shell.pad;
+    padding-top: Shell.tier == 2 ? 44px : 32px;
+    spacing: 0px;
 
     HorizontalLayout {
+        spacing: 14px;
+        alignment: start;
         Text {
             text: root.title;
             font-family: Fonts.family(self.text);
             color: Theme.text;
-            font-size: 24px;
-            font-weight: 700;
+            font-size: Shell.tier == 2 ? Theme.font-page : Shell.tier == 1 ? 52px : 44px;
+            font-weight: 850;
+            letter-spacing: Shell.tier == 2 ? -2.2px : -1.6px;
+            vertical-alignment: bottom;
         }
         Text {
             text: root.count;
             font-family: Fonts.family(self.text);
-            color: Theme.text-dim;
-            horizontal-alignment: right;
-            vertical-alignment: center;
+            color: Theme.text-faint;
+            font-size: 16px;
+            font-weight: 600;
+            vertical-alignment: bottom;
+            // Baseline-ish next to the big title.
+            height: self.preferred-height + (Shell.tier == 2 ? 10px : 7px);
+            y: parent.height - self.height;
         }
     }
-
-    @children
+    VerticalLayout {
+        padding-top: Shell.tier == 2 ? 26px : 20px;
+        padding-bottom: Shell.tier == 2 ? 26px : 20px;
+        spacing: 12px;
+        @children
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.border;
+    }
+    Rectangle {
+        height: Shell.tier == 2 ? 32px : 24px;
+    }
 }
 
 // Cards without virtualization (short lists inside a scrolling page).
@@ -283,7 +327,10 @@ component MenuRow inherits Rectangle {
     }
 }
 
-// Cover, titles and actions of an album / artist / playlist / similar page.
+// Cover, titles and actions of an album / artist / playlist / similar page
+// (v3 Editorial album head): a 380 cover, an oversized title (132, steps
+// down when long), the artist, meta, work capsules and pill buttons; on
+// wide pages the release facts sit on the right (`facts`).
 export component DetailHeader inherits Rectangle {
     in property <DetailInfo> info;
     in property <image> cover;
@@ -293,115 +340,147 @@ export component DetailHeader inherits Rectangle {
     in property <[PlaylistChoice]> playlists;
     // Works linked to the album (capsules under the title).
     in property <[AlbumWorkRow]> works;
+    // Release facts shown on the right when there is room.
+    in property <[FactRow]> facts;
+    out property <bool> facts-shown: root.facts.length > 0 && Shell.tier == 2
+        && root.width - 2 * root.pad - root.art - 360px - 2 * root.gap >= 420px;
     // (action, argument): play, shuffle, next, last, favorite, add,
     // new-playlist, artist, edit, delete, artwork, artwork-reset,
     // artist-tracks, artist-albums, work (id).
     callback action(string, int);
-    height: root.works.length > 0 ? 296px : 260px;
+    property <length> pad: Shell.pad;
+    property <length> art: Shell.tier == 2 ? 380px : Shell.tier == 1 ? 280px : 220px;
+    property <length> gap: Shell.tier == 2 ? 48px : Shell.tier == 1 ? 36px : 28px;
+    property <length> top: Shell.tier == 2 ? 56px : 44px;
+    property <length> bottom: Shell.tier == 2 ? 40px : 28px;
+    property <string> kicker: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
+    height: max(root.art, info-col.preferred-height) + root.top + root.bottom;
 
     HorizontalLayout {
-        padding-left: 32px;
-        padding-right: 32px;
-        padding-top: 48px;
-        padding-bottom: 12px;
-        spacing: 24px;
+        padding-left: root.pad;
+        padding-right: root.pad;
+        padding-top: root.top;
+        padding-bottom: root.bottom;
+        spacing: root.gap;
 
         Rectangle {
-            width: 200px;
-            height: 200px;
-            border-radius: root.info.kind == 1 ? 100px : Theme.radius;
+            width: root.art;
+            height: root.art;
+            y: (parent.height - self.height) / 2;
+            border-radius: root.info.kind == 1 ? root.art / 2 : 0px;
             background: Theme.raised;
             clip: true;
-            Image {
-                source: root.cover;
-                width: 100%;
-                height: 100%;
-                image-fit: ImageFit.cover;
+            drop-shadow-blur: 48px;
+            drop-shadow-offset-y: 28px;
+            drop-shadow-color: #000000b0;
+            Rectangle {
+                border-radius: root.info.kind == 1 ? root.art / 2 : 0px;
+                clip: true;
+                Image {
+                    source: root.cover;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
             }
         }
 
-        VerticalLayout {
+        info-col := VerticalLayout {
             alignment: end;
-            spacing: 6px;
+            spacing: 0px;
             horizontal-stretch: 1;
+            min-width: 0px;
 
-            Text {
-                text: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                font-size: 13px;
-            }
-            Text {
+            BigTitle {
                 text: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
-                font-family: Fonts.family(self.text);
-                color: Theme.text;
-                font-size: 28px;
-                font-weight: 700;
-                overflow: elide;
+                max-size: Shell.tier == 2 ? Theme.font-album : Shell.tier == 1 ? 80px : 64px;
+                weight: 880;
+                tracking: -0.045;
             }
-            if root.info.subtitle != "": Text {
-                text: root.info.subtitle;
-                font-family: Fonts.family(self.text);
-                color: subtitle-area.has-hover && root.info.subtitle-id > 0 ? Theme.accent : Theme.text;
-                overflow: elide;
-                subtitle-area := TouchArea {
-                    mouse-cursor: root.info.subtitle-id > 0 ? pointer : default;
-                    clicked => {
-                        if root.info.subtitle-id > 0 {
-                            root.action("artist", root.info.subtitle-id);
+            if root.info.subtitle != "": HorizontalLayout {
+                alignment: start;
+                padding-top: Shell.tier == 2 ? 18px : 12px;
+                Text {
+                    text: root.info.subtitle;
+                    font-family: Fonts.family(self.text);
+                    color: subtitle-area.has-hover && root.info.subtitle-id > 0 ? Theme.accent-text : Theme.text;
+                    font-size: Shell.tier == 2 ? 24px : Shell.tier == 1 ? 20px : 18px;
+                    font-weight: 650;
+                    overflow: elide;
+                    subtitle-area := TouchArea {
+                        mouse-cursor: root.info.subtitle-id > 0 ? pointer : default;
+                        clicked => {
+                            if root.info.subtitle-id > 0 {
+                                root.action("artist", root.info.subtitle-id);
+                            }
                         }
                     }
                 }
             }
-            if root.info.meta != "": Text {
-                text: root.info.meta;
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                font-size: 13px;
-                overflow: elide;
-            }
-            if root.info.quality != "": Text {
-                text: root.info.quality;
-                font-family: Fonts.family(self.text);
-                color: Theme.accent;
-                font-size: 13px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 10px;
+                padding-top: 10px;
+                Text {
+                    text: root.info.meta != "" ? root.kicker + " · " + root.info.meta : root.kicker;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text-dim;
+                    font-size: 15px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.info.quality != "": Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: quality-text.preferred-width + 14px;
+                    height: 20px;
+                    border-radius: 5px;
+                    background: Theme.raised;
+                    quality-text := Text {
+                        text: root.info.quality;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-dim;
+                        font-size: 11.5px;
+                        font-weight: 600;
+                    }
+                }
             }
             if root.info.description != "": Text {
                 text: root.info.description;
                 font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
-                font-size: 13px;
+                font-size: 14px;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: 34px;
+                max-height: 40px;
             }
             // Work capsules (web album hero): poster, title, use.
             // Clipped: its width must not widen the header (the title elides).
             if root.works.length > 0: Rectangle {
                 min-width: 0px;
                 preferred-width: 0px;
-                height: 30px;
+                height: 56px;
                 clip: true;
                 HorizontalLayout {
                     x: 0;
+                    y: 16px;
                     width: max(parent.width, self.preferred-width);
-                    spacing: 6px;
+                    spacing: 10px;
                     alignment: start;
-                    height: 30px;
+                    height: 40px;
                     for w in root.works: Rectangle {
-                        height: 30px;
-                        width: min(320px, capsule.preferred-width + 12px);
-                        border-radius: 15px;
+                        height: 40px;
+                        width: min(360px, capsule.preferred-width);
+                        border-radius: 20px;
                         background: capsule-area.has-hover ? Theme.surface-hover : Theme.raised;
                         capsule := HorizontalLayout {
-                            padding-left: 4px;
-                            padding-right: 6px;
-                            spacing: 6px;
+                            padding-left: 5px;
+                            padding-right: 14px;
+                            spacing: 9px;
                             Rectangle {
-                                width: 16px;
-                                height: 24px;
-                                y: 3px;
-                                border-radius: 3px;
+                                width: 20px;
+                                height: 30px;
+                                y: 5px;
+                                border-radius: 4px;
                                 background: Theme.surface;
                                 clip: true;
                                 Image {
@@ -415,17 +494,18 @@ export component DetailHeader inherits Rectangle {
                                 text: w.title;
                                 font-family: Fonts.family(self.text);
                                 color: Theme.text;
-                                font-size: 13px;
+                                font-size: 13.5px;
+                                font-weight: 600;
                                 vertical-alignment: center;
                                 overflow: elide;
-                                max-width: 160px;
+                                max-width: 240px;
                             }
                             if w.usage != "": Text {
                                 text: w.usage;
                                 font-family: Fonts.family(self.text);
-                                color: w.ost ? Theme.text-dim : Theme.accent;
-                                font-size: 12px;
-                                font-weight: 600;
+                                color: w.ost ? Theme.text-dim : Theme.accent-text;
+                                font-size: 11px;
+                                font-weight: 700;
                                 vertical-alignment: center;
                             }
                         }
@@ -443,23 +523,24 @@ export component DetailHeader inherits Rectangle {
             Rectangle {
                 min-width: 0px;
                 preferred-width: 0px;
-                height: 38px;
+                height: Shell.tier == 2 ? 64px : 56px;
                 clip: true;
-                HorizontalLayout {
+                buttons := HorizontalLayout {
                     x: 0;
+                    y: parent.height - 40px;
+                    height: 40px;
                     width: max(parent.width, self.preferred-width);
-                    spacing: 8px;
+                    spacing: 10px;
                     alignment: start;
-                    padding-top: 6px;
                     PrimaryButton {
                         text: "播放";
-                        width: 96px;
-                        height: 32px;
+                        has-icon: true;
                         clicked => {
                             root.action("play", 0);
                         }
                     }
                     GhostButton {
+                        height: 40px;
                         text: "随机播放";
                         has-icon: true;
                         icon: IconKind.shuffle;
@@ -467,27 +548,28 @@ export component DetailHeader inherits Rectangle {
                             root.action("shuffle", 0);
                         }
                     }
-                    if root.info.kind == 0 || root.info.kind == 1: IconButton {
+                    if root.info.kind == 0 || root.info.kind == 1: RoundIconButton {
                         kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
                         active: root.info.favorite;
-                        size: 32px;
-                        icon-size: 16px;
                         clicked => {
                             root.action("favorite", root.info.favorite ? 0 : 1);
                         }
                     }
-                    if root.info.kind != 2: add-button := GhostButton {
-                        text: root.info.kind == 3 ? "另存为歌单" : "添加到歌单";
+                    if root.info.kind == 3: GhostButton {
+                        height: 40px;
+                        text: "另存为歌单";
                         clicked => {
-                            if root.info.kind == 3 {
-                                root.action("new-playlist", 0);
-                            } else {
-                                add-menu.show();
-                            }
+                            root.action("new-playlist", 0);
                         }
                     }
-                    more := GhostButton {
-                        text: "更多";
+                    if root.info.kind != 2 && root.info.kind != 3: add-button := RoundIconButton {
+                        kind: IconKind.list-plus;
+                        clicked => {
+                            add-menu.show();
+                        }
+                    }
+                    more-button := RoundIconButton {
+                        kind: IconKind.more;
                         clicked => {
                             more-menu.show();
                         }
@@ -495,15 +577,58 @@ export component DetailHeader inherits Rectangle {
                 }
             }
         }
+
+        // Release facts (album, wide pages), after a rule.
+        if root.facts-shown: HorizontalLayout {
+            width: 360px;
+            spacing: 28px;
+            Rectangle {
+                width: 1px;
+                height: facts-col.preferred-height;
+                y: parent.height - self.height;
+                background: Theme.border;
+            }
+            facts-col := VerticalLayout {
+                alignment: end;
+                spacing: 12px;
+                horizontal-stretch: 1;
+                for f[i] in root.facts: HorizontalLayout {
+                    visible: i < 6;
+                    height: i < 6 ? 20px : 0px;
+                    spacing: 20px;
+                    Text {
+                        text: f.label;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-faint;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: f.value;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text;
+                        font-size: 14px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
     }
 
+    // Menus open under the buttons row (the last button is "more").
+    property <length> menu-x: root.pad + root.art + root.gap + min(buttons.preferred-width, info-col.width) - 220px;
+    property <length> menu-y: info-col.y + info-col.height + root.top - 6px;
+
     more-menu := PopupWindow {
-        x: 256px + 32px + 96px + 8px + 100px;
-        y: root.height - 12px;
+        x: max(0px, root.menu-x + 40px);
+        y: root.menu-y;
         width: 180px;
         Rectangle {
             background: Theme.raised;
-            border-radius: Theme.radius;
+            border-radius: 10px;
             border-width: 1px;
             border-color: Theme.border;
             VerticalLayout {
@@ -562,12 +687,12 @@ export component DetailHeader inherits Rectangle {
     }
 
     add-menu := PopupWindow {
-        x: 256px + 32px + 96px + 8px + 100px;
-        y: root.height - 12px;
+        x: max(0px, root.menu-x - 10px);
+        y: root.menu-y;
         width: 220px;
         Rectangle {
             background: Theme.raised;
-            border-radius: Theme.radius;
+            border-radius: 10px;
             border-width: 1px;
             border-color: Theme.border;
             VerticalLayout {
@@ -806,16 +931,40 @@ export component InfoDialog inherits Rectangle {
     }
 }
 
-component InspectorKicker inherits Text {
-    color: Theme.text-faint;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.6px;
+// Inspector section head: title, a faint count, a rule to the edge.
+component InspectorHead inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> count;
+    spacing: 12px;
+    height: 34px;
+    Text {
+        text: root.text;
+        font-family: Fonts.family(self.text);
+        color: Theme.text;
+        font-size: 15px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+    if root.count != "": Text {
+        text: root.count;
+        font-family: Fonts.family(self.text);
+        color: Theme.text-faint;
+        font-size: 12.5px;
+        font-weight: 500;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+    }
 }
 
 component InspectorMore inherits Text {
     callback clicked();
-    color: more-area.has-hover ? Theme.accent : Theme.text-dim;
+    color: more-area.has-hover ? Theme.accent-text : Theme.text-dim;
     font-size: 13px;
     more-area := TouchArea {
         mouse-cursor: pointer;
@@ -827,21 +976,21 @@ component InspectorMore inherits Text {
 
 component Facts inherits VerticalLayout {
     in property <[FactRow]> rows;
-    spacing: 6px;
+    spacing: 10px;
     for f in root.rows: HorizontalLayout {
-        spacing: 8px;
+        spacing: 16px;
         Text {
             text: f.label;
             font-family: Fonts.family(self.text);
             width: 72px;
             color: Theme.text-faint;
-            font-size: 13px;
+            font-size: 14px;
         }
         Text {
             text: f.value;
             font-family: Fonts.family(self.text);
             color: Theme.text;
-            font-size: 13px;
+            font-size: 14px;
             wrap: word-wrap;
             horizontal-stretch: 1;
         }
@@ -856,6 +1005,8 @@ export component AlbumInspector inherits Flickable {
     in property <[PersonRow]> people;
     in property <[FactRow]> media;
     in property <string> review;
+    // Right padding (the page's).
+    in property <length> pad: Shell.pad;
     // (action, id): work, artist.
     callback action(string, int);
     property <bool> all-works;
@@ -865,63 +1016,76 @@ export component AlbumInspector inherits Flickable {
 
     col := VerticalLayout {
         width: root.width;
-        padding-right: 24px;
+        padding-right: root.pad;
         padding-top: 8px;
-        padding-bottom: 24px;
-        spacing: 24px;
+        padding-bottom: 32px;
+        spacing: 32px;
         alignment: start;
 
         if root.works.length > 0: VerticalLayout {
-            spacing: 10px;
-            InspectorKicker {
-                text: "关联作品 (" + root.works.length + ")";
+            spacing: 4px;
+            InspectorHead {
+                text: "关联作品";
+                count: root.works.length;
             }
             // Hidden entries take no height; spacing 0 so they leave no gap.
             VerticalLayout {
                 spacing: 0;
             for w[i] in root.works: Rectangle {
                 visible: root.all-works || i < 3;
-                height: self.visible ? work-col.preferred-height + 10px : 0px;
+                height: self.visible ? work-col.preferred-height : 0px;
                 Rectangle {
-                    y: 0;
-                    height: work-col.preferred-height;
-                    border-radius: 10px;
-                    background: Theme.surface;
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Theme.border;
                 }
                 work-col := VerticalLayout {
                     y: 0;
                     height: self.preferred-height;
-                    padding: 10px;
+                    padding-top: 14px;
+                    padding-bottom: 14px;
                     spacing: 8px;
                     HorizontalLayout {
-                        spacing: 10px;
+                        spacing: 18px;
                         Rectangle {
-                            width: 56px;
-                            height: 84px;
-                            border-radius: 6px;
+                            width: 72px;
+                            height: 108px;
+                            border-radius: 5px;
                             background: Theme.raised;
-                            clip: true;
-                            if w.poster.width == 0: Text {
-                                text: "作";
-                                color: Theme.text-faint;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-offset-y: 2px;
+                            drop-shadow-color: #00000066;
+                            Rectangle {
+                                border-radius: 5px;
+                                clip: true;
+                                if w.poster.width == 0: Text {
+                                    text: "作";
+                                    color: Theme.text-faint;
+                                }
+                                Image {
+                                    source: w.poster;
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: ImageFit.cover;
+                                }
                             }
-                            Image {
-                                source: w.poster;
-                                width: 100%;
-                                height: 100%;
-                                image-fit: ImageFit.cover;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.action("work", w.id);
+                                }
                             }
                         }
                         VerticalLayout {
                             alignment: center;
-                            spacing: 3px;
+                            spacing: 4px;
                             horizontal-stretch: 1;
                             Text {
                                 text: w.title;
                                 font-family: Fonts.family(self.text);
-                                color: head-area.has-hover ? Theme.accent : Theme.text;
-                                font-size: 13px;
-                                font-weight: 700;
+                                color: head-area.has-hover ? Theme.accent-text : Theme.text;
+                                font-size: 15px;
+                                font-weight: 650;
                                 wrap: word-wrap;
                                 head-area := TouchArea {
                                     mouse-cursor: pointer;
@@ -934,65 +1098,77 @@ export component AlbumInspector inherits Flickable {
                                 text: w.translated;
                                 font-family: Fonts.family(self.text);
                                 color: Theme.text-dim;
-                                font-size: 12px;
+                                font-size: 13px;
                                 overflow: elide;
                             }
-                            Text {
-                                text: w.meta;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 12px;
-                            }
-                            HorizontalLayout {
-                                alignment: start;
-                                Rectangle {
-                                    height: 18px;
-                                    width: rel.preferred-width + 10px;
-                                    border-radius: 9px;
-                                    background: w.ost ? Theme.raised : Theme.accent-dim;
-                                    rel := Text {
-                                        text: w.relation;
+                            // Track uses: "OP" tag and the title.
+                            if w.uses.length > 0: VerticalLayout {
+                                spacing: 0;
+                                padding-top: 4px;
+                            for u[j] in w.uses: Rectangle {
+                                visible: root.expanded-work == i || j < 3;
+                                height: self.visible ? 26px : 0px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 20px;
+                                        width: min(80px, use-label.preferred-width + 14px);
+                                        border-radius: 5px;
+                                        background: Theme.accent-dim;
+                                        use-label := Text {
+                                            text: u.label;
+                                            font-family: Fonts.family(self.text);
+                                            color: Theme.accent-text;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    Text {
+                                        text: u.title;
                                         font-family: Fonts.family(self.text);
-                                        color: w.ost ? Theme.text-dim : Theme.accent;
-                                        font-size: 12px;
+                                        color: Theme.text;
+                                        font-size: 13px;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
                                     }
                                 }
                             }
-                        }
-                    }
-                    if w.uses.length > 0: VerticalLayout {
-                        spacing: 0;
-                    for u[j] in w.uses: Rectangle {
-                        visible: root.expanded-work == i || j < 3;
-                        height: self.visible ? 22px : 0px;
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: u.label;
-                                font-family: Fonts.family(self.text);
-                                width: 56px;
-                                color: Theme.accent;
-                                font-size: 12px;
-                                font-weight: 600;
-                                overflow: elide;
-                                vertical-alignment: center;
                             }
-                            Text {
-                                text: u.title;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-dim;
-                                font-size: 13px;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                                vertical-alignment: center;
+                            if w.uses.length > 3 && root.expanded-work != i: InspectorMore {
+                                text: "显示全部 " + w.uses.length + " 首";
+                                clicked => {
+                                    root.expanded-work = i;
+                                }
                             }
-                        }
-                    }
-                    }
-                    if w.uses.length > 3 && root.expanded-work != i: InspectorMore {
-                        text: "显示全部 " + w.uses.length + " 首";
-                        clicked => {
-                            root.expanded-work = i;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Text {
+                                    text: w.meta;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-faint;
+                                    font-size: 12.5px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                                // Album-level relation ("原声集 OST").
+                                if w.ost && w.relation != "": Rectangle {
+                                    height: 18px;
+                                    width: rel.preferred-width + 12px;
+                                    border-radius: 5px;
+                                    background: Theme.raised;
+                                    rel := Text {
+                                        text: w.relation;
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text-dim;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1008,7 +1184,7 @@ export component AlbumInspector inherits Flickable {
 
         if root.release.length > 0: VerticalLayout {
             spacing: 10px;
-            InspectorKicker {
+            InspectorHead {
                 text: "发行信息";
             }
             Facts {
@@ -1018,15 +1194,16 @@ export component AlbumInspector inherits Flickable {
 
         if root.people.length > 0: VerticalLayout {
             spacing: 8px;
-            InspectorKicker {
-                text: "参与者 (" + root.people.length + ")";
+            InspectorHead {
+                text: "参与者";
+                count: root.people.length;
             }
             VerticalLayout {
                 spacing: 0;
             for p[i] in root.people: Rectangle {
                 visible: root.all-people || i < 8;
-                height: self.visible ? 40px : 0px;
-                border-radius: 6px;
+                height: self.visible ? 48px : 0px;
+                border-radius: 8px;
                 background: person-area.has-hover ? Theme.surface-hover : transparent;
                 person-area := TouchArea {
                     mouse-cursor: pointer;
@@ -1036,12 +1213,12 @@ export component AlbumInspector inherits Flickable {
                 }
                 HorizontalLayout {
                     padding-left: 2px;
-                    spacing: 10px;
+                    spacing: 12px;
                     Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        y: 4px;
-                        border-radius: 16px;
+                        width: 36px;
+                        height: 36px;
+                        y: 6px;
+                        border-radius: 18px;
                         background: Theme.raised;
                         clip: true;
                         if p.avatar.width == 0: Text {
@@ -1060,11 +1237,12 @@ export component AlbumInspector inherits Flickable {
                     VerticalLayout {
                         alignment: center;
                         horizontal-stretch: 1;
+                        spacing: 2px;
                         Text {
                             text: p.name;
                             font-family: Fonts.family(self.text);
                             color: Theme.text;
-                            font-size: 13px;
+                            font-size: 14px;
                             font-weight: 600;
                             overflow: elide;
                         }
@@ -1072,7 +1250,7 @@ export component AlbumInspector inherits Flickable {
                             text: p.roles;
                             font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
-                            font-size: 12px;
+                            font-size: 12.5px;
                             overflow: elide;
                         }
                     }
@@ -1089,7 +1267,7 @@ export component AlbumInspector inherits Flickable {
 
         if root.media.length > 0: VerticalLayout {
             spacing: 10px;
-            InspectorKicker {
+            InspectorHead {
                 text: "媒体信息";
             }
             Facts {
@@ -1099,14 +1277,14 @@ export component AlbumInspector inherits Flickable {
 
         if root.review != "": VerticalLayout {
             spacing: 10px;
-            InspectorKicker {
+            InspectorHead {
                 text: "简介";
             }
             Text {
                 text: root.review;
                 font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
-                font-size: 13px;
+                font-size: 14px;
                 wrap: word-wrap;
             }
         }

@@ -1,6 +1,7 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Fonts, Theme } from "theme.slint";
 import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
+import { Shell } from "theme.slint";
 
 // `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
 // extra line (track uses on a work page); `playing`: the current track
@@ -53,55 +54,72 @@ export struct TieupWork {
     poster: image,
 }
 
-// Mirrors the Electron tie-up popover: 58 x 82 poster and work metadata.
+// The OP / ED popover (v3 Editorial): 72 x 108 poster, title, translated
+// title, use and type · year, "查看作品".
 component TieupCards inherits Rectangle {
     in property <[TieupWork]> works;
     callback open-work(int);
     out property <bool> hovered;
-    width: 340px;
+    width: 420px;
     height: content.preferred-height;
-    background: Theme.raised;
-    border-radius: Theme.radius;
+    background: Theme.popover;
+    border-radius: 12px;
     border-width: 1px;
-    border-color: Theme.border;
+    border-color: Theme.popover-border;
+    drop-shadow-blur: 36px;
+    drop-shadow-offset-y: 18px;
+    drop-shadow-color: #000000a0;
     content := VerticalLayout {
-        padding: 12px;
-        spacing: 10px;
+        padding: 14px;
+        spacing: 8px;
         for work[i] in root.works: VerticalLayout {
-            spacing: 10px;
-            if i > 0: Rectangle { height: 1px; background: Theme.border; }
+            spacing: 8px;
+            if i > 0: Rectangle { height: 1px; background: Theme.popover-border; }
             Rectangle {
-                height: max(90px, info.preferred-height + 8px);
-                border-radius: 8px;
-                background: work-area.has-hover ? Theme.surface-hover : transparent;
+                height: max(120px, info.preferred-height + 12px);
+                border-radius: 9px;
+                background: work-area.has-hover ? (Theme.dark ? #ffffff0d : #0000000a) : transparent;
                 HorizontalLayout {
-                    padding: 4px;
-                    spacing: 12px;
+                    padding: 6px;
+                    spacing: 14px;
                     Rectangle {
-                        width: 58px; height: 82px;
-                        border-radius: 6px;
-                        background: Theme.surface;
-                        clip: true;
-                        Image { source: work.poster; width: 100%; height: 100%; image-fit: cover; }
+                        width: 72px; height: 108px;
+                        border-radius: 5px;
+                        background: Theme.raised;
+                        drop-shadow-blur: 6px;
+                        drop-shadow-offset-y: 2px;
+                        drop-shadow-color: #00000066;
+                        Rectangle {
+                            border-radius: 5px;
+                            clip: true;
+                            Image { source: work.poster; width: 100%; height: 100%; image-fit: cover; }
+                        }
                     }
                     info := VerticalLayout {
                         alignment: start;
                         spacing: 3px;
-                        Text { text: work.title; color: Theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; }
-                        if work.translated != "": Text { text: work.translated; color: Theme.text-dim; font-size: 13px; wrap: word-wrap; }
+                        Text { text: work.title; font-family: Fonts.family(self.text); color: Theme.text; font-size: 15.5px; font-weight: 750; wrap: word-wrap; }
+                        if work.translated != "": Text { text: work.translated; font-family: Fonts.family(self.text); color: Theme.text-dim; font-size: 13px; wrap: word-wrap; }
                         HorizontalLayout {
                             alignment: start;
-                            spacing: 5px;
+                            spacing: 8px;
+                            padding-top: 5px;
                             Rectangle {
                                 height: 20px;
-                                width: role.preferred-width + 14px;
+                                width: role.preferred-width + 16px;
                                 border-radius: 10px;
                                 background: Theme.accent-dim;
-                                role := Text { x: 7px; text: work.usage; color: Theme.accent; font-size: 12px; font-weight: 700; height: 100%; vertical-alignment: center; }
+                                role := Text { text: work.usage; font-family: Fonts.family(self.text); color: Theme.accent-text; font-size: 11.5px; font-weight: 700; }
                             }
-                            Text { text: work.meta; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                            Text { text: work.meta; font-family: Fonts.family(self.text); color: Theme.text-dim; font-size: 12.5px; vertical-alignment: center; overflow: elide; }
                         }
-                        Text { text: "查看作品"; color: Theme.accent; font-size: 13px; font-weight: 600; }
+                        HorizontalLayout {
+                            alignment: start;
+                            padding-top: 7px;
+                            spacing: 3px;
+                            Text { text: "查看作品"; color: Theme.accent-text; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                            Icon { kind: IconKind.chevron-right; width: 14px; height: 14px; y: (parent.height - self.height) / 2; color: Theme.accent-text; }
+                        }
                     }
                 }
                 work-area := TouchArea {
@@ -499,11 +517,15 @@ export component CardGrid inherits Rectangle {
     callback layout-changed(int, length);
     // (action, card id, argument)
     callback action(string, int, int);
-    // Cards at least 160px with 24px gaps and 32px side padding; the
-    // columns then share the width.
-    out property <int> columns: max(1, floor((self.width - 64px + 24px) / 184px));
+    // Cards at least 200px (posters 160) with 26px gaps inside the page
+    // padding; the columns then share the width.
+    property <length> pad: Shell.pad;
+    property <length> gap: Shell.tier == 2 ? 26px : 22px;
+    property <length> row-gap: Shell.tier == 2 ? 36px : 28px;
+    property <length> min-card: root.kind == 3 || root.kind == 4 ? 160px : 200px;
+    out property <int> columns: max(1, floor((self.width - 2 * root.pad + root.gap) / (root.min-card + root.gap)));
     // Whole physical pixels, so covers decoded at this size draw 1:1.
-    out property <length> card-size: floor(((self.width - 64px - (root.columns - 1) * 24px) / root.columns) / 1phx) * 1phx;
+    out property <length> card-size: floor(((self.width - 2 * root.pad - (root.columns - 1) * root.gap) / root.columns) / 1phx) * 1phx;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }
@@ -519,11 +541,12 @@ export component CardGrid inherits Rectangle {
 
     ListView {
         for row in root.rows: HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
-            spacing: 24px;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            spacing: root.gap;
             alignment: start;
-            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 86px;
+            // Cover, three text lines (title, artist, year) and the row gap.
+            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 72px + (root.kind == 3 || root.kind == 4 ? 19px : 0px) + root.row-gap;
             for card in row.items: CardView {
                 card: card;
                 kind: root.kind;
@@ -539,9 +562,9 @@ export component CardGrid inherits Rectangle {
 
 // Column widths shared by the track header and rows.
 export global TrackColumns {
-    out property <length> number: 48px;
-    out property <length> heart: 28px;
-    out property <length> duration: 56px;
+    out property <length> number: 44px;
+    out property <length> heart: 40px;
+    out property <length> duration: 64px;
 }
 
 // One track row. `mode`: 0 list, 1 album (track numbers, no album
@@ -566,8 +589,27 @@ export component TrackRowView inherits Rectangle {
     property <bool> dragging;
     // Album and playlist pages show the credits under the title.
     property <bool> two-line: (root.mode == 1 || root.mode == 2) && root.track.credits.length > 0;
-    height: root.two-line ? 50px : 36px;
-    background: root.dragging ? Theme.accent-dim : row-area.has-hover ? Theme.surface-hover : transparent;
+    // Side padding (the page's).
+    in property <length> pad: Shell.pad;
+    property <bool> roomy: root.mode == 1 || root.mode == 2;
+    height: root.two-line ? 64px : root.roomy ? 58px : 50px;
+
+    // Hover / current row (accent wash) and the rule under the row.
+    Rectangle {
+        x: root.pad - 14px;
+        width: root.width - 2 * root.pad + 28px;
+        border-radius: 8px;
+        background: root.dragging ? Theme.accent-dim
+            : root.playing ? @linear-gradient(90deg, Theme.accent-dim 0%, Theme.accent-dim.with-alpha(0) 100%)
+            : row-area.has-hover ? Theme.surface-hover : transparent;
+    }
+    if !root.playing: Rectangle {
+        x: root.pad;
+        y: root.height - 1px;
+        width: root.width - 2 * root.pad;
+        height: 1px;
+        background: Theme.border;
+    }
 
     // TouchAreas consume right clicks, so each interactive child forwards
     // them explicitly to the shared row menu.
@@ -723,8 +765,8 @@ export component TrackRowView inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 32px;
-        padding-right: 32px;
+        padding-left: root.pad;
+        padding-right: root.pad;
         spacing: 16px;
         Rectangle {
             width: TrackColumns.number;
@@ -733,31 +775,126 @@ export component TrackRowView inherits Rectangle {
                 text: root.mode == 1 ? root.track.number : root.track.index + 1;
                 font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
+                font-size: 14px;
+                font-weight: 600;
                 vertical-alignment: center;
             }
             if root.playing: PlayingBars {
                 x: 2px;
-                width: 13px;
-                height: 12px;
+                width: 15px;
+                height: 14px;
+                bar-color: Theme.accent-text;
             }
         }
-        HorizontalLayout {
+        VerticalLayout {
             width: root.title-w;
-            spacing: 6px;
-            VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            // Title, then the "◆ OP" chip and the tag right after it.
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
                 Text {
                     text: root.track.title;
                     font-family: Fonts.family(self.text);
-                    color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
+                    color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent-text : Theme.text;
+                    font-size: root.roomy ? 16px : 15px;
+                    font-weight: 550;
                     overflow: elide;
+                    vertical-alignment: center;
                 }
+                // "◆ OP": the track is used in a work (click: the work).
+                if root.track.tieup != "": Rectangle {
+                    property <bool> hot: tieup-area.has-hover || tieup-area.previewing;
+                    width: tieup-row.preferred-width;
+                    height: 24px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 12px;
+                    background: self.hot ? Theme.accent.with-alpha(0.3) : Theme.accent-dim;
+                    border-width: self.hot ? 1px : 0px;
+                    border-color: Theme.accent-text.with-alpha(0.55);
+                    tieup-row := HorizontalLayout {
+                        padding-left: 9px;
+                        padding-right: 9px;
+                        spacing: 6px;
+                        Text {
+                            text: "◆";
+                            color: tieup-area.has-hover || tieup-area.previewing ? Theme.text : Theme.accent-text;
+                            font-size: 9px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.track.tieup;
+                            font-family: Fonts.family(self.text);
+                            color: tieup-area.has-hover || tieup-area.previewing ? Theme.text : Theme.accent-text;
+                            font-size: 11.5px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        if root.track.tieup-count > 1: Text {
+                            text: root.track.tieup-count;
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-dim;
+                            font-size: 11.5px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    tieup-badge := Rectangle { width: 0px; height: 0px; property <bool> card-hovered; }
+                    tieup-popup := PopupWindow {
+                        x: 0px;
+                        y: parent.height + 8px;
+                        popup-cards := TieupCards {
+                            works: root.track.tieup-works;
+                            changed hovered => { tieup-badge.card-hovered = self.hovered; }
+                            open-work(id) => { tieup-popup.close(); root.action("work", id); }
+                        }
+                    }
+                    tieup-area := TouchArea {
+                        // Avoid the native Tooltip's extra background and padding.
+                        property <bool> previewing;
+                        changed has-hover => {
+                            if tieup-area.has-hover { tieup-area.previewing = true; tieup-popup.show(); }
+                            else { hover-close.restart(); }
+                        }
+                        hover-close := Timer {
+                            running: false;
+                            interval: 1500ms;
+                            triggered => {
+                                self.running = false;
+                                if tieup-area.previewing && !tieup-area.has-hover && !tieup-badge.card-hovered {
+                                    tieup-popup.close(); tieup-area.previewing = false;
+                                }
+                            }
+                        }
+                        pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
+                        mouse-cursor: pointer;
+                        clicked => {
+                            tieup-area.previewing = false;
+                            tieup-popup.show();
+                        }
+                    }
+                }
+                if root.track.tag != "": Rectangle {
+                    width: tag-text.preferred-width + 14px;
+                    height: 20px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 5px;
+                    background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
+                    tag-text := Text {
+                        text: root.track.tag;
+                        font-family: Fonts.family(self.text);
+                        color: root.track.tag-accent ? Theme.accent-text : Theme.text-dim;
+                        font-size: 11.5px;
+                        font-weight: 700;
+                    }
+                }
+            }
                 // Credits: names link to the artist (web album page).
                 // Fixed min / preferred width: a long credits line must not
                 // widen the title column (it is clipped at the column edge).
                 if root.two-line: Rectangle {
-                    height: 16px;
+                    height: 20px;
                     min-width: 0px;
                     preferred-width: 0px;
                     horizontal-stretch: 1;
@@ -769,8 +906,9 @@ export component TrackRowView inherits Rectangle {
                         for part in root.track.credits: Text {
                             text: part.text;
                             font-family: Fonts.family(self.text);
-                            color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
-                            font-size: 13px;
+                            color: part.id > 0 && credit-area.has-hover ? Theme.accent-text : Theme.text-faint;
+                            font-size: 12.5px;
+                            vertical-alignment: bottom;
                             credit-area := TouchArea {
                                 pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                                 enabled: part.id > 0;
@@ -782,84 +920,6 @@ export component TrackRowView inherits Rectangle {
                         }
                     }
                 }
-            }
-            // "◆ OP": the track is used in a work (click: the work).
-            if root.track.tieup != "": Rectangle {
-                width: tieup-row.preferred-width + 12px;
-                height: 20px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 10px;
-                background: tieup-area.has-hover ? Theme.accent-dim : transparent;
-                border-width: 1px;
-                border-color: Theme.accent-dim;
-                tieup-row := HorizontalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
-                    spacing: 4px;
-                    Text {
-                        text: "◆ " + root.track.tieup;
-                        font-family: Fonts.family(self.text);
-                        color: Theme.accent;
-                        font-size: 12px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-                    if root.track.tieup-count > 1: Text {
-                        text: root.track.tieup-count;
-                        font-family: Fonts.family(self.text);
-                        color: Theme.text-dim;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                }
-                tieup-badge := Rectangle { width: 0px; height: 0px; property <bool> card-hovered; }
-                tieup-popup := PopupWindow {
-                    x: parent.width - 340px;
-                    y: parent.height + 6px;
-                    popup-cards := TieupCards {
-                        works: root.track.tieup-works;
-                        changed hovered => { tieup-badge.card-hovered = self.hovered; }
-                        open-work(id) => { tieup-popup.close(); root.action("work", id); }
-                    }
-                }
-                tieup-area := TouchArea {
-                    // Avoid the native Tooltip's extra background and padding.
-                    property <bool> previewing;
-                    changed has-hover => {
-                        if tieup-area.has-hover { tieup-area.previewing = true; tieup-popup.show(); }
-                        else { hover-close.restart(); }
-                    }
-                    hover-close := Timer {
-                        running: false;
-                        interval: 1500ms;
-                        triggered => {
-                            self.running = false;
-                            if tieup-area.previewing && !tieup-area.has-hover && !tieup-badge.card-hovered {
-                                tieup-popup.close(); tieup-area.previewing = false;
-                            }
-                        }
-                    }
-                    pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
-                    mouse-cursor: pointer;
-                    clicked => {
-                        tieup-area.previewing = false;
-                        tieup-popup.show();
-                    }
-                }
-            }
-            if root.track.tag != "": Rectangle {
-                width: tag-text.preferred-width + 10px;
-                height: 18px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 4px;
-                background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
-                tag-text := Text {
-                    text: root.track.tag;
-                    font-family: Fonts.family(self.text);
-                    color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
-                    font-size: 12px;
-                }
-            }
         }
         // Artist and album link to their pages (the text only, not the
         // empty part of the column).
@@ -870,7 +930,8 @@ export component TrackRowView inherits Rectangle {
                 width: min(self.preferred-width, root.artist-w);
                 text: root.track.artist;
                 font-family: Fonts.family(self.text);
-                color: root.track.artist-id > 0 && artist-area.has-hover ? Theme.accent : Theme.text-dim;
+                color: root.track.artist-id > 0 && artist-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                font-size: 14px;
                 overflow: elide;
                 vertical-alignment: center;
                 artist-area := TouchArea {
@@ -891,7 +952,8 @@ export component TrackRowView inherits Rectangle {
                 width: min(self.preferred-width, root.album-w);
                 text: root.mode == 3 ? root.track.note : root.track.album;
                 font-family: Fonts.family(self.text);
-                color: album-col.link && album-area.has-hover ? Theme.accent : Theme.text-dim;
+                color: album-col.link && album-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                font-size: 14px;
                 overflow: elide;
                 vertical-alignment: center;
                 album-area := TouchArea {
@@ -909,7 +971,7 @@ export component TrackRowView inherits Rectangle {
             Text {
                 text: root.track.blocked ? "已不再推荐" : "不再推荐";
                 font-family: Fonts.family(self.text);
-                color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
+                color: root.track.blocked ? Theme.accent-text : block-area.has-hover ? Theme.text : Theme.text-faint;
                 font-size: 12px;
                 visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
             }
@@ -926,9 +988,9 @@ export component TrackRowView inherits Rectangle {
             Icon {
                 visible: root.track.favorite || row-area.has-hover || heart-area.has-hover;
                 kind: root.track.favorite ? IconKind.heart : IconKind.heart-outline;
-                width: 14px;
-                height: 14px;
-                color: root.track.favorite ? Theme.accent : heart-area.has-hover ? Theme.text : Theme.text-faint;
+                width: 17px;
+                height: 17px;
+                color: root.track.favorite ? Theme.accent-text : heart-area.has-hover ? Theme.text : Theme.text-faint;
             }
             heart-area := TouchArea {
                 pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
@@ -943,12 +1005,16 @@ export component TrackRowView inherits Rectangle {
             font-family: Fonts.family(self.text);
             width: TrackColumns.duration;
             color: Theme.text-dim;
+            font-size: 14px;
+            font-weight: 500;
             horizontal-alignment: right;
             vertical-alignment: center;
         }
     }
 
     if root.drop-mark != 0: Rectangle {
+        x: root.pad;
+        width: root.width - 2 * root.pad;
         y: root.drop-mark < 0 ? 0 : parent.height - 2px;
         height: 2px;
         background: Theme.accent;
@@ -966,10 +1032,12 @@ export component TrackList inherits Rectangle {
     in property <bool> loading;
     // (action, row index, argument)
     callback action(string, int, int);
-    // 32px side padding, fixed columns, 5 gaps of 16px.
-    property <length> flex: max(0px, self.width - 64px - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px - (root.mode == 4 ? 80px : 0px));
-    property <length> title-w: root.mode == 1 ? root.flex * 0.62 : root.flex * 0.42;
-    property <length> artist-w: root.mode == 1 ? root.flex * 0.38 - 16px : root.flex * 0.24;
+    // Page side padding, fixed columns, 5 gaps of 16px.
+    in property <length> pad: Shell.pad;
+    property <length> flex: max(0px, self.width - 2 * root.pad - TrackColumns.number - TrackColumns.heart - TrackColumns.duration - 80px - (root.mode == 4 ? 80px : 0px));
+    // Album pages: artist column 220 (less when narrow).
+    property <length> artist-w: root.mode == 1 ? min(220px, root.flex * 0.38) - 16px : root.flex * 0.24;
+    property <length> title-w: root.mode == 1 ? root.flex - 16px - root.artist-w : root.flex * 0.42;
     property <length> album-w: root.flex * 0.34;
     // Playlist drag and drop: dragged row and where it would land.
     property <int> drag-from: -1;
@@ -977,22 +1045,26 @@ export component TrackList inherits Rectangle {
 
     VerticalLayout {
         HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
-            height: 28px;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            height: 40px;
             spacing: 16px;
-            Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
-            Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
-            Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
-            if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 13px; vertical-alignment: center; }
+            Text { text: "#"; width: TrackColumns.number; color: Theme.text-faint; font-size: 12.5px; vertical-alignment: center; }
+            Text { text: "标题"; width: root.title-w; color: Theme.text-faint; font-size: 12.5px; vertical-alignment: center; }
+            Text { text: "艺人"; width: root.artist-w; color: Theme.text-faint; font-size: 12.5px; vertical-alignment: center; }
+            if root.mode != 1: Text { text: root.mode == 3 ? "播放记录" : "专辑"; width: root.album-w; color: Theme.text-faint; font-size: 12.5px; vertical-alignment: center; }
             if root.mode == 4: Rectangle { width: 64px; }
             Rectangle { width: TrackColumns.heart; }
-            Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 13px; horizontal-alignment: right; vertical-alignment: center; }
+            Text { text: "时长"; width: TrackColumns.duration; color: Theme.text-faint; font-size: 12.5px; horizontal-alignment: right; vertical-alignment: center; }
         }
 
         Rectangle {
             height: 1px;
-            background: Theme.border;
+            Rectangle {
+                x: root.pad;
+                width: parent.width - 2 * root.pad;
+                background: Theme.border;
+            }
         }
 
         if root.rows.length == 0: Rectangle {
@@ -1011,6 +1083,7 @@ export component TrackList inherits Rectangle {
                 mode: root.mode;
                 playing: track.id == root.playing-id;
                 playlists: root.playlists;
+                pad: root.pad;
                 title-w: root.title-w;
                 artist-w: root.artist-w;
                 album-w: root.album-w;

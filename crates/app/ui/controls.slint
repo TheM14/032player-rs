@@ -387,6 +387,8 @@ export component GhostButton inherits Rectangle {
     callback clicked();
     height: 32px;
     min-width: label.preferred-width + (root.has-icon ? 52px : 32px);
+    preferred-width: self.min-width;
+    horizontal-stretch: 0;
     border-radius: self.height / 2;
     background: root.active ? Theme.accent-dim : area.has-hover ? Theme.bar : Theme.raised;
     opacity: root.enabled ? 1 : 0.4;
@@ -498,25 +500,21 @@ export component Chip inherits Rectangle {
     }
 }
 
-// Tab strip entry.
+// Tab strip entry (pill, like the right panel tabs).
 export component Tab inherits Rectangle {
     in property <string> text;
     in property <bool> selected;
     callback clicked();
-    height: 32px;
-    width: tab-label.preferred-width + 24px;
+    height: 34px;
+    width: tab-label.preferred-width + 28px;
+    border-radius: 9px;
+    background: root.selected ? Theme.raised : tab-area.has-hover ? Theme.surface-hover : transparent;
     tab-label := Text {
         text: root.text;
         font-family: Fonts.family(self.text);
         color: root.selected ? Theme.text : tab-area.has-hover ? Theme.text : Theme.text-dim;
+        font-size: 14px;
         font-weight: root.selected ? 600 : 400;
-    }
-    Rectangle {
-        y: parent.height - 2px;
-        height: 2px;
-        x: 8px;
-        width: parent.width - 16px;
-        background: root.selected ? Theme.accent : transparent;
     }
     tab-area := TouchArea {
         mouse-cursor: pointer;
@@ -551,7 +549,11 @@ export component BigTitle inherits Rectangle {
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    height: min(root.wrap-h, root.line-h * 2);
+    // The font's line box has leading above the caps and room for
+    // descenders; the title box trims about a fifth of the size so the
+    // lines sit tight like the mockup's `line-height: .9` (no clipping).
+    property <length> natural-h: min(root.wrap-h, root.line-h * 2);
+    height: root.natural-h - root.size * 0.22;
 
     wrap0 := Text { visible: false; width: root.width; text: root.text; font-family: root.family; font-size: root.max-size; font-weight: root.weight; letter-spacing: root.max-size * root.tracking; wrap: word-wrap; }
     line0 := Text { visible: false; text: root.text; font-family: root.family; font-size: root.max-size; font-weight: root.weight; }
@@ -563,9 +565,9 @@ export component BigTitle inherits Rectangle {
     line3 := Text { visible: false; text: root.text; font-family: root.family; font-size: 56px; font-weight: root.weight; }
     shown := Text {
         x: 0;
-        y: 0;
+        y: -root.size * 0.1;
         width: root.width;
-        height: root.height;
+        height: root.natural-h;
         text: root.text;
         font-family: root.family;
         font-size: root.size;

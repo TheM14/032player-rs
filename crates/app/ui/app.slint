@@ -1150,21 +1150,22 @@ export component AppWindow inherits Window {
                     // the lg breakpoint); narrower pages switch with tabs.
                     property <bool> album: root.detail.kind == 0;
                     property <bool> has-info: self.album && (root.album-works.length > 0 || root.album-release.length > 0 || root.album-people.length > 0);
-                    property <bool> side: pages.width >= 960px;
+                    property <bool> side: pages.width >= 1100px;
                     property <bool> info-tab;
-                    DetailHeader {
+                    detail-head := DetailHeader {
                         info: root.detail;
                         cover: root.detail-cover;
                         loading: root.detail-loading;
                         artwork-upload: root.playlist-artwork;
                         playlists: root.playlist-choices;
                         works: detail-page.album ? root.album-works : [];
+                        facts: detail-page.album ? root.album-release : [];
                         action(what, arg) => {
                             root.detail-action(what, arg);
                         }
                     }
                     if detail-page.has-info && !detail-page.side: HorizontalLayout {
-                        padding-left: 32px;
+                        padding-left: Shell.pad;
                         padding-bottom: 6px;
                         spacing: 4px;
                         alignment: start;
@@ -1188,7 +1189,8 @@ export component AppWindow inherits Window {
                     body := Rectangle {
                         vertical-stretch: 1;
                         property <bool> show-info: detail-page.has-info && (detail-page.side || detail-page.info-tab);
-                        property <length> info-w: detail-page.side ? 300px : self.width;
+                        // Inspector 440 (340 below 1700) beside the tracks, 56 apart.
+                        property <length> info-w: detail-page.side ? (Shell.tier == 2 ? 440px : 340px) + Shell.pad + 16px : self.width;
                         if !(detail-page.has-info && !detail-page.side && detail-page.info-tab): TrackList {
                             x: 0;
                             y: 0;
@@ -1205,12 +1207,13 @@ export component AppWindow inherits Window {
                             }
                         }
                         if body.show-info: AlbumInspector {
-                            x: body.width - body.info-w + (detail-page.side ? 0px : 32px);
+                            x: body.width - body.info-w + (detail-page.side ? 16px : Shell.pad);
                             y: 0;
-                            width: body.info-w - (detail-page.side ? 0px : 32px);
+                            width: body.info-w - (detail-page.side ? 16px : Shell.pad);
                             height: body.height;
                             works: root.album-works;
-                            release: root.album-release;
+                            // The header shows the release facts when there is room.
+                            release: detail-head.facts-shown ? [] : root.album-release;
                             people: root.album-people;
                             media: root.album-media;
                             review: root.album-review;
@@ -1223,7 +1226,7 @@ export component AppWindow inherits Window {
 
                 // Artist: one scrolling page with top tracks and releases.
                 if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
-                    property <length> flex: max(0px, self.width - 64px - 48px - 28px - 56px - 80px);
+                    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 40px - 64px - 80px);
                     content-height: artist-page.preferred-height;
                     artist-page := VerticalLayout {
                         width: artist-flick.width;
@@ -1240,8 +1243,8 @@ export component AppWindow inherits Window {
                         }
                         // Electron order: 关于, the release groups, 热门歌曲.
                         if root.artist-about != "": about := VerticalLayout {
-                            padding-left: 32px;
-                            padding-right: 32px;
+                            padding-left: Shell.pad;
+                            padding-right: Shell.pad;
                             padding-bottom: 8px;
                             spacing: 6px;
                             property <bool> expanded;
@@ -1249,8 +1252,8 @@ export component AppWindow inherits Window {
                                 height: 40px;
                                 text: "关于 " + root.detail.title;
                                 color: Theme.text;
-                                font-size: 18px;
-                                font-weight: 700;
+                                font-size: Shell.tier == 2 ? 26px : 22px;
+                                font-weight: 780;
                                 vertical-alignment: center;
                             }
                             // Three lines unless expanded.
@@ -1280,15 +1283,15 @@ export component AppWindow inherits Window {
                         }
                         for g[gi] in root.artist-groups: VerticalLayout {
                             HorizontalLayout {
-                                padding-left: 32px;
-                                padding-right: 32px;
+                                padding-left: Shell.pad;
+                                padding-right: Shell.pad;
                                 height: 52px;
                                 spacing: 10px;
                                 Text {
                                     text: g.title;
                                     color: Theme.text;
-                                    font-size: 18px;
-                                    font-weight: 700;
+                                    font-size: Shell.tier == 2 ? 26px : 22px;
+                                    font-weight: 780;
                                     vertical-alignment: center;
                                 }
                                 Text {
@@ -1339,15 +1342,15 @@ export component AppWindow inherits Window {
                             }
                         }
                         if root.detail-tracks.length > 0: HorizontalLayout {
-                            padding-left: 32px;
-                            padding-right: 32px;
+                            padding-left: Shell.pad;
+                            padding-right: Shell.pad;
                             padding-top: 12px;
                             height: 52px;
                             Text {
                                 text: "热门歌曲";
                                 color: Theme.text;
-                                font-size: 18px;
-                                font-weight: 700;
+                                font-size: Shell.tier == 2 ? 26px : 22px;
+                                font-weight: 780;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                             }
@@ -1372,16 +1375,16 @@ export component AppWindow inherits Window {
                         }
                         // Electron `FAVORITE_SONGS`.
                         if root.artist-favs.length > 0: HorizontalLayout {
-                            padding-left: 32px;
-                            padding-right: 32px;
+                            padding-left: Shell.pad;
+                            padding-right: Shell.pad;
                             padding-top: 12px;
                             height: 52px;
                             spacing: 10px;
                             Text {
                                 text: "收藏的歌曲";
                                 color: Theme.text;
-                                font-size: 18px;
-                                font-weight: 700;
+                                font-size: Shell.tier == 2 ? 26px : 22px;
+                                font-weight: 780;
                                 vertical-alignment: center;
                             }
                             Text {

@@ -10,7 +10,7 @@ import { PlayingBars,
     RoundIconButton,
 } from "controls.slint";
 import { AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
-import { CardRows } from "library.slint";
+import { CardRows, PageHeader } from "library.slint";
 
 // A small row with a cover on the home page (接着听, 最近播放, 主题曲,
 // 今日推荐). `percent` < 0: no progress bar. `link`: the work of a song.
@@ -2016,9 +2016,12 @@ component CardGridPoster inherits Rectangle {
     in property <bool> loading;
     callback layout-changed(int, length);
     callback action(string, int, int);
-    out property <int> columns: max(1, floor((self.width - 64px + 24px) / 164px));
+    property <length> pad: Shell.pad;
+    property <length> gap: Shell.tier == 2 ? 26px : 22px;
+    property <length> row-gap: Shell.tier == 2 ? 36px : 28px;
+    out property <int> columns: max(1, floor((self.width - 2 * root.pad + root.gap) / (160px + root.gap)));
     // Whole physical pixels, so covers decoded at this size draw 1:1.
-    out property <length> card-size: floor(((self.width - 64px - (root.columns - 1) * 24px) / root.columns) / 1phx) * 1phx;
+    out property <length> card-size: floor(((self.width - 2 * root.pad - (root.columns - 1) * root.gap) / root.columns) / 1phx) * 1phx;
     changed card-size => {
         root.layout-changed(root.columns, root.card-size);
     }
@@ -2046,11 +2049,11 @@ component CardGridPoster inherits Rectangle {
 
     ListView {
         for row in root.rows: HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
-            spacing: 24px;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            spacing: root.gap;
             alignment: start;
-            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 86px;
+            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 91px + root.row-gap;
             for card in row.items: CardView {
                 card: card;
                 kind: root.kind;
@@ -2085,34 +2088,16 @@ export component WorksPage inherits VerticalLayout {
         }
     }
 
-    VerticalLayout {
-        vertical-stretch: 0;
-        padding-left: 32px;
-        padding-right: 32px;
-        padding-top: 24px;
-        padding-bottom: 12px;
-        spacing: 12px;
+    PageHeader {
+        title: "作品";
+        count: Lib032.works-total > 0 ? Lib032.works-total + " 个作品" : "";
         HorizontalLayout {
-            Text {
-                text: "作品";
-                color: Theme.text;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            Text {
-                text: Lib032.works-total > 0 ? "共 " + Lib032.works-total + " 个作品" : "";
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
-        HorizontalLayout {
-            spacing: 8px;
+            spacing: 10px;
             alignment: start;
-            height: 32px;
+            height: 40px;
             SearchField {
-                width: 240px;
+                width: 300px;
+                height: 40px;
                 placeholder: "原文、译名、假名或罗马音…";
                 text <=> root.search;
                 edited => {
@@ -2124,7 +2109,8 @@ export component WorksPage inherits VerticalLayout {
                 }
             }
             ComboBox {
-                width: 130px;
+                width: 150px;
+                height: 40px;
                 model: Lib032.work-types;
                 current-index: root.kind;
                 selected => {
@@ -2133,6 +2119,7 @@ export component WorksPage inherits VerticalLayout {
                 }
             }
             for label[i] in ["标题", "年份", "最近更新"]: Tab {
+                y: 3px;
                 text: label;
                 selected: root.sort == i;
                 clicked => {
@@ -2175,33 +2162,15 @@ export component SeriesPage inherits VerticalLayout {
         }
     }
 
-    VerticalLayout {
-        vertical-stretch: 0;
-        padding-left: 32px;
-        padding-right: 32px;
-        padding-top: 24px;
-        padding-bottom: 12px;
-        spacing: 12px;
-        HorizontalLayout {
-            Text {
-                text: "系列";
-                color: Theme.text;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            Text {
-                text: Lib032.series-total > 0 ? "共 " + Lib032.series-total + " 个系列" : "";
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-            }
-        }
+    PageHeader {
+        title: "系列";
+        count: Lib032.series-total > 0 ? Lib032.series-total + " 个系列" : "";
         if Lib032.series-supported: HorizontalLayout {
             alignment: start;
-            height: 32px;
+            height: 40px;
             SearchField {
-                width: 240px;
+                width: 300px;
+                height: 40px;
                 placeholder: "系列名或成员名…";
                 text <=> root.search;
                 edited => {
@@ -2263,29 +2232,16 @@ export component HistoryPage inherits VerticalLayout {
     callback track-action(string, int, int);
     callback clear();
 
-    VerticalLayout {
-        vertical-stretch: 0;
-        padding-left: 32px;
-        padding-right: 32px;
-        padding-top: 24px;
-        padding-bottom: 12px;
+    PageHeader {
+        title: "播放记录";
+        count: Lib032.history-total > 0 ? Lib032.history-total + " 首有播放记录的歌曲" : "";
         HorizontalLayout {
-            spacing: 12px;
-            Text {
-                text: "播放记录";
-                color: Theme.text;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            Text {
-                text: Lib032.history-total > 0 ? Lib032.history-total + " 首有播放记录的歌曲" : "";
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                horizontal-alignment: right;
-                vertical-alignment: center;
+            height: 40px;
+            Rectangle {
                 horizontal-stretch: 1;
             }
             if Lib032.history-total > 0: GhostButton {
+                height: 40px;
                 text: "清空播放历史";
                 clicked => {
                     root.clear();
@@ -2312,8 +2268,8 @@ component DetailHero inherits HorizontalLayout {
     in property <image> poster;
     in property <length> poster-w: 160px;
     in property <length> poster-h: 240px;
-    padding-left: 32px;
-    padding-right: 32px;
+    padding-left: Shell.pad;
+    padding-right: Shell.pad;
     padding-top: 48px;
     spacing: 24px;
     Cover {
@@ -2341,7 +2297,7 @@ export component WorkPage inherits Flickable {
     callback card-layout(int, length);
     callback track-action(string, int, int);
     callback navigate(int, int);
-    property <length> flex: max(0px, self.width - 64px - 48px - 28px - 56px - 80px);
+    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 40px - 64px - 80px);
     content-height: page.preferred-height;
 
     page := VerticalLayout {
@@ -2417,8 +2373,8 @@ export component WorkPage inherits Flickable {
         }
 
         if Lib032.work.series-id > 0: HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             Rectangle {
                 height: 52px;
                 border-radius: 10px;
@@ -2467,15 +2423,15 @@ export component WorkPage inherits Flickable {
         }
 
         HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             SectionHead {
                 title: "关联专辑";
                 count: Lib032.work.album-count + " 张整张关联专辑";
             }
         }
         if !root.loading && Lib032.work-albums.length == 0: Text {
-            x: 32px;
+            x: Shell.pad;
             text: "尚无关联专辑";
             color: Theme.text-faint;
         }
@@ -2493,8 +2449,8 @@ export component WorkPage inherits Flickable {
         }
 
         VerticalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             spacing: 2px;
             SectionHead {
                 title: "收录于精选集 / 原创专辑";
@@ -2507,7 +2463,7 @@ export component WorkPage inherits Flickable {
             }
         }
         if !root.loading && root.tracks.length == 0: Text {
-            x: 32px;
+            x: Shell.pad;
             text: "还没有独立收录曲目";
             color: Theme.text-faint;
         }
@@ -2604,15 +2560,15 @@ export component SeriesDetailPage inherits Flickable {
         }
 
         HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             SectionHead {
                 title: "系列成员";
                 count: Lib032.series-info.member-count + " 部作品";
             }
         }
         if !root.loading && Lib032.series-members.length == 0: Text {
-            x: 32px;
+            x: Shell.pad;
             text: "没有找到系列";
             color: Theme.text-faint;
         }
@@ -2630,15 +2586,15 @@ export component SeriesDetailPage inherits Flickable {
         }
 
         HorizontalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
             SectionHead {
                 title: "系列专辑";
                 count: Lib032.series-info.album-count + " 张专辑";
             }
         }
         if !root.loading && Lib032.series-albums.length == 0: Text {
-            x: 32px;
+            x: Shell.pad;
             text: "尚无关联专辑";
             color: Theme.text-faint;
         }
@@ -2673,8 +2629,8 @@ export component MixPage inherits VerticalLayout {
 
     HorizontalLayout {
         vertical-stretch: 0;
-        padding-left: 32px;
-        padding-right: 32px;
+        padding-left: Shell.pad;
+        padding-right: Shell.pad;
         padding-top: 48px;
         padding-bottom: 16px;
         spacing: 24px;
