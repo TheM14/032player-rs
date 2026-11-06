@@ -712,6 +712,83 @@ export component ConfirmDialog inherits Rectangle {
     }
 }
 
+// Track details (right-click "查看信息"; Feishin item details, only the
+// fields 032 has). Values can be selected and copied.
+export component InfoDialog inherits Rectangle {
+    in property <string> title;
+    in property <[FactRow]> rows;
+    callback close();
+    background: #00000099;
+
+    TouchArea {
+        clicked => {
+            root.close();
+        }
+    }
+
+    Rectangle {
+        width: min(560px, root.width - 64px);
+        height: min(card.preferred-height, root.height - 64px);
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        // Clicks on the card do not close it.
+        TouchArea { }
+
+        card := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text {
+                    text: "曲目信息";
+                    color: Theme.text;
+                    font-size: 18px;
+                    font-weight: 700;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                IconButton {
+                    kind: IconKind.close;
+                    size: 30px;
+                    icon-size: 14px;
+                    clicked => {
+                        root.close();
+                    }
+                }
+            }
+            info-flick := Flickable {
+                vertical-stretch: 1;
+                min-height: min(info-col.preferred-height, 200px);
+                preferred-height: info-col.preferred-height;
+                content-height: info-col.preferred-height;
+                info-col := VerticalLayout {
+                    width: info-flick.width;
+                    spacing: 8px;
+                    for f in root.rows: HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: f.label;
+                            width: 72px;
+                            color: Theme.text-faint;
+                            font-size: 13px;
+                        }
+                        TextInput {
+                            text: f.value;
+                            read-only: true;
+                            color: Theme.text;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            selection-background-color: Theme.accent-dim;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 component InspectorKicker inherits Text {
     color: Theme.text-faint;
     font-size: 12px;

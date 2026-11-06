@@ -132,6 +132,8 @@ pub enum TrackList {
     History,
     /// Songs similar to the current track (full-screen player).
     Related,
+    /// The open artist's favorite songs (artist page).
+    ArtistFavorites,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -378,6 +380,28 @@ const CREDIT_ROLES: [(&str, &str); 4] = [
     ("producer", "制作"),
 ];
 
+/// Names credited with `role` (artist records first, else the file tag).
+fn role_names<'a>(track: &'a Track, role: &str) -> Vec<(&'a str, i64)> {
+    match track.credits.iter().find(|c| c.role == role) {
+        Some(c) if !c.artists.is_empty() => {
+            c.artists.iter().map(|a| (a.name.as_str(), a.id)).collect()
+        }
+        _ => {
+            let tag = match role {
+                "lyricist" => track.lyricist.trim(),
+                "composer" => track.composer.trim(),
+                "arranger" => track.arranger.trim(),
+                _ => "",
+            };
+            if tag.is_empty() {
+                vec![]
+            } else {
+                vec![(tag, 0)]
+            }
+        }
+    }
+}
+
 /// "作词 A · 作曲 B, C · 编曲 D" in pieces; credited artists carry their
 /// id, names from the file tags (no artist record) do not.
 pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
@@ -387,24 +411,7 @@ pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
     };
     let mut parts = Vec::new();
     for (role, label) in CREDIT_ROLES {
-        let names: Vec<(&str, i64)> = match track.credits.iter().find(|c| c.role == *role) {
-            Some(c) if !c.artists.is_empty() => {
-                c.artists.iter().map(|a| (a.name.as_str(), a.id)).collect()
-            }
-            _ => {
-                let tag = match role {
-                    "lyricist" => track.lyricist.trim(),
-                    "composer" => track.composer.trim(),
-                    "arranger" => track.arranger.trim(),
-                    _ => "",
-                };
-                if tag.is_empty() {
-                    vec![]
-                } else {
-                    vec![(tag, 0)]
-                }
-            }
-        };
+        let names = role_names(track, role);
         if names.is_empty() {
             continue;
         }
@@ -420,6 +427,110 @@ pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
         }
     }
     parts
+}
+
+/// "1.5 MB" style size.
+#[allow(clippy::cast_precision_loss)]
+fn size_label(bytes: i64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Rows of the track info dialog (Feishin item details, only what 032
+/// has); empty values are skipped.
+pub fn track_facts(track: &Track) -> Vec<(String, String)> {
+    let mut facts: Vec<(String, String)> = Vec::new();
+    let mut push = |label: &str, value: String| {
+        let value = value.trim().to_owned();
+        if !value.is_empty() {
+            facts.push((label.to_owned(), value));
+        }
+    };
+    let join = |artists: &[api::ArtistRef]| {
+        artists
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    push("标题", track.title.clone());
+    push(
+        "艺人",
+        if track.artists.is_empty() {
+            track.artist.clone()
+        } else {
+            join(&track.artists)
+        },
+    );
+    push("专辑", track.album.clone());
+    push("专辑艺人", join(&track.album_artists));
+    if track.track_number > 0 {
+        push(
+            "曲目",
+            if track.disc_number > 0 {
+                format!("第 {} 碟 · 第 {} 首", track.disc_number, track.track_number)
+            } else {
+                format!("第 {} 首", track.track_number)
+            },
+        );
+    }
+    if track.year > 0 {
+        push("年份", track.year.to_string());
+    }
+    if track.duration_millis > 0 {
+        push("时长", format::duration(track.duration_millis));
+    }
+    for (role, label) in CREDIT_ROLES {
+        let names: Vec<&str> = role_names(track, role)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        push(label, names.join(", "));
+    }
+    push("流派", track.genres.clone());
+    push("音质", format::audio_quality(track).unwrap_or_default());
+    let codec = track.codec.clone().unwrap_or_default().to_uppercase();
+    let container = track.container.to_uppercase();
+    push(
+        "格式",
+        if !codec.is_empty() && !container.is_empty() && codec != container {
+            format!("{codec}（{container}）")
+        } else if codec.is_empty() {
+            container
+        } else {
+            codec
+        },
+    );
+    if let Some(kbps) = track.bitrate_kbps.filter(|k| *k > 0) {
+        push("比特率", format!("{kbps} kbps"));
+    }
+    if let Some(channels) = track.channels.filter(|c| *c > 0) {
+        push("声道", channels.to_string());
+    }
+    if track.file_size > 0 {
+        push("文件大小", size_label(track.file_size));
+    }
+    push("路径", track.relative_path.clone());
+    if !track.added_at.is_empty() {
+        push("入库时间", format::date_time(&track.added_at));
+    }
+    if track.play_count > 0 {
+        push("播放次数", track.play_count.to_string());
+    }
+    if track.missing {
+        push("状态", "文件缺失".to_owned());
+    }
+    facts
 }
 
 /// Someone performing on or credited on an album's tracks.
@@ -847,6 +958,51 @@ mod tests {
 
     fn ids<T>(items: &[T], id: impl Fn(&T) -> i64) -> Vec<i64> {
         items.iter().map(id).collect()
+    }
+
+    #[test]
+    fn track_facts_skip_empty_and_prefer_credits() {
+        let track = Track {
+            title: "夜に駆ける".into(),
+            artist: "YOASOBI".into(),
+            album: "THE BOOK".into(),
+            composer: "Ayase".into(),
+            credits: vec![api::TrackCredit {
+                role: "lyricist".into(),
+                artists: vec![ArtistRef {
+                    id: 3,
+                    name: "Ayase".into(),
+                }],
+            }],
+            disc_number: 1,
+            track_number: 3,
+            duration_millis: 261_000,
+            codec: Some("flac".into()),
+            container: "flac".into(),
+            sample_rate: Some(48000),
+            bit_depth: Some(24),
+            file_size: 3 * 1024 * 1024 / 2,
+            relative_path: "YOASOBI/THE BOOK/03.flac".into(),
+            ..Track::default()
+        };
+        let facts = track_facts(&track);
+        let get = |label: &str| {
+            facts
+                .iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("艺人"), Some("YOASOBI"));
+        assert_eq!(get("曲目"), Some("第 1 碟 · 第 3 首"));
+        assert_eq!(get("时长"), Some("4:21"));
+        assert_eq!(get("作词"), Some("Ayase"));
+        assert_eq!(get("作曲"), Some("Ayase"));
+        assert_eq!(get("编曲"), None);
+        assert_eq!(get("格式"), Some("FLAC"));
+        assert_eq!(get("音质"), Some("FLAC / 24bit / 48kHz"));
+        assert_eq!(get("文件大小"), Some("1.5 MB"));
+        assert_eq!(get("年份"), None);
+        assert_eq!(facts[0], ("标题".to_owned(), "夜に駆ける".to_owned()));
     }
 
     #[test]

@@ -250,6 +250,8 @@ struct Ui {
     pane_tracks: Rc<VecModel<TrackRow>>,
     /// Related songs in the full-screen player (`TrackList::Related`).
     related: Rc<VecModel<TrackRow>>,
+    /// "收藏的歌曲" of the open artist page.
+    artist_favs: Rc<VecModel<TrackRow>>,
     /// Track the related songs were requested for (0: none).
     related_for: Cell<i64>,
     /// The original cover in the full-screen player.
@@ -351,6 +353,7 @@ impl Ui {
             TrackList::Spotlight(_) => &self.pane_tracks,
             TrackList::History => &self.played,
             TrackList::Related => &self.related,
+            TrackList::ArtistFavorites => &self.artist_favs,
             TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
         })
     }
@@ -429,6 +432,7 @@ impl Ui {
         w.set_detail_cover(Image::default());
         w.set_detail_loading(true);
         self.detail_tracks.set_vec(Vec::new());
+        self.artist_favs.set_vec(Vec::new());
         for grid in RELEASE_GRIDS {
             self.grids[grid].clear();
         }
@@ -670,6 +674,7 @@ impl Ui {
                 }
             }
             "similar" => self.navigate(w, Route::Similar(list, index)),
+            "info" => self.send(Command::TrackInfo(list, index)),
             "tieup" => {
                 if let Some((id, _, _)) = row
                     && let Some(work) = self.tieup_work(id)
@@ -775,6 +780,12 @@ impl Ui {
             }
             ("artist-albums", DetailView::Artist(a)) => {
                 self.filter_by_artist(w, true, Some((a.id, a.name.clone())));
+            }
+            // Group buttons of the artist page (Electron `AlbumSection`).
+            ("group-play" | "group-next" | "group-last", DetailView::Artist(a)) => {
+                let group = usize::try_from(arg).unwrap_or(0);
+                let source = TrackSource::ArtistGroup(a.id, group);
+                self.source_action(action.trim_start_matches("group-"), source, 0);
             }
             (other, _) => self.source_action(other, source, arg),
         }
@@ -1324,6 +1335,7 @@ impl Ui {
                     &self.played,
                     &self.pane_tracks,
                     &self.related,
+                    &self.artist_favs,
                 ] {
                     for i in 0..model.row_count() {
                         if let Some(mut row) = model.row_data(i)
@@ -1439,6 +1451,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         played: new_tracks(),
         pane_tracks: new_tracks(),
         related: new_tracks(),
+        artist_favs: new_tracks(),
         related_for: Cell::new(0),
         full_cover_key: RefCell::default(),
         home_mixes: Rc::new(VecModel::default()),
@@ -1489,7 +1502,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_search_tracks(ModelRc::from(ui.search_tracks.clone()));
     window.set_queue(ModelRc::from(ui.queue.clone()));
     window.set_full_related(ModelRc::from(ui.related.clone()));
+    window.set_artist_favs(ModelRc::from(ui.artist_favs.clone()));
     window.on_full_changed(|| with_ui(|ui, w| ui.full_changed(w)));
+    let c = commander.clone();
+    window.on_now_info(move || c.send(Command::NowTrackInfo));
     {
         let home = window.global::<Home>();
         home.set_pane_tracks(ModelRc::from(ui.pane_tracks.clone()));
@@ -2154,6 +2170,23 @@ pub fn apply(event: Event) {
             ui.load_now_large(w, &now.artwork);
             *ui.now.borrow_mut() = Some(now);
             ui.full_changed(w);
+        }
+        Event::TrackInfo { title: _, facts } => {
+            w.set_info_rows(ModelRc::new(VecModel::from(
+                facts
+                    .into_iter()
+                    .map(|(label, value)| crate::FactRow {
+                        label: label.into(),
+                        value: value.into(),
+                    })
+                    .collect::<Vec<_>>(),
+            )));
+            w.set_dialog(6);
+        }
+        Event::ArtistFavorites { artist_id, tracks } => {
+            if ui.route.get() == Route::Artist(artist_id) {
+                ui.artist_favs.set_vec(track_rows(tracks, 0));
+            }
         }
         Event::Related { track_id, tracks } => {
             if ui.related_for.get() == track_id {

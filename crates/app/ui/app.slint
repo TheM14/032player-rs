@@ -6,6 +6,7 @@ import {
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
     ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
+    InfoDialog,
 } from "library.slint";
 import { SettingsView, ShortcutRow } from "settings.slint";
 import { FullScreenPlayer } from "fullscreen.slint";
@@ -225,12 +226,15 @@ export component AppWindow inherits Window {
     in property <string> album-review;
     // Artist page: releases grouped like the 032 server, the biography.
     in property <[ReleaseGroupRow]> artist-groups;
+    // "收藏的歌曲" of the artist (track list 12).
+    in property <[TrackRow]> artist-favs;
     in property <string> artist-about;
     in property <bool> playlist-artwork;
     callback detail-action(string, int);
 
     // Dialogs: 0 none, 1 new playlist, 2 edit playlist, 3 delete playlist,
-    // 4 clear playback history, 5 lyrics search.
+    // 4 clear playback history, 5 lyrics search, 6 track info.
+    in property <[FactRow]> info-rows;
     in-out property <int> dialog: 0;
     in-out property <string> dialog-name;
     in-out property <string> dialog-description;
@@ -296,6 +300,7 @@ export component AppWindow inherits Window {
     in property <bool> full-related-loading;
     in-out property <length> full-cover-side;
     callback full-changed();
+    callback now-info();
     function open-full(tab: int) {
         root.full-open = true;
         root.full-tab = tab;
@@ -390,6 +395,10 @@ export component AppWindow inherits Window {
             return reject;
         }
         key-pressed(e) => {
+            if root.dialog == 6 && e.text == Key.Escape {
+                root.dialog = 0;
+                return accept;
+            }
             if root.logged-in && root.dialog == 0 && root.full-open && e.text == Key.Escape {
                 root.close-full();
                 return accept;
@@ -1119,7 +1128,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        for g in root.artist-groups: VerticalLayout {
+                        for g[gi] in root.artist-groups: VerticalLayout {
                             HorizontalLayout {
                                 padding-left: 32px;
                                 padding-right: 32px;
@@ -1139,6 +1148,31 @@ export component AppWindow inherits Window {
                                     font-size: 13px;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
+                                }
+                                // Electron `AlbumSection`: play / next / last
+                                // for every album of the group.
+                                IconButton {
+                                    kind: IconKind.play;
+                                    size: 30px;
+                                    icon-size: 14px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.detail-action("group-play", gi);
+                                    }
+                                }
+                                GhostButton {
+                                    text: "下一首播放";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.detail-action("group-next", gi);
+                                    }
+                                }
+                                GhostButton {
+                                    text: "添加到末尾";
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.detail-action("group-last", gi);
+                                    }
                                 }
                             }
                             CardRows {
@@ -1185,6 +1219,41 @@ export component AppWindow inherits Window {
                             album-w: artist-flick.flex * 0.34;
                             action(what, arg) => {
                                 root.track-action(2, what, track.index, arg);
+                            }
+                        }
+                        // Electron `FAVORITE_SONGS`.
+                        if root.artist-favs.length > 0: HorizontalLayout {
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-top: 12px;
+                            height: 52px;
+                            spacing: 10px;
+                            Text {
+                                text: "收藏的歌曲";
+                                font-family: "Noto Sans SC";
+                                color: Theme.text;
+                                font-size: 18px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.artist-favs.length;
+                                color: Theme.text-faint;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        for track in root.artist-favs: TrackRowView {
+                            track: track;
+                            mode: 0;
+                            playing: track.id == root.playing-id;
+                            playlists: root.playlist-choices;
+                            title-w: artist-flick.flex * 0.42;
+                            artist-w: artist-flick.flex * 0.24;
+                            album-w: artist-flick.flex * 0.34;
+                            action(what, arg) => {
+                                root.track-action(12, what, track.index, arg);
                             }
                         }
                     }
@@ -1325,6 +1394,11 @@ export component AppWindow inherits Window {
                     close-to-tray <=> root.close-to-tray;
                     close-to-tray-toggled(on) => {
                         root.close-to-tray-toggled(on);
+                    }
+                    panel-queue <=> root.panel-queue;
+                    panel-lyrics <=> root.panel-lyrics;
+                    panel-changed => {
+                        root.panel-changed();
                     }
                     fade-on-pause <=> root.fade-on-pause;
                     fade-on-pause-toggled(on) => {
@@ -1604,6 +1678,9 @@ export component AppWindow inherits Window {
         open-artist => {
             root.open-now-artist();
         }
+        show-info => {
+            root.now-info();
+        }
         cover-resized(side) => {
             root.full-cover-side = side;
             root.full-changed();
@@ -1709,6 +1786,13 @@ export component AppWindow inherits Window {
             Lib032.detail-action("clear-history", 0);
         }
         cancel => {
+            root.dialog = 0;
+        }
+    }
+
+    if root.dialog == 6: InfoDialog {
+        rows: root.info-rows;
+        close => {
             root.dialog = 0;
         }
     }

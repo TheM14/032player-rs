@@ -220,6 +220,10 @@ pub enum Command {
     },
     /// Songs similar to track `id` ([`Event::Related`], `TrackList::Related`).
     LoadRelated(i64),
+    /// Details of a row ([`Event::TrackInfo`]).
+    TrackInfo(TrackList, usize),
+    /// Details of the current track ([`Event::TrackInfo`]).
+    NowTrackInfo,
     /// Play just this row (接着听 rows start at their saved position).
     PlayTrack(TrackList, usize),
     /// The 032 home ([`Event::Home`] or [`Event::HomeUnavailable`]), its
@@ -319,6 +323,9 @@ pub enum TrackSource {
     Album(i64),
     /// Every track of the artist in album order.
     Artist(i64),
+    /// The albums of a release group of the open artist page (artist id,
+    /// group index in [`crate::release_groups`] order), in page order.
+    ArtistGroup(i64, usize),
     Playlist(i64),
     /// Tracks linked to a work.
     Work(i64),
@@ -648,6 +655,16 @@ pub enum Event {
     },
     /// Works / series / mix the current track belongs to.
     PlayingSources(PlayingSources),
+    /// The track info dialog: title and (label, value) rows.
+    TrackInfo {
+        title: String,
+        facts: Vec<(String, String)>,
+    },
+    /// The open artist's favorite songs (`TrackList::ArtistFavorites`).
+    ArtistFavorites {
+        artist_id: i64,
+        tracks: Vec<TrackItem>,
+    },
     /// Songs similar to `track_id` (`TrackList::Related`).
     Related {
         track_id: i64,
@@ -778,6 +795,7 @@ enum Target {
     History,
     LyricsPreview,
     Related,
+    ArtistFavorites,
 }
 
 enum Loaded {
@@ -811,6 +829,8 @@ enum Loaded {
     AlbumWorks(i64, Vec<crate::m032::AlbumWorkEntry>),
     /// Similar songs of a track.
     Related(i64, Vec<Track>),
+    /// Favorite songs of an artist.
+    ArtistFavorites(i64, Vec<Track>),
 }
 
 /// Handle to the running core. Dropping it does not stop the core; call
@@ -1123,6 +1143,8 @@ struct Core {
     track_works: Option<(i64, Vec<api::TrackWork>)>,
     playing_sources: PlayingSources,
     fade: fade::Fader,
+    /// Album ids per release group of the open artist page.
+    artist_groups: Option<(i64, Vec<Vec<i64>>)>,
 }
 
 impl Core {
@@ -1184,6 +1206,7 @@ impl Core {
             track_works: None,
             playing_sources: PlayingSources::default(),
             fade: fade::Fader::default(),
+            artist_groups: None,
         }
     }
 
@@ -1557,8 +1580,29 @@ impl Core {
             Command::SeekToLyric(index) => self.seek_to_lyric(index),
             Command::SetLyricsSettings(lyrics) => self.set_lyrics_settings(lyrics),
             Command::LoadRelated(id) => self.load_related(id),
+            Command::TrackInfo(list, index) => {
+                let track = self
+                    .library
+                    .as_ref()
+                    .and_then(|l| l.list(list).get(index))
+                    .cloned();
+                self.emit_track_info(track.as_ref());
+            }
+            Command::NowTrackInfo => {
+                let track = self.queue.current().map(|i| i.track.clone());
+                self.emit_track_info(track.as_ref());
+            }
             Command::LoadImage { key, path, px } => self.load_image(key, path, px, false),
             Command::LoadOriginalImage { key, path, px } => self.load_image(key, path, px, true),
+        }
+    }
+
+    fn emit_track_info(&self, track: Option<&Track>) {
+        if let Some(track) = track {
+            self.emit(Event::TrackInfo {
+                title: track.title.clone(),
+                facts: crate::browse::track_facts(track),
+            });
         }
     }
 

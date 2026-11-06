@@ -50,6 +50,7 @@ pub(super) fn track_list(id: i32) -> TrackList {
         9 => TrackList::HomeSongs,
         10 => TrackList::History,
         11 => TrackList::Related,
+        12 => TrackList::ArtistFavorites,
         _ => TrackList::Library,
     }
 }

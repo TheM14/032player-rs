@@ -512,6 +512,12 @@ export component TrackRowView inherits Rectangle {
                     root.action("similar", 0);
                 }
             }
+            MenuItem {
+                title: "查看信息";
+                activated => {
+                    root.action("info", 0);
+                }
+            }
             if root.track.album-id > 0: MenuItem {
                 title: "转到专辑";
                 activated => {

@@ -947,11 +947,13 @@ fn main() {
             "别名：ヨアソビ",
         ),
     );
+    set(&inst, "artist-favs", tracks());
     render(
         &window,
         PhysicalSize::new(1280, 2200),
         &format!("{out}/artist.png"),
     );
+    set(&inst, "artist-favs", Value::Model(ModelRc::default()));
     set(
         &inst,
         "detail",
@@ -1016,6 +1018,31 @@ fn main() {
         ),
     );
     render(&window, size, &format!("{out}/settings.png"));
+    set(
+        &inst,
+        "info-rows",
+        model(
+            [
+                ("标题", "夜に駆ける"),
+                ("艺人", "YOASOBI"),
+                ("专辑", "THE BOOK"),
+                ("曲目", "第 1 碟 · 第 3 首"),
+                ("时长", "4:21"),
+                ("作词", "Ayase"),
+                ("作曲", "Ayase"),
+                ("音质", "FLAC / 24bit / 48kHz"),
+                ("文件大小", "31.2 MB"),
+                ("路径", "YOASOBI/THE BOOK/03 夜に駆ける (A very long file name to check wrapping).flac"),
+                ("入库时间", "2026年10月12日 09:15"),
+            ]
+            .iter()
+            .map(|(l, v)| st(&[("label", s(l)), ("value", s(v))]))
+            .collect(),
+        ),
+    );
+    set(&inst, "dialog", n(6.0));
+    render(&window, size, &format!("{out}/track-info.png"));
+    set(&inst, "dialog", n(0.0));
 
     // 032 home.
     set(&inst, "has-home", Value::Bool(true));

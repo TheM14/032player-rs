@@ -569,6 +569,19 @@ impl Core {
                     _ => None,
                 };
                 self.set_list(TrackList::Detail, tracks);
+                self.artist_groups = match &view {
+                    DetailView::Artist(a) => Some((
+                        a.id,
+                        browse::release_groups(&a.releases)
+                            .iter()
+                            .map(|g| g.items.iter().map(|i| i.id).collect())
+                            .collect(),
+                    )),
+                    _ => None,
+                };
+                if let DetailView::Artist(a) = &view {
+                    self.load_artist_favorites(a.id);
+                }
                 self.emit(Event::Detail {
                     view,
                     tracks: items,
@@ -602,6 +615,19 @@ impl Core {
                 self.emit(Event::SeriesAppended { items, total });
             }
             Loaded::HistoryPage(records, total) => self.history_page(records, total),
+            Loaded::ArtistFavorites(artist_id, tracks) => {
+                if self.open_detail != Some(DetailKey::Artist(artist_id))
+                    && self.artist_groups.as_ref().map(|g| g.0) != Some(artist_id)
+                {
+                    return;
+                }
+                let items = tracks.iter().map(track_item).collect();
+                self.set_list(TrackList::ArtistFavorites, tracks);
+                self.emit(Event::ArtistFavorites {
+                    artist_id,
+                    tracks: items,
+                });
+            }
             Loaded::Related(track_id, tracks) => {
                 let items = tracks.iter().map(track_item).collect();
                 self.set_list(TrackList::Related, tracks);
@@ -612,6 +638,33 @@ impl Core {
             }
             home => self.home_loaded(home),
         }
+    }
+
+    /// The artist page's "收藏的歌曲": favorite tracks crediting the artist
+    /// (Electron `FAVORITE_SONGS`), filtered here like the favorites page.
+    pub(super) fn load_artist_favorites(&mut self, artist_id: i64) {
+        let Some((client, tx)) = self.request() else {
+            return;
+        };
+        let seq = self.next_seq(Target::ArtistFavorites);
+        tokio::spawn(async move {
+            let msg = match client.favorite_tracks().await {
+                Ok(all) => {
+                    let filter = TrackFilter {
+                        artist_id: Some(artist_id),
+                        ..TrackFilter::default()
+                    };
+                    let tracks = browse::favorite_tracks(all, &filter, 0);
+                    Internal::Loaded(
+                        Target::ArtistFavorites,
+                        seq,
+                        Loaded::ArtistFavorites(artist_id, tracks),
+                    )
+                }
+                Err(e) => Self::failed(&client, "加载收藏的歌曲", e),
+            };
+            let _ = tx.send(msg);
+        });
     }
 
     /// Similar songs of the current track for the full-screen player.
@@ -677,6 +730,9 @@ impl Core {
                 if let Some(filter) = self.favorite_tracks.clone() {
                     self.query_tracks(true, filter);
                 }
+                if let Some(DetailKey::Artist(id)) = self.open_detail {
+                    self.load_artist_favorites(id);
+                }
             }
             FavoriteKind::Artist => {
                 if let Some(filter) = self.favorite_artists.clone() {
@@ -721,6 +777,12 @@ impl Core {
         }
         let Some((client, tx)) = self.request() else {
             return;
+        };
+        let group_albums = match (source, &self.artist_groups) {
+            (TrackSource::ArtistGroup(artist, group), Some((open, groups))) if artist == *open => {
+                groups.get(group).cloned().unwrap_or_default()
+            }
+            _ => Vec::new(),
         };
         if let (TrackSource::Album(album_id), Intent::AddToPlaylist(playlist_id)) =
             (source, &intent)
@@ -773,6 +835,20 @@ impl Core {
                     }
                     playable.into_iter().map(|t| t.track).collect()
                 }),
+                TrackSource::ArtistGroup(..) => {
+                    let mut tracks = Vec::new();
+                    let mut result = Ok(());
+                    for id in group_albums {
+                        match client.album(id).await {
+                            Ok(detail) => tracks.extend(detail.tracks),
+                            Err(e) => {
+                                result = Err(e);
+                                break;
+                            }
+                        }
+                    }
+                    result.map(|()| tracks)
+                }
                 TrackSource::Track(..) | TrackSource::List(_) | TrackSource::Queue => {
                     Ok(Vec::new())
                 }
