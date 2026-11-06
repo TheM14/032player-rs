@@ -5,6 +5,8 @@
 
 ## 当前状态（2026-10-28）
 
+- **v0.1.9 正式版构建已安排**：修复中日文字体混用（界面和中文内容统一 Noto Sans SC，含假名的内容用 Noto Sans JP，拉丁字符用 Inter）。正式安装包由 `v0.1.9` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.1.9 。
+
 - **v0.1.8 正式版构建已安排**：包含单曲右键菜单触发修复、全部用途标识的 Electron 风格作品卡弹层。正式安装包由 `v0.1.8` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.1.8 。
 
 - **v0.1.7 已发布**（2026-11-06）：https://github.com/lux032/032player-rs/releases/tag/v0.1.7 ，包含下面的 M4 后续 A-E。
