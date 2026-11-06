@@ -5,6 +5,7 @@
 
 ## 当前状态（2026-10-28）
 
+- **v0.1.7 已发布**（2026-11-06）：https://github.com/lux032/032player-rs/releases/tag/v0.1.7 ，包含下面的 M4 后续 A-E。
 - **M4 后续（2026-11-06）A-E 全部完成**（淡入淡出、全屏播放器、P0 零碎项、浅色主题、更新提示），preview 包 `032player-windows-x64-5e3a49b.zip`
   （https://github.com/lux032/032player-rs/releases/tag/preview ）。待用户 Windows 验证：见下方"M4 后续"各节的 **[Win]** 项。
 - **v0.1.3 已发布**（2026-10-29）：https://github.com/lux032/032player-rs/releases/tag/v0.1.3 ，专辑卡片播放中角标；v0.1.2 播放中动态图标、侧栏歌单封面放大；v0.1.1 记住窗口大小，v0.1.0 是第一个正式版。
