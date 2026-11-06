@@ -713,6 +713,13 @@ fn main() {
                     }),
                 );
                 row.set_field("tieup-count".into(), n(if i == 0 { 2.0 } else { 1.0 }));
+                row.set_field("tieup-works".into(), model((0..if i == 0 {2} else {1}).map(|j| st(&[
+                    ("id", n(90.0 + f64::from(j))),
+                    ("title", s(if j == 0 { "CLANNAD" } else { "CLANNAD ～AFTER STORY～" })),
+                    ("translated", s("团子大家族")), ("meta", s("TV 动画 · 2007")),
+                    ("usage", s(if i % 2 == 0 { "OP" } else { "插曲" })),
+                    ("poster", Value::Image(cover(8 + j))),
+                ])).collect()));
                 row.set_field(
                     "tieup-tooltip".into(),
                     s("作品标题 / 作品譯名\nOP · TV 动画 · 2024\n\n第二部作品\nED · 剧场版 · 2025"),
@@ -868,7 +875,13 @@ fn main() {
         ),
     );
     if std::env::var_os("CLICK_TEST").is_some() {
-        inst.set_callback("track-action", |args| {
+        let queue_adds = Rc::new(std::cell::Cell::new(0));
+        let adds = queue_adds.clone();
+        inst.set_callback("track-action", move |args| {
+            if args.get(1) == Some(&s("last")) {
+                assert_eq!(args.get(2), Some(&n(0.0)), "Only the right-clicked track is added");
+                adds.set(adds.get() + 1);
+            }
             println!("track-action {args:?}");
             Value::Void
         })
@@ -892,8 +905,26 @@ fn main() {
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
         render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-context-menu.png"));
+        let position = slint::LogicalPosition::new(360.0, 460.0);
+        let button = slint::platform::PointerEventButton::Left;
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        assert_eq!(queue_adds.get(), 1, "Right click must open a working queue menu");
+        println!("track right-click queue action passed");
+        let position = slint::LogicalPosition::new(775.0, 349.0);
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        slint::platform::update_timers_and_animations();
+        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-tieup-tooltip.png"));
+        let button = slint::platform::PointerEventButton::Left;
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-tieup-popover.png"));
         window.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: slint::platform::Key::Escape.into() });
         window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: slint::platform::Key::Escape.into() });
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(270.0, 310.0) });
     }
     set(&inst, "panel-open", Value::Bool(true));
     set(&inst, "sidebar-width", Value::Number(300.0));

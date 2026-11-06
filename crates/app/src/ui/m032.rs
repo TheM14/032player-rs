@@ -957,6 +957,30 @@ impl Ui {
                     model.set_row_data(i, row);
                 }
             });
+            let tracks = self.detail_tracks.clone();
+            let work_id = int(wk.id);
+            self.bind_image(w, Bind::Detail, &wk.poster, 84.0, move |image| {
+                for i in 0..tracks.row_count() {
+                    let Some(row) = tracks.row_data(i) else {
+                        continue;
+                    };
+                    let Some(works) = row
+                        .tieup_works
+                        .as_any()
+                        .downcast_ref::<VecModel<crate::TieupWork>>()
+                    else {
+                        continue;
+                    };
+                    for j in 0..works.row_count() {
+                        if let Some(mut item) = works.row_data(j)
+                            && item.id == work_id
+                        {
+                            item.poster = image.clone();
+                            works.set_row_data(j, item);
+                        }
+                    }
+                }
+            });
         }
         {
             let mut state = self.m032.borrow_mut();
@@ -1001,6 +1025,33 @@ impl Ui {
                     .collect::<Vec<_>>()
                     .join("\n\n")
                     .into();
+                row.tieup_works = rc(works
+                    .iter()
+                    .filter_map(|wk| {
+                        let uses: Vec<_> = wk
+                            .tracks
+                            .iter()
+                            .filter(|u| u.track_id == id)
+                            .map(|u| u.label.as_str())
+                            .collect();
+                        if uses.is_empty() {
+                            return None;
+                        }
+                        Some(crate::TieupWork {
+                            id: int(wk.id),
+                            title: s(&wk.title),
+                            translated: s(&wk.translated),
+                            meta: s(&wk.meta),
+                            usage: s(&uses.join(" / ")),
+                            poster: works
+                                .iter()
+                                .position(|w| w.id == wk.id)
+                                .and_then(|i| model.row_data(i))
+                                .map(|w| w.poster)
+                                .unwrap_or_default(),
+                        })
+                    })
+                    .collect());
                 row.tieup = s(label);
                 row.tieup_count = i32::try_from(*count).unwrap_or(i32::MAX);
                 self.detail_tracks.set_row_data(i, row);

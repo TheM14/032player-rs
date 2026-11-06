@@ -684,6 +684,7 @@ impl Ui {
                     self.navigate(w, Route::Work(work));
                 }
             }
+            "work" => self.navigate(w, Route::Work(arg)),
             "album" => self.navigate(w, Route::Album(arg)),
             "artist" => self.navigate(w, Route::Artist(arg)),
             "new-playlist" => {
