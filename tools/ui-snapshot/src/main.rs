@@ -416,6 +416,19 @@ fn render(window: &MinimalSoftwareWindow, size: PhysicalSize, path: &str) {
 #[path = "../../../crates/app/src/fonts.rs"]
 mod fonts;
 
+fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
+    let inst = def.create().unwrap();
+    inst.set_global_callback("Fonts", "family", |args| {
+        let text = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            _ => String::new(),
+        };
+        Value::String(fonts::family_for(&text).into())
+    })
+    .unwrap();
+    inst
+}
+
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/app/ui/app.slint");
@@ -434,7 +447,7 @@ fn main() {
     let size = PhysicalSize::new(1280, 800);
 
     // Login.
-    let inst = def.create().unwrap();
+    let inst = create(&def);
     inst.show().unwrap();
     set(&inst, "login-server", s("https://music.example.com"));
     set(&inst, "login-error", s("API Token 已失效，请重新输入"));
@@ -443,7 +456,7 @@ fn main() {
     inst.hide().unwrap();
 
     // Main views.
-    let inst = def.create().unwrap();
+    let inst = create(&def);
     inst.show().unwrap();
     set(&inst, "logged-in", Value::Bool(true));
     if std::env::var_os("CLICK_TEST").is_some() {

@@ -4,7 +4,7 @@
 // the components (forwarded by app.slint) or of the globals.
 
 import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Fonts, Theme } from "theme.slint";
 import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab,
 } from "controls.slint";
@@ -254,6 +254,7 @@ component Pill inherits Rectangle {
     background: root.accent ? Theme.accent-dim : Theme.raised;
     pill-text := Text {
         text: root.text;
+        font-family: Fonts.family(self.text);
         color: root.accent ? Theme.accent : Theme.text-dim;
         font-size: 12px;
     }
@@ -267,7 +268,6 @@ component SectionHead inherits HorizontalLayout {
     height: 32px;
     Text {
         text: root.title;
-        font-family: "Noto Sans SC";
         color: Theme.text;
         font-size: 20px;
         font-weight: 800;
@@ -275,6 +275,7 @@ component SectionHead inherits HorizontalLayout {
     }
     Text {
         text: root.count;
+        font-family: Fonts.family(self.text);
         color: Theme.text-faint;
         font-size: 13px;
         vertical-alignment: center;
@@ -368,6 +369,7 @@ component WorkCardH inherits Rectangle {
             horizontal-stretch: 1;
             Text {
                 text: root.card.artist;
+                font-family: Fonts.family(self.text);
                 color: Theme.accent;
                 font-size: 12px;
                 font-weight: 600;
@@ -375,6 +377,7 @@ component WorkCardH inherits Rectangle {
             }
             Text {
                 text: root.card.title;
+                font-family: Fonts.family(self.text);
                 color: Theme.text;
                 font-size: 14px;
                 font-weight: 700;
@@ -384,12 +387,14 @@ component WorkCardH inherits Rectangle {
             }
             if root.card.note != "": Text {
                 text: root.card.note;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 12px;
                 overflow: elide;
             }
             if root.card.badge != "": Text {
                 text: "系列：" + root.card.badge;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 font-size: 12px;
                 overflow: elide;
@@ -435,6 +440,7 @@ component ShelfArrow inherits Rectangle {
     border-color: #ffffff30;
     Text {
         text: root.text;
+        font-family: Fonts.family(self.text);
         color: #ffffff;
         font-size: 20px;
         font-weight: 600;
@@ -531,6 +537,7 @@ component Cover inherits Rectangle {
     clip: true;
     if root.source.width == 0: Text {
         text: root.placeholder;
+        font-family: Fonts.family(self.text);
         color: Theme.text-faint;
         font-size: 12px;
     }
@@ -616,6 +623,7 @@ export component HomeRowView inherits Rectangle {
             horizontal-stretch: 1;
             Text {
                 text: root.item.title;
+                font-family: Fonts.family(self.text);
                 color: root.playing ? Theme.accent : Theme.text;
                 font-weight: 600;
                 overflow: elide;
@@ -632,6 +640,7 @@ export component HomeRowView inherits Rectangle {
                 spacing: 4px;
                 Text {
                     text: root.item.subtitle;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-dim;
                     font-size: 13px;
                     overflow: elide;
@@ -654,6 +663,7 @@ export component HomeRowView inherits Rectangle {
                 }
                 Text {
                     text: root.item.duration;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 12px;
                 }
@@ -676,12 +686,14 @@ export component HomeRowView inherits Rectangle {
         }
         if root.item.note != "" && !root.hide-note: Text {
             text: root.item.note;
+            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 12px;
             vertical-alignment: center;
         }
         if root.item.percent < 0 && root.item.duration != "": Text {
             text: root.item.duration;
+            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 13px;
             vertical-alignment: center;
@@ -860,6 +872,7 @@ component Spotlight inherits Rectangle {
                             background: self.on ? Theme.surface-hover : seg-area.has-hover ? (Theme.dark ? #ffffff10 : #0000000a) : transparent;
                             seg-text := Text {
                                 text: label;
+                                font-family: Fonts.family(self.text);
                                 color: parent.on ? Theme.text : Theme.text-dim;
                                 font-size: 12px;
                                 font-weight: 600;
@@ -879,6 +892,7 @@ component Spotlight inherits Rectangle {
                 spacing: 8px;
                 Text {
                     text: Home.pane.title;
+                    font-family: Fonts.family(self.text);
                     color: title-area.has-hover ? Theme.accent : Theme.text;
                     // clamp(1.7rem, 2.5vw, 2.45rem), at most two lines.
                     font-size: root.title-size;
@@ -904,6 +918,7 @@ component Spotlight inherits Rectangle {
                 }
                 Text {
                     text: Home.pane.facts;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-dim;
                     font-size: 14px;
                 }
@@ -916,6 +931,7 @@ component Spotlight inherits Rectangle {
                     }
                     Text {
                         text: Home.pane.note;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-faint;
                         font-size: 13px;
                         vertical-alignment: center;
@@ -973,6 +989,7 @@ component Spotlight inherits Rectangle {
                 spacing: 8px;
                 Text {
                     text: Home.series.title;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text;
                     font-size: root.title-size;
                     font-weight: 800;
@@ -980,10 +997,12 @@ component Spotlight inherits Rectangle {
                 }
                 Text {
                     text: Home.series.by;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-dim;
                 }
                 Text {
                     text: Home.series.facts;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-dim;
                     font-size: 13px;
                 }
@@ -1001,6 +1020,7 @@ component Spotlight inherits Rectangle {
                             spacing: 6px;
                             Text {
                                 text: w.title;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text;
                                 font-size: 13px;
                                 vertical-alignment: center;
@@ -1009,6 +1029,7 @@ component Spotlight inherits Rectangle {
                             }
                             Text {
                                 text: w.meta;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 12px;
                                 vertical-alignment: center;
@@ -1068,6 +1089,7 @@ component Spotlight inherits Rectangle {
                 }
                 Text {
                     text: Home.pane.track-count + " 首";
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
                     horizontal-alignment: right;
@@ -1094,6 +1116,7 @@ component Spotlight inherits Rectangle {
                             if t.id != root.playing-id: Text {
                                 x: 0;
                                 text: t.number;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 13px;
                                 vertical-alignment: center;
@@ -1109,12 +1132,14 @@ component Spotlight inherits Rectangle {
                             horizontal-stretch: 1;
                             Text {
                                 text: t.title;
+                                font-family: Fonts.family(self.text);
                                 color: t.id == root.playing-id ? Theme.accent : Theme.text;
                                 font-size: 13px;
                                 overflow: elide;
                             }
                             Text {
                                 text: t.artist;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 12px;
                                 overflow: elide;
@@ -1122,6 +1147,7 @@ component Spotlight inherits Rectangle {
                         }
                         Text {
                             text: t.duration;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
                             font-size: 13px;
                             vertical-alignment: center;
@@ -1149,6 +1175,7 @@ component Spotlight inherits Rectangle {
                 }
                 Text {
                     text: Home.series.album-count + " 张专辑";
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
                     horizontal-alignment: right;
@@ -1179,12 +1206,14 @@ component Spotlight inherits Rectangle {
                             horizontal-stretch: 1;
                             Text {
                                 text: a.title;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text;
                                 font-size: 13px;
                                 overflow: elide;
                             }
                             Text {
                                 text: a.meta;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 12px;
                                 overflow: elide;
@@ -1192,6 +1221,7 @@ component Spotlight inherits Rectangle {
                         }
                         Text {
                             text: a.year;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
                             font-size: 13px;
                             vertical-alignment: center;
@@ -1349,12 +1379,14 @@ export component HomePage inherits Flickable {
                 spacing: 12px;
                 Text {
                     text: f.label;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     width: 80px;
                     font-size: 13px;
                 }
                 Text {
                     text: f.value;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-dim;
                     font-size: 13px;
                 }
@@ -1644,6 +1676,7 @@ export component HomePage inherits Flickable {
                                 width: 48px;
                                 height: 14px;
                                 text: bar.count;
+                                font-family: Fonts.family(self.text);
                                 color: bar.year == Home.year ? Theme.accent : Theme.text-dim;
                                 font-size: 12px;
                                 font-weight: 600;
@@ -1657,6 +1690,7 @@ export component HomePage inherits Flickable {
                             width: 40px;
                             height: 16px;
                             text: bar.year;
+                            font-family: Fonts.family(self.text);
                             color: bar.year == Home.year ? Theme.accent : Theme.text-faint;
                             font-size: 12px;
                             font-weight: bar.year == Home.year ? 700 : 400;
@@ -1681,6 +1715,7 @@ export component HomePage inherits Flickable {
                 if Home.chronicle.length == 0: Text {
                     x: 32px;
                     text: Home.year + " 年没有专辑";
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                 }
                 CardShelf {
@@ -1733,11 +1768,13 @@ export component HomePage inherits Flickable {
                 alignment: start;
                 Text {
                     text: Home.stats.albums + " 张专辑 · " + Home.stats.tracks + " 首歌曲 · " + Home.stats.works + " 部作品";
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
                 }
                 if Home.stats.last-scan != "": Text {
                     text: Home.stats.last-scan;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
                 }
@@ -1777,11 +1814,13 @@ component CardGridPoster inherits Rectangle {
         spacing: 6px;
         Text {
             text: root.loading ? "加载中…" : root.empty-text;
+            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             horizontal-alignment: center;
         }
         if !root.loading && root.empty-hint != "": Text {
             text: root.empty-hint;
+            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 13px;
             horizontal-alignment: center;
@@ -1845,6 +1884,7 @@ export component WorksPage inherits VerticalLayout {
             }
             Text {
                 text: Lib032.works-total > 0 ? "共 " + Lib032.works-total + " 个作品" : "";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 horizontal-alignment: right;
                 vertical-alignment: center;
@@ -1934,6 +1974,7 @@ export component SeriesPage inherits VerticalLayout {
             }
             Text {
                 text: Lib032.series-total > 0 ? "共 " + Lib032.series-total + " 个系列" : "";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 horizontal-alignment: right;
                 vertical-alignment: center;
@@ -2021,6 +2062,7 @@ export component HistoryPage inherits VerticalLayout {
             }
             Text {
                 text: Lib032.history-total > 0 ? Lib032.history-total + " 首有播放记录的歌曲" : "";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 horizontal-alignment: right;
                 vertical-alignment: center;
@@ -2100,6 +2142,7 @@ export component WorkPage inherits Flickable {
             }
             Text {
                 text: root.loading && Lib032.work.title == "" ? "加载中…" : Lib032.work.title;
+                font-family: Fonts.family(self.text);
                 color: Theme.text;
                 font-size: 28px;
                 font-weight: 700;
@@ -2107,16 +2150,19 @@ export component WorkPage inherits Flickable {
             }
             if Lib032.work.translated != "": Text {
                 text: Lib032.work.translated;
+                font-family: Fonts.family(self.text);
                 color: Theme.text;
                 font-size: 16px;
             }
             if Lib032.work.reading != "": Text {
                 text: Lib032.work.reading;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
             }
             Text {
                 text: Lib032.work.facts;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
             }
@@ -2179,6 +2225,7 @@ export component WorkPage inherits Flickable {
                     }
                     Text {
                         text: Lib032.work.series-title;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text;
                         font-weight: 600;
                         vertical-alignment: center;
@@ -2186,6 +2233,7 @@ export component WorkPage inherits Flickable {
                     }
                     Text {
                         text: Lib032.work.series-meta;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-dim;
                         font-size: 13px;
                         vertical-alignment: center;
@@ -2292,6 +2340,7 @@ export component SeriesDetailPage inherits Flickable {
                 }
                 Text {
                     text: root.loading && Lib032.series-info.title == "" ? "加载中…" : Lib032.series-info.title;
+                    font-family: Fonts.family(self.text);
                     color: Theme.text;
                     font-size: 28px;
                     font-weight: 700;
@@ -2306,6 +2355,7 @@ export component SeriesDetailPage inherits Flickable {
             }
             Text {
                 text: Lib032.series-info.facts;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
             }
@@ -2438,11 +2488,13 @@ export component MixPage inherits VerticalLayout {
             horizontal-stretch: 1;
             Text {
                 text: Lib032.mix.kicker;
+                font-family: Fonts.family(self.text);
                 color: Theme.accent;
                 font-size: 13px;
             }
             Text {
                 text: root.loading && Lib032.mix.title == "" ? "加载中…" : Lib032.mix.title;
+                font-family: Fonts.family(self.text);
                 color: Theme.text;
                 font-size: 28px;
                 font-weight: 700;
@@ -2450,6 +2502,7 @@ export component MixPage inherits VerticalLayout {
             }
             if Lib032.mix.description != "": Text {
                 text: Lib032.mix.description;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
                 wrap: word-wrap;
@@ -2493,6 +2546,7 @@ export component MixPage inherits VerticalLayout {
             }
             Text {
                 text: Lib032.mix.subtitle;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 font-size: 13px;
             }
@@ -2557,6 +2611,7 @@ export component MixPage inherits VerticalLayout {
                         }
                         if Lib032.mix.disliked-note != "": Text {
                             text: Lib032.mix.disliked-note;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-dim;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -2600,6 +2655,7 @@ export component MixPage inherits VerticalLayout {
                             }
                             Text {
                                 text: Lib032.mix.replacements-left > 0 ? "今天还可以换 " + Lib032.mix.replacements-left + " 次" : "今天的次数已用完";
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 12px;
                             }
@@ -2720,6 +2776,7 @@ export component LyricsSearchDialog inherits Rectangle {
                     horizontal-stretch: 1;
                     if LyricsSearch.results.length == 0: Text {
                         text: LyricsSearch.searching ? "搜索中…" : "没有结果";
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-faint;
                     }
                     ListView {
@@ -2742,18 +2799,21 @@ export component LyricsSearchDialog inherits Rectangle {
                                     alignment: center;
                                     Text {
                                         text: r.title;
+                                        font-family: Fonts.family(self.text);
                                         color: Theme.text;
                                         font-weight: 600;
                                         overflow: elide;
                                     }
                                     Text {
                                         text: r.artist;
+                                        font-family: Fonts.family(self.text);
                                         color: Theme.text-dim;
                                         font-size: 13px;
                                         overflow: elide;
                                     }
                                     Text {
                                         text: r.meta;
+                                        font-family: Fonts.family(self.text);
                                         color: Theme.text-faint;
                                         font-size: 12px;
                                         overflow: elide;
@@ -2761,6 +2821,7 @@ export component LyricsSearchDialog inherits Rectangle {
                                 }
                                 Text {
                                     text: r.score;
+                                    font-family: Fonts.family(self.text);
                                     color: Theme.text-dim;
                                     font-size: 13px;
                                     vertical-alignment: center;
@@ -2775,6 +2836,7 @@ export component LyricsSearchDialog inherits Rectangle {
                     background: Theme.bg;
                     if LyricsSearch.preview.length == 0: Text {
                         text: LyricsSearch.selected < 0 ? "选择一条结果预览歌词" : "加载中…";
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-faint;
                         font-size: 13px;
                     }
@@ -2782,6 +2844,7 @@ export component LyricsSearchDialog inherits Rectangle {
                         for line in LyricsSearch.preview: Text {
                             height: 24px;
                             text: line;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-dim;
                             font-size: 13px;
                             horizontal-alignment: center;

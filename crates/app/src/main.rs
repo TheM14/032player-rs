@@ -116,6 +116,9 @@ fn main() -> Result<(), slint::PlatformError> {
     slint::BackendSelector::new().select()?;
     fonts::register();
     let window = AppWindow::new()?;
+    window
+        .global::<Fonts>()
+        .on_family(|text| fonts::family_for(&text).into());
     let settings = Settings::load(&data_dir);
     let player_options = player::PlayerOptions {
         audio_device: settings.audio_device.clone(),

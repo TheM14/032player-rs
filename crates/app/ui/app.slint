@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Fonts, Theme } from "theme.slint";
 import { Palette } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice,
@@ -19,7 +19,7 @@ import {
     HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog, LinkText,
 } from "m032.slint";
 
-export { Playback }
+export { Fonts, Playback }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -48,6 +48,7 @@ component NavItem inherits Rectangle {
         }
         Text {
             text: root.text;
+            font-family: Fonts.family(self.text);
             color: root.selected ? Theme.text : Theme.text-dim;
             font-weight: 600;
             vertical-alignment: center;
@@ -71,6 +72,7 @@ component SideHeader inherits HorizontalLayout {
     padding-left: 8px;
     Text {
         text: root.text;
+        font-family: Fonts.family(self.text);
         color: head-area.has-hover ? Theme.text : Theme.text-dim;
         font-size: 13px;
         font-weight: 700;
@@ -96,6 +98,7 @@ export component AppWindow inherits Window {
     background: Theme.bg;
     // Electron body text (Mantine `md`); fonts: `src/fonts.rs`.
     default-font-size: 14px;
+    default-font-family: "Noto Sans SC";
 
     in-out property <bool> logged-in: false;
 
@@ -585,6 +588,7 @@ export component AppWindow inherits Window {
                                         horizontal-stretch: 1;
                                         Text {
                                             text: p.title;
+                                            font-family: Fonts.family(self.text);
                                             color: Theme.text;
                                             font-size: 13px;
                                             font-weight: 600;
@@ -592,6 +596,7 @@ export component AppWindow inherits Window {
                                         }
                                         Text {
                                             text: p.meta;
+                                            font-family: Fonts.family(self.text);
                                             color: Theme.text-faint;
                                             font-size: 12px;
                                             overflow: elide;
@@ -1114,7 +1119,6 @@ export component AppWindow inherits Window {
                             Text {
                                 height: 40px;
                                 text: "关于 " + root.detail.title;
-                                font-family: "Noto Sans SC";
                                 color: Theme.text;
                                 font-size: 18px;
                                 font-weight: 700;
@@ -1129,6 +1133,7 @@ export component AppWindow inherits Window {
                                     width: parent.width;
                                     height: self.preferred-height;
                                     text: root.artist-about;
+                                    font-family: Fonts.family(self.text);
                                     color: Theme.text-dim;
                                     font-size: 13px;
                                     wrap: word-wrap;
@@ -1152,7 +1157,6 @@ export component AppWindow inherits Window {
                                 spacing: 10px;
                                 Text {
                                     text: g.title;
-                                    font-family: "Noto Sans SC";
                                     color: Theme.text;
                                     font-size: 18px;
                                     font-weight: 700;
@@ -1160,6 +1164,7 @@ export component AppWindow inherits Window {
                                 }
                                 Text {
                                     text: g.count;
+                                    font-family: Fonts.family(self.text);
                                     color: Theme.text-faint;
                                     font-size: 13px;
                                     vertical-alignment: center;
@@ -1211,7 +1216,6 @@ export component AppWindow inherits Window {
                             height: 52px;
                             Text {
                                 text: "热门歌曲";
-                                font-family: "Noto Sans SC";
                                 color: Theme.text;
                                 font-size: 18px;
                                 font-weight: 700;
@@ -1246,7 +1250,6 @@ export component AppWindow inherits Window {
                             spacing: 10px;
                             Text {
                                 text: "收藏的歌曲";
-                                font-family: "Noto Sans SC";
                                 color: Theme.text;
                                 font-size: 18px;
                                 font-weight: 700;
@@ -1254,6 +1257,7 @@ export component AppWindow inherits Window {
                             }
                             Text {
                                 text: root.artist-favs.length;
+                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 13px;
                                 vertical-alignment: center;
@@ -1854,6 +1858,7 @@ export component AppWindow inherits Window {
         border-color: Theme.border;
         toast := Text {
             text: root.notice;
+            font-family: Fonts.family(self.text);
             color: Theme.text;
             wrap: word-wrap;
             width: min(528px, self.preferred-width);

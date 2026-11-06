@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Fonts, Theme } from "theme.slint";
 import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
 
 // `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
@@ -213,6 +213,7 @@ export component LoginView inherits Rectangle {
 
             if root.error != "": Text {
                 text: root.error;
+                font-family: Fonts.family(self.text);
                 color: Theme.danger;
                 wrap: word-wrap;
             }
@@ -260,6 +261,7 @@ export component CardView inherits Rectangle {
 
             if (root.kind == 1 || root.poster) && root.card.cover.width == 0: Text {
                 text: root.poster ? "作" : root.card.title == "" ? "?" : "♪";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 font-size: root.size / 3;
             }
@@ -316,6 +318,7 @@ export component CardView inherits Rectangle {
                 background: #000000a0;
                 badge-text := Text {
                     text: root.card.badge;
+                    font-family: Fonts.family(self.text);
                     color: #ffffff;
                     font-size: 12px;
                 }
@@ -324,6 +327,7 @@ export component CardView inherits Rectangle {
 
         Text {
             text: root.card.title;
+            font-family: Fonts.family(self.text);
             color: Theme.text;
             font-weight: 600;
             overflow: elide;
@@ -336,6 +340,7 @@ export component CardView inherits Rectangle {
             alignment: root.kind == 1 ? center : start;
             artist-text := Text {
                 text: root.card.artist;
+                font-family: Fonts.family(self.text);
                 visible: root.card.artist != "";
                 color: artist-area.has-hover ? Theme.text : Theme.text-dim;
                 font-size: 13px;
@@ -345,6 +350,7 @@ export component CardView inherits Rectangle {
             year-text := Text {
                 visible: root.card.year != "";
                 text: root.card.artist == "" ? root.card.year : " · " + root.card.year;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
             }
@@ -352,6 +358,7 @@ export component CardView inherits Rectangle {
 
         if root.card.note != "": Text {
             text: root.card.note;
+            font-family: Fonts.family(self.text);
             color: Theme.accent;
             font-size: 13px;
             overflow: elide;
@@ -360,6 +367,7 @@ export component CardView inherits Rectangle {
 
         if root.card.added != "": Text {
             text: root.card.added;
+            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 13px;
             overflow: elide;
@@ -474,6 +482,7 @@ export component CardGrid inherits Rectangle {
 
     if root.rows.length == 0: Text {
         text: root.loading ? "加载中…" : root.empty-text;
+        font-family: Fonts.family(self.text);
         color: Theme.text-faint;
     }
 
@@ -645,6 +654,7 @@ export component TrackRowView inherits Rectangle {
             if !root.playing: Text {
                 x: 0;
                 text: root.mode == 1 ? root.track.number : root.track.index + 1;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 vertical-alignment: center;
             }
@@ -662,6 +672,7 @@ export component TrackRowView inherits Rectangle {
                 horizontal-stretch: 1;
                 Text {
                     text: root.track.title;
+                    font-family: Fonts.family(self.text);
                     color: root.track.disabled || root.track.blocked ? Theme.text-faint : root.playing ? Theme.accent : Theme.text;
                     overflow: elide;
                 }
@@ -680,6 +691,7 @@ export component TrackRowView inherits Rectangle {
                         alignment: start;
                         for part in root.track.credits: Text {
                             text: part.text;
+                            font-family: Fonts.family(self.text);
                             color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
                             font-size: 13px;
                             credit-area := TouchArea {
@@ -709,6 +721,7 @@ export component TrackRowView inherits Rectangle {
                     spacing: 4px;
                     Text {
                         text: "◆ " + root.track.tieup;
+                        font-family: Fonts.family(self.text);
                         color: Theme.accent;
                         font-size: 12px;
                         font-weight: 600;
@@ -716,6 +729,7 @@ export component TrackRowView inherits Rectangle {
                     }
                     if root.track.tieup-count > 1: Text {
                         text: root.track.tieup-count;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-dim;
                         font-size: 11px;
                         vertical-alignment: center;
@@ -748,6 +762,7 @@ export component TrackRowView inherits Rectangle {
                 background: root.track.tag-accent ? Theme.accent-dim : Theme.raised;
                 tag-text := Text {
                     text: root.track.tag;
+                    font-family: Fonts.family(self.text);
                     color: root.track.tag-accent ? Theme.accent : Theme.text-dim;
                     font-size: 12px;
                 }
@@ -761,6 +776,7 @@ export component TrackRowView inherits Rectangle {
                 x: 0;
                 width: min(self.preferred-width, root.artist-w);
                 text: root.track.artist;
+                font-family: Fonts.family(self.text);
                 color: root.track.artist-id > 0 && artist-area.has-hover ? Theme.accent : Theme.text-dim;
                 overflow: elide;
                 vertical-alignment: center;
@@ -781,6 +797,7 @@ export component TrackRowView inherits Rectangle {
                 x: 0;
                 width: min(self.preferred-width, root.album-w);
                 text: root.mode == 3 ? root.track.note : root.track.album;
+                font-family: Fonts.family(self.text);
                 color: album-col.link && album-area.has-hover ? Theme.accent : Theme.text-dim;
                 overflow: elide;
                 vertical-alignment: center;
@@ -798,6 +815,7 @@ export component TrackRowView inherits Rectangle {
             width: 64px;
             Text {
                 text: root.track.blocked ? "已不再推荐" : "不再推荐";
+                font-family: Fonts.family(self.text);
                 color: root.track.blocked ? Theme.accent : block-area.has-hover ? Theme.text : Theme.text-faint;
                 font-size: 12px;
                 visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
@@ -829,6 +847,7 @@ export component TrackRowView inherits Rectangle {
         }
         Text {
             text: root.track.duration;
+            font-family: Fonts.family(self.text);
             width: TrackColumns.duration;
             color: Theme.text-dim;
             horizontal-alignment: right;
@@ -887,6 +906,7 @@ export component TrackList inherits Rectangle {
             vertical-stretch: 1;
             Text {
                 text: root.loading ? "加载中…" : root.empty-text;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
             }
         }
@@ -951,6 +971,7 @@ export component QueuePanel inherits Rectangle {
         width: root.width;
         horizontal-alignment: center;
         text: root.search != "" ? "没有匹配的曲目" : "队列为空";
+        font-family: Fonts.family(self.text);
         color: Theme.text-faint;
     }
 
@@ -971,6 +992,7 @@ export component QueuePanel inherits Rectangle {
             }
             Text {
                 text: root.total == 0 ? "" : "  " + root.total + " 首";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 font-size: 13px;
                 vertical-alignment: center;
@@ -1073,6 +1095,7 @@ export component QueuePanel inherits Rectangle {
                         width: 28px;
                         if i != root.current: Text {
                             text: row.number;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
                             font-size: 12px;
                             horizontal-alignment: center;
@@ -1102,12 +1125,14 @@ export component QueuePanel inherits Rectangle {
                         horizontal-stretch: 1;
                         Text {
                             text: row.title;
+                            font-family: Fonts.family(self.text);
                             color: i == root.current ? Theme.accent : Theme.text;
                             font-weight: 600;
                             overflow: elide;
                         }
                         Text {
                             text: row.artist;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-dim;
                             font-size: 12px;
                             overflow: elide;
@@ -1115,6 +1140,7 @@ export component QueuePanel inherits Rectangle {
                     }
                     Text {
                         text: row.duration;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text-faint;
                         font-size: 12px;
                         vertical-alignment: center;
@@ -1151,6 +1177,7 @@ component LyricsTool inherits Rectangle {
     background: area.has-hover ? Theme.surface-hover : transparent;
     label := Text {
         text: root.text;
+        font-family: Fonts.family(self.text);
         color: root.active ? Theme.accent : area.has-hover ? Theme.text : Theme.text-dim;
         font-size: 13px;
     }
@@ -1207,6 +1234,7 @@ export component LyricsPanel inherits Rectangle {
             }
             Text {
                 text: root.source;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
                 font-size: 12px;
                 horizontal-alignment: right;
@@ -1249,6 +1277,7 @@ export component LyricsPanel inherits Rectangle {
             vertical-stretch: 1;
             Text {
                 text: root.has-track ? "暂无歌词" : "";
+                font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
             }
         }
@@ -1326,6 +1355,7 @@ export component LyricsPanel inherits Rectangle {
                         spacing: 2px;
                         Text {
                             text: line.text;
+                            font-family: Fonts.family(self.text);
                             wrap: word-wrap;
                             horizontal-alignment: root.large ? center : left;
                             font-size: root.large ? 26px : 18px;
@@ -1335,6 +1365,7 @@ export component LyricsPanel inherits Rectangle {
                         }
                         if line.translation != "": Text {
                             text: line.translation;
+                            font-family: Fonts.family(self.text);
                             wrap: word-wrap;
                             horizontal-alignment: root.large ? center : left;
                             font-size: root.large ? 19px : 15px;
@@ -1365,6 +1396,7 @@ export component LyricsPanel inherits Rectangle {
                     spacing: 2px;
                     Text {
                         text: line.text;
+                        font-family: Fonts.family(self.text);
                         wrap: word-wrap;
                         horizontal-alignment: root.large ? center : left;
                         font-size: root.large ? 20px : 16px;
@@ -1373,6 +1405,7 @@ export component LyricsPanel inherits Rectangle {
                     }
                     if line.translation != "": Text {
                         text: line.translation;
+                        font-family: Fonts.family(self.text);
                         wrap: word-wrap;
                         horizontal-alignment: root.large ? center : left;
                         font-size: root.large ? 16px : 14px;
@@ -1405,6 +1438,7 @@ export component LyricsPanel inherits Rectangle {
             }
             if root.synced: Text {
                 text: (root.offset-ms > 0 ? "+" : "") + root.offset-ms + " ms";
+                font-family: Fonts.family(self.text);
                 color: root.offset-ms == 0 ? Theme.text-faint : Theme.accent;
                 font-size: 13px;
                 width: 64px;
@@ -1545,6 +1579,7 @@ export component PlayerBar inherits Rectangle {
                 horizontal-stretch: 1;
                 Text {
                     text: root.has-track ? root.title : "未在播放";
+                    font-family: Fonts.family(self.text);
                     color: Theme.text;
                     font-size: 15px;
                     font-weight: 700;
@@ -1561,6 +1596,7 @@ export component PlayerBar inherits Rectangle {
                         background: Theme.raised;
                         quality-text := Text {
                             text: root.quality;
+                            font-family: Fonts.family(self.text);
                             color: Theme.text-dim;
                             font-size: 11px;
                             font-weight: 600;
@@ -1568,6 +1604,7 @@ export component PlayerBar inherits Rectangle {
                     }
                     Text {
                         text: root.artist;
+                        font-family: Fonts.family(self.text);
                         color: artist-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
                         font-size: 13px;
                         overflow: elide;
@@ -1587,6 +1624,7 @@ export component PlayerBar inherits Rectangle {
                     }
                     if root.album != "": Text {
                         text: root.album;
+                        font-family: Fonts.family(self.text);
                         color: album-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
                         font-size: 13px;
                         overflow: elide;
@@ -1669,6 +1707,7 @@ export component PlayerBar inherits Rectangle {
                 spacing: 10px;
                 Text {
                     text: seek-bar.dragging ? root.preview-text : root.position-text;
+                    font-family: Fonts.family(self.text);
                     width: 48px;
                     color: Theme.text-dim;
                     font-size: 12px;
@@ -1687,6 +1726,7 @@ export component PlayerBar inherits Rectangle {
                 }
                 Text {
                     text: root.buffering ? "缓冲中" : root.duration-text;
+                    font-family: Fonts.family(self.text);
                     width: 48px;
                     color: Theme.text-dim;
                     font-size: 12px;
@@ -1711,6 +1751,7 @@ export component PlayerBar inherits Rectangle {
                 opacity: root.exclusive-busy ? 0.5 : 1;
                 excl-text := Text {
                     text: root.exclusive-busy ? "切换中…" : "独占";
+                    font-family: Fonts.family(self.text);
                     color: root.exclusive ? Theme.accent : Theme.text-dim;
                     font-size: 12px;
                     font-weight: 600;
@@ -1735,6 +1776,7 @@ export component PlayerBar inherits Rectangle {
                 }
                 if root.sleep-active: Text {
                     text: root.sleep-label;
+                    font-family: Fonts.family(self.text);
                     color: Theme.accent;
                     font-size: 12px;
                     vertical-alignment: center;
@@ -1810,6 +1852,7 @@ export component PlayerBar inherits Rectangle {
                     Text {
                         x: 10px;
                         text: option.label;
+                        font-family: Fonts.family(self.text);
                         color: Theme.text;
                         vertical-alignment: center;
                         height: 100%;

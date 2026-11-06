@@ -1,5 +1,5 @@
 import { ComboBox, Switch } from "std-widgets.slint";
-import { Theme } from "theme.slint";
+import { Fonts, Theme } from "theme.slint";
 import { GhostButton } from "controls.slint";
 
 component SettingRow inherits Rectangle {
@@ -22,11 +22,13 @@ component SettingRow inherits Rectangle {
             spacing: 4px;
             Text {
                 text: root.title;
+                font-family: Fonts.family(self.text);
                 color: Theme.text;
                 font-weight: 600;
             }
             if root.description != "": Text {
                 text: root.description;
+                font-family: Fonts.family(self.text);
                 color: Theme.text-dim;
                 font-size: 13px;
                 wrap: word-wrap;

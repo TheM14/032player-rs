@@ -1,5 +1,12 @@
 import { Palette } from "std-widgets.slint";
 
+// Font family for content text (`src/fonts.rs` `family_for`): Noto Sans JP
+// when it has kana, otherwise Noto Sans SC. The window defaults to SC for
+// the Chinese UI labels.
+export global Fonts {
+    pure callback family(string) -> string;
+}
+
 // 032 Dark / 032 Light (Electron `shared/themes/music032-dark|light`).
 // The scheme comes from the std-widgets palette: the app forces it from the
 // theme setting, or leaves it to the system ("跟随系统"); unknown = dark.
