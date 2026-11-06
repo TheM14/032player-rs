@@ -12,7 +12,7 @@ use client_core::{
     AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, AudioDevice, Command, Commander, DetailView,
     Event, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort, QueuePosition,
     Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason, SleepTimer, SortOrder,
-    TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
+    ThemeMode, TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -1434,6 +1434,11 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_exclusive(settings.exclusive);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_fade_on_pause(settings.fade_on_pause);
+    window.set_theme_mode(match settings.theme {
+        ThemeMode::System => 0,
+        ThemeMode::Dark => 1,
+        ThemeMode::Light => 2,
+    });
     window.set_repeat(repeat_index(settings.repeat));
     window.set_shuffle(settings.shuffle);
     let grids: Vec<Rc<CardGridModel>> = (0..GRIDS)
@@ -1776,6 +1781,14 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_close_to_tray_toggled(move |on| c.send(Command::SetCloseToTray(on)));
     let c = commander.clone();
     window.on_fade_on_pause_toggled(move |on| c.send(Command::SetFadeOnPause(on)));
+    let c = commander.clone();
+    window.on_theme_selected(move |i| {
+        c.send(Command::SetTheme(match i {
+            0 => ThemeMode::System,
+            2 => ThemeMode::Light,
+            _ => ThemeMode::Dark,
+        }));
+    });
     let c = commander.clone();
     window.on_settings_opened(move || c.send(Command::RefreshAudioDevices));
     let c = commander.clone();

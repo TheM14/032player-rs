@@ -202,6 +202,7 @@ pub enum Command {
     SetCloseToTray(bool),
     /// Volume fade on play / pause.
     SetFadeOnPause(bool),
+    SetTheme(crate::settings::ThemeMode),
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
     /// Load artwork `path` for display at `px` physical pixels (long side);
@@ -1539,6 +1540,7 @@ impl Core {
                 self.update_settings(|s| s.sidebar_width = crate::settings::sidebar_width(width));
             }
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
+            Command::SetTheme(theme) => self.update_settings(|s| s.theme = theme),
             Command::SetFadeOnPause(on) => {
                 self.update_settings(|s| s.fade_on_pause = on);
                 if !on && !self.paused {

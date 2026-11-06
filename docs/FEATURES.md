@@ -124,7 +124,7 @@
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4（最低优先级） | [ ] 只有深色 |
+| 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4 | [x] 默认深色 |
 | 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [x] |
 | zh-Hans / zh-Hant / en | `i18n/locales/` | - | - 只做简体中文（2026-11-06） |
 

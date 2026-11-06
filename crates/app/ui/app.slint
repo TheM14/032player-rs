@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Palette } from "std-widgets.slint";
 import {
     AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice,
     LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, QueuePanel, PlayerBar,
@@ -368,6 +369,19 @@ export component AppWindow inherits Window {
     callback close-to-tray-toggled(bool);
     in-out property <bool> fade-on-pause;
     callback fade-on-pause-toggled(bool);
+    // 0 follow the system, 1 032 Dark, 2 032 Light (settings `theme`).
+    in-out property <int> theme-mode: 1;
+    callback theme-selected(int);
+    function apply-theme() {
+        Palette.color-scheme = root.theme-mode == 1 ? ColorScheme.dark
+            : root.theme-mode == 2 ? ColorScheme.light : ColorScheme.unknown;
+    }
+    init => {
+        root.apply-theme();
+    }
+    changed theme-mode => {
+        root.apply-theme();
+    }
     in property <[string]> transcode-options: ["原始文件"];
     in-out property <int> transcode-index;
     callback transcode-selected(int);
@@ -1399,6 +1413,10 @@ export component AppWindow inherits Window {
                     panel-lyrics <=> root.panel-lyrics;
                     panel-changed => {
                         root.panel-changed();
+                    }
+                    theme-mode <=> root.theme-mode;
+                    theme-selected(i) => {
+                        root.theme-selected(i);
                     }
                     fade-on-pause <=> root.fade-on-pause;
                     fade-on-pause-toggled(on) => {

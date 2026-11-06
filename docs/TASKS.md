@@ -134,7 +134,11 @@
 
 #### D. 浅色主题（优先级最低）
 
-见 P2。默认深色，加"跟随系统"。
+- [x] `Theme` 颜色随 std-widgets `Palette.color-scheme` 切换（032 Dark / 032 Light，取自 `music032-light.ts`）；构建样式由 `fluent-dark` 改为 `fluent`，开关、下拉框跟着变
+- [x] 设置页"外观 → 主题"：跟随系统 / 深色（默认）/ 浅色，存 `settings.json` `theme`
+- [x] 主页聚焦卡分段控件、预览卡片的深色专用半透明色按主题区分；其余写死的颜色都是封面上的遮罩，两种主题通用
+- [x] ui-snapshot：`light-albums.png`、`light-settings.png`、`light-full.png`
+- [ ] **[Win]** 浅色下逐页看一遍（主页、专辑页信息栏、作品 / 系列、每日推荐、对话框）；"跟随系统"在系统切换深浅色后是否跟上（Slint 不一定实时更新，重启后应正确）
 
 #### E. 更新提示
 
@@ -280,7 +284,7 @@ Electron：播放条"队列"按钮开关整个右栏；右栏里队列和歌词�
 
 ### P2 - 原 M4 范围
 
-- [ ] 032 Light / Dark 主题、跟随系统、强调色（`shared/themes/music032-*`）
+- [x] 032 Light / Dark 主题、跟随系统、强调色（见"M4 后续" D）
 - [x] 全屏播放器（见"M4 后续" B）
 - 全局快捷键：不做（2026-11-06）
 - [x] Windows 安装包：`packaging/windows/032player.iss`（Inno Setup 6.7，当前用户安装、简体中文界面、开始菜单 / 可选桌面快捷方式），

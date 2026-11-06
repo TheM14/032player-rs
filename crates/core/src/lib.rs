@@ -31,5 +31,5 @@ pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, backdrop, decode, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
-pub use settings::{LyricsSettings, RightPanel, Settings, TranslationMode, WindowState};
+pub use settings::{LyricsSettings, RightPanel, Settings, ThemeMode, TranslationMode, WindowState};
 pub use storage::FileStorage;

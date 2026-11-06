@@ -425,7 +425,7 @@ fn main() {
     fonts::register();
 
     let mut compiler = Compiler::default();
-    compiler.set_style("fluent-dark".into());
+    compiler.set_style("fluent".into());
     let result = spin_on::spin_on(compiler.build_from_path(root));
     for d in result.diagnostics() {
         eprintln!("{d}");
@@ -1450,6 +1450,21 @@ fn main() {
     set_g(&inst, "LyricsSearch", "preview", lyrics_strings());
     set(&inst, "dialog", n(5.0));
     render(&window, size, &format!("{out}/lyrics-search.png"));
+
+    // 032 Light.
+    set(&inst, "dialog", n(0.0));
+    set(&inst, "theme-mode", n(2.0));
+    set(&inst, "page", n(0.0));
+    set(&inst, "panel-open", Value::Bool(true));
+    set(&inst, "panel-queue", Value::Bool(true));
+    render(&window, size, &format!("{out}/light-albums.png"));
+    set(&inst, "page", n(2.0));
+    render(&window, size, &format!("{out}/light-settings.png"));
+    set(&inst, "full-open", Value::Bool(true));
+    set(&inst, "full-tab", n(2.0));
+    render(&window, size, &format!("{out}/light-full.png"));
+    set(&inst, "full-open", Value::Bool(false));
+    set(&inst, "theme-mode", n(1.0));
 }
 
 fn lyrics_strings() -> Value {

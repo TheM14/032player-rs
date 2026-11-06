@@ -1,15 +1,21 @@
-// 032 Dark (M0). Accent from shared/themes/music032: #8d7dff on dark.
+import { Palette } from "std-widgets.slint";
+
+// 032 Dark / 032 Light (Electron `shared/themes/music032-dark|light`).
+// The scheme comes from the std-widgets palette: the app forces it from the
+// theme setting, or leaves it to the system ("跟随系统"); unknown = dark.
 export global Theme {
-    out property <color> bg: #15141b;
-    out property <color> surface: #1d1b25;
-    out property <color> surface-hover: #272431;
-    out property <color> raised: #2a2734;
-    out property <color> border: #2e2b38;
-    out property <color> text: #ecebf3;
-    out property <color> text-dim: #a19db2;
-    out property <color> text-faint: #6f6b80;
-    out property <color> accent: #8d7dff;
-    out property <color> accent-dim: #8d7dff33;
-    out property <color> danger: #ff7a85;
+    out property <bool> dark: Palette.color-scheme != ColorScheme.light;
+    out property <color> bg: dark ? #15141b : #fafafa;
+    out property <color> surface: dark ? #1d1b25 : #f1f1f4;
+    out property <color> surface-hover: dark ? #272431 : #e7e7ec;
+    out property <color> raised: dark ? #2a2734 : #e2e2e8;
+    out property <color> border: dark ? #2e2b38 : #dddde3;
+    out property <color> text: dark ? #ecebf3 : #111113;
+    out property <color> text-dim: dark ? #a19db2 : #4f4f59;
+    out property <color> text-faint: dark ? #6f6b80 : #85858f;
+    // Accent: #8d7dff on dark, #5b47e0 on light.
+    out property <color> accent: dark ? #8d7dff : #5b47e0;
+    out property <color> accent-dim: dark ? #8d7dff33 : #5b47e029;
+    out property <color> danger: dark ? #ff7a85 : #c42b44;
     out property <length> radius: 6px;
 }

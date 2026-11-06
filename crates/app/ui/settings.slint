@@ -58,6 +58,9 @@ export component SettingsView inherits Rectangle {
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
     in-out property <bool> fade-on-pause;
+    // 0 system, 1 dark, 2 light.
+    in-out property <int> theme-mode;
+    callback theme-selected(int);
     // Panes of the right panel (Electron `showQueueInSidebar` /
     // `showLyricsInSidebar`).
     in-out property <bool> panel-queue;
@@ -129,6 +132,27 @@ export component SettingsView inherits Rectangle {
                     text: "打开日志文件夹";
                     clicked => {
                         root.open-logs();
+                    }
+                }
+            }
+
+            Text {
+                text: "外观";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            SettingRow {
+                title: "主题";
+                description: "032 深色 / 032 浅色，或跟随系统的深浅色设置。";
+                ComboBox {
+                    width: 200px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["跟随系统", "深色", "浅色"];
+                    current-index <=> root.theme-mode;
+                    selected => {
+                        root.theme-selected(self.current-index);
                     }
                 }
             }

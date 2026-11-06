@@ -28,6 +28,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 300 ms volume fade on play / pause (`audioFadeOnStatusChange`).
     pub fade_on_pause: bool,
+    /// 032 Dark / Light or the system's choice.
+    pub theme: ThemeMode,
     /// Stream a transcode instead of the original file (`None`: original,
     /// the bit-perfect default). Ignored when the server cannot.
     pub transcode: Option<api::Transcode>,
@@ -143,6 +145,17 @@ pub fn sidebar_width(width: f32) -> f32 {
     }
 }
 
+/// Color scheme of the app. Dark by default (the user's choice).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode {
+    /// Follow the system light / dark setting.
+    System,
+    #[default]
+    Dark,
+    Light,
+}
+
 /// How translated lyrics show (`lyrics.translationDisplayMode`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,6 +200,7 @@ impl Default for Settings {
             shuffle: false,
             close_to_tray: false,
             fade_on_pause: true,
+            theme: ThemeMode::Dark,
             transcode: None,
             lyrics: LyricsSettings::default(),
             shortcuts: crate::shortcuts::Shortcuts::default(),
@@ -266,6 +280,7 @@ mod tests {
             shuffle: true,
             close_to_tray: true,
             fade_on_pause: false,
+            theme: ThemeMode::Light,
             shortcuts: crate::shortcuts::Shortcuts::default(),
             transcode: Some(api::Transcode::Mp3(320)),
             lyrics: LyricsSettings {
