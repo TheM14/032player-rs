@@ -1,4 +1,4 @@
-import { Fonts, Theme } from "theme.slint";
+import { Fonts, Theme, Shell } from "theme.slint";
 import { Palette } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice,
@@ -383,6 +383,10 @@ export component AppWindow inherits Window {
     }
     init => {
         root.apply-theme();
+        Shell.window-width = root.width;
+    }
+    changed width => {
+        Shell.window-width = root.width;
     }
     changed theme-mode => {
         root.apply-theme();

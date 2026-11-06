@@ -35,7 +35,7 @@
 计划、规格、行为差异 D1-D6 见 `UI-REDESIGN.md`。每个阶段完成后把该阶段的 **[Win]** 项整理到本节末尾，请用户一次验证。
 
 - [x] P0 ui-snapshot 宽屏画布（2300x1190 / 1600x900 / 1280x800）与假数据（长标题、作品海报、OP / ED）
-- [ ] P1 Theme token（含亮色）、字号 token、新图标集
+- [x] P1 Theme token（含亮色）、字号 token、新图标集
 - [ ] P2 外壳：左导航（去封面、图标条）、右侧正在播放栏（页签）、播放条、断点
 - [ ] P3 首页：横幅、区块标题、各模块
 - [ ] P4 专辑页（头部、曲目表、OP / ED 弹窗样式、信息栏）与列表页
@@ -50,6 +50,12 @@
   作品海报 2:3、OP 单作品和双作品标签。`UI_SNAPSHOT_COVERS=prototypes/assets/covers` 时用真实封面（只在本地），
   `UI_SNAPSHOT_ONLY=wide` 只出宽屏图，`UI_SNAPSHOT_WIDTHS=2300,1600` 只出指定宽度。宽屏图的网格列数取自界面上报的
   `card-layout-changed`，和应用里一样按列数重新分行。
+- **P1**（Theme 和图标）：`theme.slint` 按规格换成新配色，新增 `chrome`、`panel`、`accent-text`、`ok`、`hero-from/to`、
+  `bar`、`popover`、`stage` 和字号 token，新增 `Shell` global（按窗口宽度算断点 tier 和页边距，`AppWindow` 在宽度变化时写入）。
+  `Icon` 换成 `icons.svg` 的 Lucide 图标（`tools/icons/svg2slint.py` 把圆、圆角矩形和相对命令转成绝对路径），线宽按 24 栅格 1.7 换算，
+  圆头圆角；播放、暂停、上一首、下一首和实心心形是填充图标。新增 `minus`、`volume`、`chevron-right`、`info`、`speaker`、`lang`、
+  `expand`、`sliders`、`list-plus`、`sort-desc`、`check`。Slint `Path` 本身支持弧线和相对命令，这里预处理成绝对命令只是为了统一。
+  **[Win]**：图标在 100% / 150% 缩放下是否清晰；亮暗两套主题的对比度。
 
 ## M4 验证清单（Windows，进行中，P0 做完后用新 preview 包）
 

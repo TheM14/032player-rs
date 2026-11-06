@@ -7,22 +7,64 @@ export global Fonts {
     pure callback family(string) -> string;
 }
 
-// 032 Dark / 032 Light (Electron `shared/themes/music032-dark|light`).
+// 032 Dark / 032 Light, v3 Editorial (`docs/UI-REDESIGN.md`).
 // The scheme comes from the std-widgets palette: the app forces it from the
 // theme setting, or leaves it to the system ("跟随系统"); unknown = dark.
 export global Theme {
     out property <bool> dark: Palette.color-scheme != ColorScheme.light;
-    out property <color> bg: dark ? #15141b : #fafafa;
-    out property <color> surface: dark ? #1d1b25 : #f1f1f4;
-    out property <color> surface-hover: dark ? #272431 : #e7e7ec;
-    out property <color> raised: dark ? #2a2734 : #e2e2e8;
-    out property <color> border: dark ? #2e2b38 : #dddde3;
-    out property <color> text: dark ? #ecebf3 : #111113;
-    out property <color> text-dim: dark ? #a19db2 : #4f4f59;
-    out property <color> text-faint: dark ? #6f6b80 : #85858f;
-    // Accent: #8d7dff on dark, #5b47e0 on light.
+    // Main content.
+    out property <color> bg: dark ? #0f0f13 : #f7f7f9;
+    // Left navigation and the player bar.
+    out property <color> chrome: dark ? #0b0b0e : #efeff3;
+    // Right "now playing" panel.
+    out property <color> panel: dark ? #15151b : #ffffff;
+    // Cards (接着听, works).
+    out property <color> surface: dark ? #15151b : #ffffff;
+    out property <color> surface-hover: dark ? #1b1b23 : #ececf1;
+    // Inputs, button and tag backgrounds.
+    out property <color> raised: dark ? #1f1f27 : #e6e6ec;
+    // Rules and shell edges.
+    out property <color> border: dark ? #25252e : #dedee5;
+    out property <color> text: dark ? #f3f2f7 : #111113;
+    out property <color> text-dim: dark ? #a9a7b6 : #4f4f59;
+    out property <color> text-faint: dark ? #7a788c : #85858f;
     out property <color> accent: dark ? #8d7dff : #5b47e0;
-    out property <color> accent-dim: dark ? #8d7dff33 : #5b47e029;
+    // Small accent text (tags, links, active icons).
+    out property <color> accent-text: dark ? #ab9fff : #4a36d0;
+    // Current row, tag backgrounds.
+    out property <color> accent-dim: dark ? #8d7dff24 : #5b47e01f;
+    // Exclusive output / bit-perfect.
+    out property <color> ok: dark ? #5fd38d : #1f8a4c;
     out property <color> danger: dark ? #ff7a85 : #c42b44;
+    // The home spotlight band (neutral, never from the cover).
+    out property <color> hero-from: dark ? #1b1b21 : #ececf1;
+    out property <color> hero-to: dark ? #121217 : #f7f7f9;
+    // Year chart bars.
+    out property <color> bar: dark ? #2a2a34 : #dcdce4;
+    // Popovers (OP / ED work cards).
+    out property <color> popover: dark ? #22222b : #ffffff;
+    out property <color> popover-border: dark ? #33333d : #dedee5;
+    // Full-screen player background.
+    out property <color> stage: dark ? #0d0d11 : #f7f7f9;
     out property <length> radius: 6px;
+
+    // Type scale (logical px).
+    out property <length> font-meta: 13px;
+    out property <length> font-body: 15px;
+    out property <length> font-card: 16px;
+    out property <length> font-np-title: 24px;
+    out property <length> font-section: 26px;
+    out property <length> font-page: 64px;
+    out property <length> font-full-title: 56px;
+    out property <length> font-hero: 112px;
+    out property <length> font-album: 132px;
+}
+
+// Window-width breakpoints (`docs/UI-REDESIGN.md` 外壳尺寸与断点), set by
+// AppWindow and read by the pages: tier 2 at >= 1700, 1 at >= 1280, else 0.
+export global Shell {
+    in-out property <length> window-width: 1280px;
+    out property <int> tier: root.window-width >= 1700px ? 2 : root.window-width >= 1280px ? 1 : 0;
+    // Page side padding.
+    out property <length> pad: root.tier == 2 ? 40px : root.tier == 1 ? 28px : 24px;
 }
