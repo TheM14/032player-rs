@@ -1255,7 +1255,6 @@ impl Ui {
             // Free the large image; it is reloaded (byte cache) on reopen.
             *self.full_cover_key.borrow_mut() = None;
             w.set_full_cover(Image::default());
-            w.set_full_backdrop(Image::default());
             return;
         }
         let (artwork, track_id) = self
@@ -1277,10 +1276,8 @@ impl Ui {
                         .as_deref()
                         .is_some_and(|old| old.ends_with(&format!("|{artwork}")));
                     if !same_art {
-                        // Until it arrives: the player bar copy, blurred too.
-                        let small = w.get_np_cover();
-                        w.set_full_backdrop(m032::hero_backdrop(&small));
-                        w.set_full_cover(small);
+                        // Until it arrives: the player bar copy.
+                        w.set_full_cover(w.get_np_cover());
                     }
                     self.send(Command::LoadOriginalImage {
                         key: key.clone(),
@@ -1288,10 +1285,7 @@ impl Ui {
                         px,
                     });
                 }
-                None => {
-                    w.set_full_cover(Image::default());
-                    w.set_full_backdrop(Image::default());
-                }
+                None => w.set_full_cover(Image::default()),
             }
             *self.full_cover_key.borrow_mut() = key;
         }
@@ -2153,7 +2147,6 @@ pub fn apply(event: Event) {
                 w.set_np_cover_large(image.clone());
             }
             if ui.full_cover_key.borrow().as_deref() == Some(key.as_str()) {
-                w.set_full_backdrop(m032::hero_backdrop(&image));
                 w.set_full_cover(image.clone());
             }
             if ui.detail_cover_key.borrow().as_deref() == Some(key.as_str()) {

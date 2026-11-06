@@ -1509,14 +1509,3 @@ pub(super) fn set_row_favorite(model: &VecModel<HomeRow>, id: i64, favorite: boo
         }
     }
 }
-
-/// Blurred, saturated copy of a cover (the full-screen player background).
-pub(super) fn hero_backdrop(cover: &Image) -> Image {
-    cover
-        .to_rgba8()
-        .and_then(|buffer| {
-            client_core::backdrop(buffer.width(), buffer.height(), buffer.as_bytes())
-        })
-        .map(|rgba| super::to_image(&rgba))
-        .unwrap_or_default()
-}

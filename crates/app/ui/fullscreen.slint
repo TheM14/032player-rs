@@ -1,20 +1,31 @@
 import { Fonts, Theme } from "theme.slint";
-import { IconButton, IconKind, Tab } from "controls.slint";
+import { Icon, IconKind } from "controls.slint";
+import { PillTab, SourceBadge, QualityTag } from "nowplaying.slint";
 
-// Full-screen player (Electron `full-screen-player.tsx`), over the sidebar
-// and the content; the player bar stays below. Left: the original cover,
-// the title, "artist · album" links and the quality. Right: tabs for up
-// next / related / lyrics; the panes are the children. Background: the
-// blurred cover (`core::backdrop`), like Electron's dynamic background.
+// Full-screen player (v3 Editorial, `docs/UI-REDESIGN.md` D5) over the
+// sidebar and the content; the player bar stays below. Plain dark stage
+// (no cover-derived background).
+//
+// Wide (>= 1700): three columns - the cover, title and tags on the left,
+// the lyrics in the middle (always shown, tools in their header row) and
+// "接下来播放 / 相关歌曲" tabs on the right. Narrower: the cover column and
+// the three tabs (up next / related / lyrics) as before.
+//
+// The panes are the children: they are placed with the geometry this
+// component exposes (`lyrics-*`, `side-*`, `tools-*`; `pane-*` for the
+// narrow tab pane), relative to the whole component.
 export component FullScreenPlayer inherits Rectangle {
     in property <image> cover;
-    in property <image> backdrop;
     in property <bool> has-track;
     in property <string> title;
     in property <string> artist;
     in property <string> album;
     in property <string> quality;
-    // 0 up next, 1 related, 2 lyrics.
+    in property <bool> exclusive;
+    in property <bool> bit-perfect;
+    in property <string> lyrics-source;
+    // 0 up next, 1 related, 2 lyrics (narrow layout; wide shows the
+    // lyrics anyway and treats 2 as up next).
     in property <int> tab;
     callback tab-selected(int);
     callback close();
@@ -24,20 +35,39 @@ export component FullScreenPlayer inherits Rectangle {
     callback show-info();
     // The cover side settled (after resizing): decode the artwork for it.
     callback cover-resized(length);
-    // Size of the pane slot (children use it: their `parent` is this
-    // component, not the slot).
-    out property <length> pane-width: pane.width;
-    out property <length> pane-height: pane.height;
 
+    out property <bool> wide: root.width >= 1700px;
+
+    // Wide geometry (the mockup at 2300: 120 / 620 / 120 / lyrics / 60 /
+    // 440 / 60).
+    property <length> pad-x: clamp(root.width * 0.052, 48px, 120px);
+    property <length> wide-cover: round(max(240px, min(clamp(root.width * 0.27, 360px, 620px), root.height - 110px - 270px)) / 1phx) * 1phx;
+    out property <length> lyrics-x: root.pad-x + root.wide-cover + root.pad-x;
+    out property <length> lyrics-y: 100px;
+    out property <length> side-w: 440px;
+    out property <length> side-x: root.width - 60px - root.side-w;
+    out property <length> lyrics-w: max(200px, root.side-x - 60px - root.lyrics-x);
+    out property <length> lyrics-h: root.height - root.lyrics-y - 40px;
+    out property <length> side-y: 90px + 52px;
+    out property <length> side-h: root.height - root.side-y - 40px;
+    // Lyrics tools in the header row of the lyrics column.
+    out property <length> tools-x: root.lyrics-x + lyrics-head.preferred-width + 16px;
+    out property <length> tools-y: 25px;
+
+    // Narrow geometry: cover column 42%, tabs 58%.
     property <length> pad: 48px;
     property <length> gap: 56px;
-    // Cover column 42%, tabs 58% (track lists need the width).
     property <length> col-w: round((root.width - 2 * root.pad - root.gap) * 0.42 / 1phx) * 1phx;
     property <length> tabs-w: root.width - 2 * root.pad - root.gap - root.col-w;
-    // Room for the cover above the title, links and quality (~150px).
-    out property <length> side: round(max(120px, min(root.col-w, root.height - 2 * root.pad - 150px)) / 1phx) * 1phx;
+    property <length> narrow-cover: round(max(120px, min(root.col-w, root.height - 2 * root.pad - 190px)) / 1phx) * 1phx;
+    out property <length> pane-x: root.pad + root.col-w + root.gap;
+    out property <length> pane-y: root.pad + 46px;
+    out property <length> pane-width: root.tabs-w;
+    out property <length> pane-height: root.height - root.pad - root.pane-y;
 
-    background: Theme.bg;
+    out property <length> side: root.wide ? root.wide-cover : root.narrow-cover;
+
+    background: Theme.stage;
     init => {
         root.cover-resized(root.side);
     }
@@ -60,39 +90,29 @@ export component FullScreenPlayer inherits Rectangle {
         }
     }
 
-    Image {
-        source: root.backdrop;
-        width: 100%;
-        height: 100%;
-        image-fit: ImageFit.fill;
-        opacity: 0.5;
-    }
+    // Cover and metadata: left aligned at the top (wide) or centered in
+    // the left column (narrow).
     Rectangle {
-        background: @linear-gradient(180deg, Theme.bg.with-alpha(0.3) 0%, Theme.bg.with-alpha(0.88) 100%);
-    }
-
-    // Cover and metadata.
-    Rectangle {
-        x: root.pad;
-        y: root.pad;
-        width: root.col-w;
-        height: root.height - 2 * root.pad;
+        x: root.wide ? root.pad-x : root.pad;
+        y: root.wide ? 110px : root.pad;
+        width: root.wide ? root.wide-cover : root.col-w;
+        height: root.height - self.y - 40px;
         VerticalLayout {
-            alignment: center;
+            alignment: root.wide ? start : center;
             spacing: 0px;
             Rectangle {
                 height: root.side;
                 Rectangle {
-                    x: (parent.width - self.width) / 2;
+                    x: root.wide ? 0px : (parent.width - self.width) / 2;
                     width: root.side;
                     height: root.side;
-                    border-radius: 8px;
+                    border-radius: 14px;
                     background: Theme.raised;
-                    drop-shadow-blur: 32px;
-                    drop-shadow-offset-y: 8px;
-                    drop-shadow-color: #00000070;
+                    drop-shadow-blur: 60px;
+                    drop-shadow-offset-y: 30px;
+                    drop-shadow-color: #000000b0;
                     Rectangle {
-                        border-radius: 8px;
+                        border-radius: 14px;
                         clip: true;
                         Image {
                             source: root.cover;
@@ -104,28 +124,29 @@ export component FullScreenPlayer inherits Rectangle {
                 }
             }
             Rectangle {
-                height: 28px;
+                height: root.wide ? 36px : 28px;
             }
             Text {
                 text: root.has-track ? root.title : "未在播放";
                 font-family: Fonts.family(self.text);
                 color: Theme.text;
-                font-size: 28px;
-                font-weight: 800;
-                horizontal-alignment: center;
+                font-size: root.wide ? Theme.font-full-title : 34px;
+                font-weight: 850;
+                letter-spacing: root.wide ? -1.7px : -0.7px;
+                horizontal-alignment: root.wide ? left : center;
                 overflow: elide;
             }
             Rectangle {
                 height: 10px;
             }
             if root.has-track: HorizontalLayout {
-                alignment: center;
-                spacing: 8px;
+                alignment: root.wide ? start : center;
+                spacing: 0px;
                 Text {
                     text: root.artist;
                     font-family: Fonts.family(self.text);
-                    color: artist-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
-                    font-size: 16px;
+                    color: artist-area.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
+                    font-size: root.wide ? 22px : 18px;
                     overflow: elide;
                     artist-area := TouchArea {
                         mouse-cursor: pointer;
@@ -135,15 +156,15 @@ export component FullScreenPlayer inherits Rectangle {
                     }
                 }
                 if root.album != "": Text {
-                    text: "·";
-                    color: Theme.text-faint;
-                    font-size: 16px;
+                    text: " · ";
+                    color: Theme.text.with-alpha(0.75);
+                    font-size: root.wide ? 22px : 18px;
                 }
                 if root.album != "": Text {
                     text: root.album;
                     font-family: Fonts.family(self.text);
-                    color: album-area.has-hover ? Theme.accent.brighter(20%) : Theme.accent;
-                    font-size: 16px;
+                    color: album-area.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
+                    font-size: root.wide ? 22px : 18px;
                     overflow: elide;
                     album-area := TouchArea {
                         mouse-cursor: pointer;
@@ -154,29 +175,39 @@ export component FullScreenPlayer inherits Rectangle {
                 }
             }
             Rectangle {
-                height: 14px;
+                height: 18px;
             }
             if root.has-track: HorizontalLayout {
-                alignment: center;
-                spacing: 12px;
-                if root.quality != "": Rectangle {
-                    width: quality-text.preferred-width + 14px;
-                    height: 22px;
-                    border-radius: 4px;
-                    background: Theme.raised.with-alpha(0.8);
-                    quality-text := Text {
-                        text: root.quality;
-                        font-family: Fonts.family(self.text);
-                        color: Theme.text-dim;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
+                alignment: root.wide ? start : center;
+                spacing: 10px;
+                if root.quality != "": QualityTag {
+                    y: (parent.height - self.height) / 2;
+                    text: root.quality;
                 }
-                Text {
-                    text: "曲目信息";
-                    color: info-area.has-hover ? Theme.text : Theme.text-dim;
-                    font-size: 13px;
-                    vertical-alignment: center;
+                if root.exclusive: QualityTag {
+                    y: (parent.height - self.height) / 2;
+                    text: root.bit-perfect ? "独占 · bit-perfect" : "独占";
+                    text-color: Theme.ok;
+                }
+                Rectangle {
+                    width: info-row.preferred-width;
+                    height: 24px;
+                    info-row := HorizontalLayout {
+                        spacing: 6px;
+                        Icon {
+                            kind: IconKind.info;
+                            width: 15px;
+                            height: 15px;
+                            y: (parent.height - self.height) / 2;
+                            color: info-area.has-hover ? Theme.text : Theme.text-dim;
+                        }
+                        Text {
+                            text: "曲目信息";
+                            color: info-area.has-hover ? Theme.text : Theme.text-dim;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
                     info-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
@@ -188,41 +219,97 @@ export component FullScreenPlayer inherits Rectangle {
         }
     }
 
-    // Tabs and their panes (the children).
-    Rectangle {
-        x: root.pad + root.col-w + root.gap;
-        y: root.pad - 16px;
-        width: root.tabs-w;
-        height: root.height - 2 * root.pad + 16px;
-        VerticalLayout {
-            spacing: 12px;
-            HorizontalLayout {
-                alignment: center;
-                spacing: 8px;
-                for t[i] in ["接下来播放", "相关歌曲", "歌词"]: Tab {
-                    text: t;
-                    selected: root.tab == i;
-                    clicked => {
-                        root.tab-selected(i);
-                    }
-                }
+    // Wide: the lyrics header ("歌词" and the source) and the right tabs.
+    lyrics-head := HorizontalLayout {
+        visible: root.wide;
+        x: root.lyrics-x;
+        y: 30px;
+        width: self.preferred-width;
+        height: 24px;
+        spacing: 8px;
+        Text {
+            text: "歌词";
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        if root.lyrics-source != "": SourceBadge {
+            y: 2px;
+            text: root.lyrics-source;
+        }
+    }
+    if root.wide: HorizontalLayout {
+        x: root.side-x;
+        y: 90px;
+        width: root.side-w;
+        height: 34px;
+        spacing: 4px;
+        alignment: start;
+        PillTab {
+            text: "接下来播放";
+            on-stage: true;
+            selected: root.tab != 1;
+            clicked => {
+                root.tab-selected(0);
             }
-            // The panes clip themselves (list views / flickables).
-            pane := Rectangle {
-                vertical-stretch: 1;
-                @children
+        }
+        PillTab {
+            text: "相关歌曲";
+            on-stage: true;
+            selected: root.tab == 1;
+            clicked => {
+                root.tab-selected(1);
             }
         }
     }
 
-    IconButton {
-        x: root.width - self.width - 16px;
-        y: 12px;
-        kind: IconKind.chevron-down;
-        size: 36px;
-        icon-size: 20px;
-        clicked => {
-            root.close();
+    // Narrow: the three tabs over the pane.
+    if !root.wide: HorizontalLayout {
+        x: root.pane-x;
+        y: root.pad - 4px;
+        width: root.tabs-w;
+        height: 34px;
+        alignment: center;
+        spacing: 4px;
+        for t[i] in ["接下来播放", "相关歌曲", "歌词"]: PillTab {
+            text: t;
+            on-stage: true;
+            selected: root.tab == i;
+            clicked => {
+                root.tab-selected(i);
+            }
+        }
+    }
+
+    // The panes (children), positioned by the parent with the geometry above.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        @children
+    }
+
+    // Close (top left in the mockup).
+    Rectangle {
+        x: root.wide ? root.pad-x : 24px;
+        y: root.wide ? 28px : 20px;
+        width: 40px;
+        height: 40px;
+        border-radius: 20px;
+        background: close-area.has-hover ? Theme.text.with-alpha(0.16) : Theme.text.with-alpha(0.08);
+        Icon {
+            kind: IconKind.chevron-down;
+            width: 20px;
+            height: 20px;
+            color: Theme.text;
+        }
+        close-area := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.close();
+            }
         }
     }
 }

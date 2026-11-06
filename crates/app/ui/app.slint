@@ -2,7 +2,7 @@ import { Fonts, Theme, Shell } from "theme.slint";
 import { Palette } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice,
-    LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, QueuePanel, PlayerBar,
+    LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
 } from "views.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
@@ -314,7 +314,6 @@ export component AppWindow inherits Window {
     in-out property <bool> full-open;
     in-out property <int> full-tab;
     in property <image> full-cover;
-    in property <image> full-backdrop;
     in property <[TrackRow]> full-related;
     in property <bool> full-related-loading;
     in-out property <length> full-cover-side;
@@ -1843,12 +1842,14 @@ export component AppWindow inherits Window {
         // The player bar stays visible.
         height: root.height - root.bar-h;
         cover: root.full-cover;
-        backdrop: root.full-backdrop;
         has-track: root.has-track;
         title: root.np-title;
         artist: root.np-artist;
         album: root.np-album;
         quality: root.np-quality;
+        exclusive: root.exclusive;
+        bit-perfect: root.transcode-index == 0;
+        lyrics-source: root.lyrics-source;
         tab: root.full-tab;
         tab-selected(i) => {
             root.full-tab = i;
@@ -1871,12 +1872,15 @@ export component AppWindow inherits Window {
             root.full-changed();
         }
 
-        if root.full-tab == 0: QueuePanel {
-            x: 0;
-            y: 0;
-            width: full.pane-width;
-            height: full.pane-height;
+        // Up next: the right column (wide) or the first tab.
+        if full.wide ? root.full-tab != 1 : root.full-tab == 0: QueuePanel {
+            x: full.wide ? full.side-x : full.pane-x;
+            y: full.wide ? full.side-y : full.pane-y;
+            width: full.wide ? full.side-w : full.pane-width;
+            height: full.wide ? full.side-h : full.pane-height;
             background: transparent;
+            show-title: false;
+            side-padding: 12px;
             rows: root.queue;
             total: root.queue-total;
             current: root.queue-current;
@@ -1901,10 +1905,11 @@ export component AppWindow inherits Window {
             }
         }
         if root.full-tab == 1: TrackList {
-            x: 0;
-            y: 0;
-            width: full.pane-width;
-            height: full.pane-height;
+            x: full.wide ? full.side-x : full.pane-x;
+            y: full.wide ? full.side-y : full.pane-y;
+            width: full.wide ? full.side-w : full.pane-width;
+            height: full.wide ? full.side-h : full.pane-height;
+            pad: 0px;
             rows: root.full-related;
             mode: 1;
             playing-id: root.playing-id;
@@ -1915,13 +1920,19 @@ export component AppWindow inherits Window {
                 root.track-action(11, what, i, arg);
             }
         }
-        if root.full-tab == 2: LyricsPanel {
-            x: 0;
-            y: 0;
-            width: full.pane-width;
-            height: full.pane-height;
-            background: transparent;
-            large: true;
+        // Lyrics: the middle column (wide, tools in its header) or the
+        // third tab (centered, tools at the bottom).
+        if full.wide || root.full-tab == 2: LyricsPanel {
+            x: full.wide ? full.lyrics-x - 8px : full.pane-x;
+            y: full.wide ? full.lyrics-y : full.pane-y;
+            width: full.wide ? full.lyrics-w + 16px : full.pane-width;
+            height: full.wide ? full.lyrics-h : full.pane-height;
+            large: !full.wide;
+            stage: full.wide;
+            show-tools: !full.wide;
+            side-padding: full.wide ? 8px : 24px;
+            fades: true;
+            fade: Theme.stage;
             lines: root.lyrics;
             active: root.lyrics-active;
             synced: root.lyrics-synced;
@@ -1944,6 +1955,35 @@ export component AppWindow inherits Window {
             }
             offset(ms) => {
                 root.lyrics-offset-changed(ms);
+            }
+        }
+        if full.wide && root.has-track: Rectangle {
+            x: full.tools-x;
+            y: full.tools-y;
+            width: full-tools.preferred-width + 8px;
+            height: 38px;
+            border-radius: 12px;
+            background: Theme.text.with-alpha(0.05);
+            full-tools := LyricsTools {
+                x: 4px;
+                y: 4px;
+                synced: root.lyrics-synced;
+                has-lines: root.lyrics.length > 0;
+                can-search: root.lyrics-can-search;
+                can-translate: root.lyrics-can-translate;
+                translation-shown: root.lyrics-translation-shown;
+                translating: root.lyrics-translating;
+                offset-ms: root.lyrics-offset;
+                on-stage: true;
+                tool(what) => {
+                    if what == "search" {
+                        root.dialog = 5;
+                    }
+                    root.lyrics-tool(what);
+                }
+                offset(ms) => {
+                    root.lyrics-offset-changed(ms);
+                }
             }
         }
     }
