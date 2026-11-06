@@ -14,6 +14,8 @@ use slint::{
 };
 use slint_interpreter::{Compiler, ComponentInstance, Struct, Value};
 
+mod wide;
+
 #[derive(Clone, Copy, Default)]
 struct Px(Rgba8Pixel);
 
@@ -44,7 +46,79 @@ fn s(v: &str) -> Value {
     Value::String(SharedString::from(v))
 }
 
+thread_local! {
+    /// Real covers from `UI_SNAPSHOT_COVERS` (local only, never committed):
+    /// name -> RGBA, at most 640px.
+    static COVERS: std::cell::RefCell<Option<Vec<(String, image::RgbaImage)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn covers_dir() -> Vec<(String, image::RgbaImage)> {
+    COVERS.with(|c| {
+        c.borrow_mut()
+            .get_or_insert_with(|| {
+                let Some(dir) = std::env::var_os("UI_SNAPSHOT_COVERS") else {
+                    return Vec::new();
+                };
+                let mut files: Vec<_> = std::fs::read_dir(dir)
+                    .map(|d| d.filter_map(Result::ok).map(|e| e.path()).collect())
+                    .unwrap_or_default();
+                files.sort();
+                files
+                    .into_iter()
+                    .filter_map(|path| {
+                        let img = image::open(&path).ok()?.to_rgba8();
+                        let img = if img.width() > 640 {
+                            let h = img.height() * 640 / img.width();
+                            image::imageops::resize(&img, 640, h, image::imageops::FilterType::Triangle)
+                        } else {
+                            img
+                        };
+                        Some((path.file_stem()?.to_string_lossy().into_owned(), img))
+                    })
+                    .collect()
+            })
+            .clone()
+    })
+}
+
+fn to_slint(img: &image::RgbaImage) -> Image {
+    Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+    ))
+}
+
+/// A named cover: the real file when `UI_SNAPSHOT_COVERS` has it, else a
+/// gradient seeded by the name.
+fn art(name: &str) -> Image {
+    if let Some((_, img)) = covers_dir().iter().find(|(n, _)| n == name) {
+        return to_slint(img);
+    }
+    gradient(name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 97)
+}
+
+/// A 2:3 work poster cut from the middle of a named cover.
+fn poster(name: &str) -> Image {
+    if let Some((_, img)) = covers_dir().iter().find(|(n, _)| n == name) {
+        let w = img.height() * 2 / 3;
+        let x = (img.width().saturating_sub(w)) / 2;
+        let crop = image::imageops::crop_imm(img, x, 0, w.min(img.width()), img.height()).to_image();
+        return to_slint(&crop);
+    }
+    art(name)
+}
+
 fn cover(seed: u32) -> Image {
+    let real = covers_dir();
+    if !real.is_empty() {
+        return to_slint(&real[seed as usize % real.len()].1);
+    }
+    gradient(seed)
+}
+
+fn gradient(seed: u32) -> Image {
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(64, 64);
     for (i, p) in buf.make_mut_slice().iter_mut().enumerate() {
         let (x, y) = ((i % 64) as u32, (i / 64) as u32);
@@ -445,6 +519,11 @@ fn main() {
     }
     let def = result.component("AppWindow").expect("AppWindow");
     let size = PhysicalSize::new(1280, 800);
+    // UI_SNAPSHOT_ONLY=wide: only the redesign canvases (faster).
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("wide") {
+        wide::run(&def, &window, &out);
+        return;
+    }
 
     // Login.
     let inst = create(&def);
@@ -1178,35 +1257,6 @@ fn main() {
         PhysicalSize::new(1280, 2500),
         &format!("{out}/home.png"),
     );
-    // Breakpoints (page width = window - 200px sidebar). The app's model
-    // re-chunks 最近添加 by the reported columns; here it is done by hand.
-    for (window_w, height) in [(900, 2800), (1180, 2700), (1700, 2000), (2300, 1900)] {
-        let page_w = window_w - 200;
-        let cols = if page_w <= 700 {
-            3
-        } else if page_w <= 1040 {
-            6
-        } else if page_w >= 2240 {
-            6
-        } else if page_w >= 1880 {
-            5
-        } else if page_w >= 1440 {
-            4
-        } else {
-            3
-        };
-        let max = if page_w <= 1040 && page_w > 700 {
-            6
-        } else {
-            cols * 2
-        };
-        set_g(&inst, "Home", "recent-albums", recent_rows(cols, max));
-        render(
-            &window,
-            PhysicalSize::new(window_w, height),
-            &format!("{out}/home-{window_w}.png"),
-        );
-    }
     set_g(&inst, "Home", "recent-albums", album_rows_n(3, 6));
 
     // Works spotlight tab and daily mixes.
@@ -1511,6 +1561,9 @@ fn main() {
     render(&window, size, &format!("{out}/light-full.png"));
     set(&inst, "full-open", Value::Bool(false));
     set(&inst, "theme-mode", n(1.0));
+    inst.hide().unwrap();
+
+    wide::run(&def, &window, &out);
 }
 
 fn lyrics_strings() -> Value {

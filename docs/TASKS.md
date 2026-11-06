@@ -34,12 +34,22 @@
 
 计划、规格、行为差异 D1-D6 见 `UI-REDESIGN.md`。每个阶段完成后把该阶段的 **[Win]** 项整理到本节末尾，请用户一次验证。
 
-- [ ] P0 ui-snapshot 宽屏画布（2300x1190 / 1600x900 / 1280x800）与假数据（长标题、作品海报、OP / ED）
+- [x] P0 ui-snapshot 宽屏画布（2300x1190 / 1600x900 / 1280x800）与假数据（长标题、作品海报、OP / ED）
 - [ ] P1 Theme token（含亮色）、字号 token、新图标集
 - [ ] P2 外壳：左导航（去封面、图标条）、右侧正在播放栏（页签）、播放条、断点
 - [ ] P3 首页：横幅、区块标题、各模块
 - [ ] P4 专辑页（头部、曲目表、OP / ED 弹窗样式、信息栏）与列表页
 - [ ] P5 全屏播放器三段式
+
+### 进度记录
+
+- **P0**（ui-snapshot）：`tools/ui-snapshot/src/wide.rs` 按 2300x1190 / 1600x900 / 1280x800 输出
+  `home-<w>.png`、`home-full-<w>.png`（整页）、`home-long-<w>.png`（长横幅标题）、`albums-<w>.png`、`album-<w>.png`、
+  `album-long-<w>.png`（长专辑名）、`player-<w>.png`，另有 `home-resume-2300.png`（无今日推荐时的接着听）、
+  `home-nopanel-2300.png`（右栏关闭）、`light-*-2300.png`。假数据按终稿：今日推荐 5 项、最近播放 5 项、接着听 4 项、
+  作品海报 2:3、OP 单作品和双作品标签。`UI_SNAPSHOT_COVERS=prototypes/assets/covers` 时用真实封面（只在本地），
+  `UI_SNAPSHOT_ONLY=wide` 只出宽屏图，`UI_SNAPSHOT_WIDTHS=2300,1600` 只出指定宽度。宽屏图的网格列数取自界面上报的
+  `card-layout-changed`，和应用里一样按列数重新分行。
 
 ## M4 验证清单（Windows，进行中，P0 做完后用新 preview 包）
 
