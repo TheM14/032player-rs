@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Fonts, Theme } from "theme.slint";
 import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
 
@@ -34,6 +34,16 @@ export struct CreditPart {
 // `tag`: a label after the title (use on a work, history state, 新发现),
 // `note`: replaces the album column (history), `disabled`: the file is
 // missing, `blocked`: 不再推荐 (daily mixes).
+component TrackMenuItem inherits Rectangle {
+    in property <string> text;
+    callback triggered();
+    height: 34px;
+    border-radius: 5px;
+    background: area.has-hover ? Theme.surface-hover : transparent;
+    Text { x: 12px; width: parent.width - 24px; height: 100%; text: root.text; color: Theme.text; vertical-alignment: center; overflow: elide; }
+    area := TouchArea { mouse-cursor: pointer; clicked => { root.triggered(); } }
+}
+
 export struct TieupWork {
     id: int,
     title: string,
@@ -47,6 +57,7 @@ export struct TieupWork {
 component TieupCards inherits Rectangle {
     in property <[TieupWork]> works;
     callback open-work(int);
+    out property <bool> hovered;
     width: 340px;
     height: content.preferred-height;
     background: Theme.raised;
@@ -93,7 +104,11 @@ component TieupCards inherits Rectangle {
                         Text { text: "查看作品"; color: Theme.accent; font-size: 13px; font-weight: 600; }
                     }
                 }
-                work-area := TouchArea { mouse-cursor: pointer; clicked => { root.open-work(work.id); } }
+                work-area := TouchArea {
+                    mouse-cursor: pointer;
+                    changed has-hover => { root.hovered = self.has-hover; }
+                    clicked => { root.open-work(work.id); }
+                }
             }
         }
     }
@@ -540,9 +555,55 @@ export component TrackRowView inherits Rectangle {
 
     // TouchAreas consume right clicks, so each interactive child forwards
     // them explicitly to the shared row menu.
-    function row-menu(e: PointerEvent) {
+    property <length> menu-x;
+    property <length> menu-y;
+    property <bool> choosing-playlist;
+    function row-menu(e: PointerEvent, x: length, y: length) {
         if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
-            track-menu.show({ x: 32px, y: root.height });
+            root.menu-x = x;
+            root.menu-y = y;
+            root.choosing-playlist = false;
+            track-popup.show();
+        }
+    }
+    function menu-action(action: string, arg: int) {
+        track-popup.close();
+        root.action(action, arg);
+    }
+    track-popup := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 240px;
+        height: root.choosing-playlist ? min(380px, 86px + root.playlists.length * 34px) : 12px + (9 + (root.mode == 2 ? 1 : 0)) * 34px;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                if !root.choosing-playlist: VerticalLayout {
+                    TrackMenuItem { text: "播放"; triggered => { root.menu-action("play", 0); } }
+                    TrackMenuItem { text: "下一首播放"; triggered => { root.menu-action("next", 0); } }
+                    TrackMenuItem { text: "添加到播放队列末尾"; triggered => { root.menu-action("last", 0); } }
+                    TrackMenuItem { text: "添加到歌单 ›"; triggered => { root.choosing-playlist = true; } }
+                    TrackMenuItem { text: root.track.favorite ? "取消收藏" : "收藏"; triggered => { root.menu-action("favorite", root.track.favorite ? 0 : 1); } }
+                    TrackMenuItem { text: "相似歌曲"; triggered => { root.menu-action("similar", 0); } }
+                    TrackMenuItem { text: "查看信息"; triggered => { root.menu-action("info", 0); } }
+                    TrackMenuItem { text: "转到专辑"; triggered => { root.menu-action("album", root.track.album-id); } }
+                    TrackMenuItem { text: "转到艺人"; triggered => { root.menu-action("artist", root.track.artist-id); } }
+                    if root.mode == 2: TrackMenuItem { text: "从歌单移除"; triggered => { root.menu-action("remove", 0); } }
+                }
+                if root.choosing-playlist: VerticalLayout {
+                    TrackMenuItem { text: "‹ 返回"; triggered => { root.choosing-playlist = false; } }
+                    TrackMenuItem { text: "新建歌单…"; triggered => { root.menu-action("new-playlist", 0); } }
+                    ScrollView {
+                        VerticalLayout {
+                            for p in root.playlists: TrackMenuItem { text: p.name; triggered => { root.menu-action("add", p.id); } }
+                        }
+                    }
+                }
+            }
         }
     }
     track-menu := ContextMenuArea {
@@ -625,7 +686,7 @@ export component TrackRowView inherits Rectangle {
                 }
             }
             pointer-event(e) => {
-                root.row-menu(e);
+                root.row-menu(e, self.mouse-x, self.mouse-y);
                 if root.mode == 2 && e.button == PointerEventButton.left {
                     if e.kind == PointerEventKind.down {
                         root.press-y = self.mouse-y;
@@ -695,7 +756,7 @@ export component TrackRowView inherits Rectangle {
                             color: part.id > 0 && credit-area.has-hover ? Theme.accent : part.id > 0 ? Theme.text-dim : Theme.text-faint;
                             font-size: 13px;
                             credit-area := TouchArea {
-                                pointer-event(e) => { root.row-menu(e); }
+                                pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                                 enabled: part.id > 0;
                                 mouse-cursor: part.id > 0 ? pointer : default;
                                 clicked => {
@@ -735,21 +796,37 @@ export component TrackRowView inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
+                tieup-badge := Rectangle { width: 0px; height: 0px; property <bool> card-hovered; }
                 tieup-popup := PopupWindow {
                     x: parent.width - 340px;
                     y: parent.height + 6px;
-                    TieupCards {
+                    popup-cards := TieupCards {
                         works: root.track.tieup-works;
+                        changed hovered => { tieup-badge.card-hovered = self.hovered; }
                         open-work(id) => { tieup-popup.close(); root.action("work", id); }
                     }
                 }
                 tieup-area := TouchArea {
-                    Tooltip {
-                        TieupCards { works: root.track.tieup-works; }
+                    // Avoid the native Tooltip's extra background and padding.
+                    property <bool> previewing;
+                    changed has-hover => {
+                        if tieup-area.has-hover { tieup-area.previewing = true; tieup-popup.show(); }
+                        else { hover-close.restart(); }
                     }
-                    pointer-event(e) => { root.row-menu(e); }
+                    hover-close := Timer {
+                        running: false;
+                        interval: 1500ms;
+                        triggered => {
+                            self.running = false;
+                            if tieup-area.previewing && !tieup-area.has-hover && !tieup-badge.card-hovered {
+                                tieup-popup.close(); tieup-area.previewing = false;
+                            }
+                        }
+                    }
+                    pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                     mouse-cursor: pointer;
                     clicked => {
+                        tieup-area.previewing = false;
                         tieup-popup.show();
                     }
                 }
@@ -781,7 +858,7 @@ export component TrackRowView inherits Rectangle {
                 overflow: elide;
                 vertical-alignment: center;
                 artist-area := TouchArea {
-                    pointer-event(e) => { root.row-menu(e); }
+                    pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                     enabled: root.track.artist-id > 0;
                     mouse-cursor: root.track.artist-id > 0 ? pointer : default;
                     clicked => {
@@ -802,7 +879,7 @@ export component TrackRowView inherits Rectangle {
                 overflow: elide;
                 vertical-alignment: center;
                 album-area := TouchArea {
-                    pointer-event(e) => { root.row-menu(e); }
+                    pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                     enabled: album-col.link;
                     mouse-cursor: album-col.link ? pointer : default;
                     clicked => {
@@ -821,7 +898,7 @@ export component TrackRowView inherits Rectangle {
                 visible: root.track.blocked || row-area.has-hover || block-area.has-hover;
             }
             block-area := TouchArea {
-                pointer-event(e) => { root.row-menu(e); }
+                pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                 mouse-cursor: pointer;
                 clicked => {
                     root.action("block", root.track.blocked ? 0 : 1);
@@ -838,7 +915,7 @@ export component TrackRowView inherits Rectangle {
                 color: root.track.favorite ? Theme.accent : heart-area.has-hover ? Theme.text : Theme.text-faint;
             }
             heart-area := TouchArea {
-                pointer-event(e) => { root.row-menu(e); }
+                pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                 mouse-cursor: pointer;
                 clicked => {
                     root.action("favorite", root.track.favorite ? 0 : 1);

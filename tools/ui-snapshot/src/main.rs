@@ -918,13 +918,14 @@ fn main() {
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
         render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-context-menu.png"));
-        let position = slint::LogicalPosition::new(360.0, 460.0);
+        let position = slint::LogicalPosition::new(360.0, 440.0);
         let button = slint::platform::PointerEventButton::Left;
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
         assert_eq!(queue_adds.get(), 1, "Right click must open a working queue menu");
         println!("track right-click queue action passed");
+        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-menu-closed.png"));
         let position = slint::LogicalPosition::new(775.0, 349.0);
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         slint::platform::update_timers_and_animations();
