@@ -2,6 +2,7 @@
 //! from the UI and [`EngineEvent`]s from the audio engine, and pushes
 //! [`Event`]s to a sink. The UI never blocks on the network.
 
+mod fade;
 mod library;
 mod lyrics;
 mod m032;
@@ -199,6 +200,8 @@ pub enum Command {
     /// Main window size, sent when the app quits.
     SetWindow(crate::settings::WindowState),
     SetCloseToTray(bool),
+    /// Volume fade on play / pause.
+    SetFadeOnPause(bool),
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
     /// Load artwork `path` for display at `px` physical pixels (long side);
@@ -1102,6 +1105,7 @@ struct Core {
     /// Works of a track (`/tracks/{id}/works`).
     track_works: Option<(i64, Vec<api::TrackWork>)>,
     playing_sources: PlayingSources,
+    fade: fade::Fader,
 }
 
 impl Core {
@@ -1162,6 +1166,7 @@ impl Core {
             sources: m032::SourceTracks::default(),
             track_works: None,
             playing_sources: PlayingSources::default(),
+            fade: fade::Fader::default(),
         }
     }
 
@@ -1418,7 +1423,14 @@ impl Core {
                 }
                 if self.idle {
                     self.play_current(false);
-                } else if let Err(e) = self.engine.set_paused(!self.paused) {
+                    return;
+                }
+                let result = if self.effective_paused() {
+                    self.unpause_engine(self.paused)
+                } else {
+                    self.pause_engine()
+                };
+                if let Err(e) = result {
                     self.emit(Event::Notice(e));
                 }
             }
@@ -1487,6 +1499,12 @@ impl Core {
                 self.update_settings(|s| s.sidebar_width = crate::settings::sidebar_width(width));
             }
             Command::SetCloseToTray(on) => self.update_settings(|s| s.close_to_tray = on),
+            Command::SetFadeOnPause(on) => {
+                self.update_settings(|s| s.fade_on_pause = on);
+                if !on && !self.paused {
+                    self.restore_gain();
+                }
+            }
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {
                 if !self.idle {
@@ -1973,11 +1991,12 @@ impl Core {
         let Some(url) = self.track_url(item.track.id, offset_ms) else {
             return;
         };
+        let from_silence = self.idle || self.paused;
         if load
             && let Err(e) = self
                 .engine
                 .load(&url)
-                .and_then(|()| self.engine.set_paused(false))
+                .and_then(|()| self.unpause_engine(from_silence))
         {
             self.emit(Event::Notice(e));
             return;
@@ -2083,6 +2102,7 @@ impl Core {
                 self.emit_position();
             }
             EngineEvent::Paused(paused) => {
+                self.fade.engine_paused(paused);
                 if self.idle || paused == self.paused {
                     return;
                 }
@@ -2347,7 +2367,7 @@ impl Core {
                     return;
                 }
                 self.set_sleep_timer(None);
-                if let Err(e) = self.engine.set_paused(true) {
+                if let Err(e) = self.pause_engine() {
                     self.emit(Event::Notice(e));
                 }
             }

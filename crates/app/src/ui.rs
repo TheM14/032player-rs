@@ -1352,6 +1352,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     });
     window.set_exclusive(settings.exclusive);
     window.set_close_to_tray(settings.close_to_tray);
+    window.set_fade_on_pause(settings.fade_on_pause);
     window.set_repeat(repeat_index(settings.repeat));
     window.set_shuffle(settings.shuffle);
     let grids: Vec<Rc<CardGridModel>> = (0..GRIDS)
@@ -1683,6 +1684,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     });
     let c = commander.clone();
     window.on_close_to_tray_toggled(move |on| c.send(Command::SetCloseToTray(on)));
+    let c = commander.clone();
+    window.on_fade_on_pause_toggled(move |on| c.send(Command::SetFadeOnPause(on)));
     let c = commander.clone();
     window.on_settings_opened(move || c.send(Command::RefreshAudioDevices));
     let c = commander.clone();

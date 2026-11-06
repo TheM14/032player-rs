@@ -339,6 +339,8 @@ export component AppWindow inherits Window {
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
+    in-out property <bool> fade-on-pause;
+    callback fade-on-pause-toggled(bool);
     in property <[string]> transcode-options: ["原始文件"];
     in-out property <int> transcode-index;
     callback transcode-selected(int);
@@ -1297,6 +1299,10 @@ export component AppWindow inherits Window {
                     close-to-tray <=> root.close-to-tray;
                     close-to-tray-toggled(on) => {
                         root.close-to-tray-toggled(on);
+                    }
+                    fade-on-pause <=> root.fade-on-pause;
+                    fade-on-pause-toggled(on) => {
+                        root.fade-on-pause-toggled(on);
                     }
                     transcode-options: root.transcode-options;
                     transcode-index <=> root.transcode-index;

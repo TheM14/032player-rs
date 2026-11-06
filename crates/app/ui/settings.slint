@@ -57,6 +57,8 @@ export component SettingsView inherits Rectangle {
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
+    in-out property <bool> fade-on-pause;
+    callback fade-on-pause-toggled(bool);
     // Index 0: the original file.
     in property <[string]> transcode-options;
     in-out property <int> transcode-index;
@@ -157,6 +159,18 @@ export component SettingsView inherits Rectangle {
                     enabled: !root.output-busy;
                     toggled => {
                         root.exclusive-toggled(self.checked);
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "播放 / 暂停淡入淡出";
+                description: "播放和暂停时音量在 0.3 秒内渐变，不改变设定的音量。切歌不淡化。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    checked <=> root.fade-on-pause;
+                    toggled => {
+                        root.fade-on-pause-toggled(self.checked);
                     }
                 }
             }

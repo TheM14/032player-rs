@@ -992,6 +992,7 @@ fn main() {
         ]),
     );
     set(&inst, "lyrics-translation-available", Value::Bool(true));
+    set(&inst, "fade-on-pause", Value::Bool(true));
     set(
         &inst,
         "shortcuts",

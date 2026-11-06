@@ -14,6 +14,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[derive(Default)]
 struct FakeEngine {
     calls: Mutex<Vec<String>>,
+    /// Supports the fade gain (recorded as `gain {g}`).
+    fade: bool,
 }
 
 impl FakeEngine {
@@ -48,6 +50,12 @@ impl Engine for FakeEngine {
     }
     fn set_volume(&self, volume: f64) -> Result<(), String> {
         self.push(format!("volume {volume}"))
+    }
+    fn set_fade_gain(&self, gain: f64) -> Result<(), String> {
+        if !self.fade {
+            return Err("unsupported".into());
+        }
+        self.push(format!("gain {gain:.3}"))
     }
     fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
         Ok(Vec::new())
@@ -328,6 +336,114 @@ async fn login_failures_are_reported() {
     events.wait("failure", |e| {
         *e == Event::LoginFailed(LoginFailure::TokensMustDiffer)
     });
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+}
+
+/// Fade gains (in call order) and the position of `call` among all calls.
+fn gains(calls: &[String]) -> Vec<f64> {
+    calls
+        .iter()
+        .filter_map(|c| c.strip_prefix("gain ")?.parse().ok())
+        .collect()
+}
+
+async fn wait_call(engine: &FakeEngine, call: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !engine.calls().iter().any(|c| c == call) {
+        assert!(
+            Instant::now() < deadline,
+            "{call} not sent: {:?}",
+            engine.calls()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pause_and_play_fade_without_touching_volume() {
+    let server = server().await;
+    let engine = Arc::new(FakeEngine {
+        fade: true,
+        ..FakeEngine::default()
+    });
+    let data_dir = std::env::temp_dir().join(format!("032player-core-fade-{}", std::process::id()));
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir,
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+    let events = Events(rx);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+
+    // Starting from stopped fades in from silence.
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    events.wait("now playing", |e| matches!(e, Event::NowPlaying(Some(_))));
+    core.engine_event(EngineEvent::FileLoaded { path: None });
+    wait_call(&engine, "gain 1.000").await;
+    let calls = engine.calls();
+    let g = gains(&calls);
+    assert_eq!(g.first().copied(), Some(0.0), "{calls:?}");
+    assert!(g.windows(2).all(|w| w[0] <= w[1]), "{g:?}");
+
+    // Pause: the icon flips at once, the engine pauses after the fade-out.
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::TogglePause);
+    events.wait("paused", |e| *e == Event::Paused(true));
+    wait_call(&engine, "pause true").await;
+    let calls = engine.calls();
+    let g = gains(&calls);
+    assert!(g.len() > 5 && g.windows(2).all(|w| w[0] >= w[1]), "{g:?}");
+    assert_eq!(g.last().copied(), Some(0.0));
+    assert_eq!(calls.last().map(String::as_str), Some("pause true"));
+    core.engine_event(EngineEvent::Paused(true));
+    // Let core take the engine signal before the next command.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Play: unpause at silence, then fade in.
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::TogglePause);
+    wait_call(&engine, "gain 1.000").await;
+    let calls = engine.calls();
+    assert_eq!(calls[0], "gain 0.000", "{calls:?}");
+    assert_eq!(calls[1], "pause false", "{calls:?}");
+    core.engine_event(EngineEvent::Paused(false));
+    // Let core take the engine signal before the next command.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Toggling back mid fade-out never pauses and ends at full level.
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::TogglePause);
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    core.send(Command::TogglePause);
+    events.wait("resumed", |e| *e == Event::Paused(false));
+    wait_call(&engine, "gain 1.000").await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let calls = engine.calls();
+    assert!(!calls.iter().any(|c| c == "pause true"), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("volume")), "{calls:?}");
+
+    // Switched off: plain pause, no gain changes.
+    core.send(Command::SetFadeOnPause(false));
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::TogglePause);
+    wait_call(&engine, "pause true").await;
+    assert_eq!(engine.calls(), ["pause true"]);
+
     tokio::task::spawn_blocking(move || core.shutdown())
         .await
         .unwrap();

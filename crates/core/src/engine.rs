@@ -16,6 +16,12 @@ pub trait Engine: Send + Sync + 'static {
     fn seek(&self, seconds: f64) -> Result<(), String>;
     /// 0-100.
     fn set_volume(&self, volume: f64) -> Result<(), String>;
+    /// Extra gain for play / pause fades, 0 (silent) to 1 (unchanged),
+    /// applied on top of the volume without changing it. Engines without
+    /// it return an error and core pauses / plays without fading.
+    fn set_fade_gain(&self, _gain: f64) -> Result<(), String> {
+        Err("fade gain not supported".into())
+    }
     /// Output devices (may block briefly; called off the core loop).
     fn audio_devices(&self) -> Result<Vec<AudioDevice>, String>;
     /// `auto` = system default. May block while the output reopens.

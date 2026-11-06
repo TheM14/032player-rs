@@ -30,15 +30,16 @@
 | 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
 | 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [x] |
 | 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [x] mpv `append` |
-| 淡入淡出（如保留） | `mpv-player.tsx` fade | 待定 | [ ] |
+| 淡入淡出：播放 / 暂停 300 ms 渐变（`audioFadeOnStatusChange`）；不做交叉淡化 | `mpv-player.tsx` fade | M4 | [x] mpv `volume-gain` |
 | 队列：替换、下一首播放、加到末尾、移除、拖动排序、清空 | `renderer/store/player.store.ts`、`features/player/context/` | M1 | [x] 拖动排序在 M2 完成 |
 | 随机、单曲 / 列表循环 | 同上 | M1 | [x] |
 | 续播位置（`Song.resumePositionMs`） | `useResumePosition` | M3 | [x] 接着听 / 最近在听，条目第一次播放时生效 |
 | 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [x] |
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [x] 100 首 |
-| Auto DJ（如保留） | `features/player/auto-dj/` | 待定 | [ ] |
+| Auto DJ | `features/player/auto-dj/` | - | - 不做 |
+| 均衡器 / 压缩器、ReplayGain | `settings/components/playback/eq-settings.tsx`、`mpv-settings.tsx` | - | - 不做（2026-11-06） |
 | 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [ ] |
-| 全屏播放器（原图封面不带 `size`，`size=0` 会被拒） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [ ] |
+| 全屏播放器（原图封面不带 `size`，`size=0` 会被拒；页签歌词 / 接下来播放 / 相关歌曲，不做可视化和配置弹窗） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [ ] |
 
 ## 播放上报（apiRevision 3）
 
@@ -115,17 +116,17 @@
 | 托盘、最小化到托盘 | `main/index.ts` | M1 | [x] Windows；关闭到托盘（最小化到托盘未做），Linux 托盘未做 |
 | 单实例 | `main/index.ts` | M1 | [x] |
 | 窗口内快捷键及自定义（录入 / 清除 / 恢复默认 / 冲突检测） | `renderer/store/settings.store.ts` `hotkeys` | M4 | [x] 设置页；空格播放 / 暂停，切歌、进度、音量、随机、循环、队列、搜索 |
-| 全局快捷键 | `main/index.ts` | M4 | [ ] |
-| 自动更新（读本仓库 GitHub Releases） | `main/fork-config.ts` | M4 | [ ] |
+| 全局快捷键 | `main/index.ts` | - | - 不做（2026-11-06） |
+| 更新提示（读本仓库 GitHub Releases，只提示和给链接） | `main/fork-config.ts` | M4 | [ ] |
 | 设置导出 / 导入 | `renderer/components/export-import-settings-modal/` | 待定 | [ ] |
 
 ## 外观与本地化
 
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
-| 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4 | [ ] |
+| 032 Light / 032 Dark，跟随系统，默认强调色 `#5b47e0` / `#8d7dff` | `shared/themes/music032-*`、`shared/themes/music032/` | M4（最低优先级） | [ ] 只有深色 |
 | 侧边栏：主页、专辑、曲目、艺人、作品、系列、播放记录、歌单、收藏（无流派 / 文件夹 / 电台） | `features/sidebar/`、`use-music032-sidebar-items.ts` | M2 | [x] |
-| zh-Hans / zh-Hant / en | `i18n/locales/` | M4 | [ ] |
+| zh-Hans / zh-Hant / en | `i18n/locales/` | - | - 只做简体中文（2026-11-06） |
 
 ## 待定（默认不做，见 PLAN.md）
 

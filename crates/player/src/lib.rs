@@ -235,6 +235,18 @@ impl Player {
         Ok(self.mpv.set_property("volume", volume.clamp(0.0, 100.0))?)
     }
 
+    /// Extra linear gain on top of `volume` (0 silent, 1 unchanged), via
+    /// mpv `volume-gain` in dB (default range -96..12). Used for fades;
+    /// `volume` and its observers stay untouched.
+    pub fn set_fade_gain(&self, gain: f64) -> Result<()> {
+        let db = if gain > 0.0 {
+            (20.0 * gain.min(1.0).log10()).max(-96.0)
+        } else {
+            -96.0
+        };
+        Ok(self.mpv.set_property("volume-gain", db)?)
+    }
+
     pub fn set_muted(&self, muted: bool) -> Result<()> {
         Ok(self.mpv.set_property("mute", muted)?)
     }

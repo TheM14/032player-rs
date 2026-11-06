@@ -49,6 +49,10 @@ impl Engine for MpvEngine {
         self.0.set_volume(volume).map_err(|e| e.to_string())
     }
 
+    fn set_fade_gain(&self, gain: f64) -> Result<(), String> {
+        self.0.set_fade_gain(gain).map_err(|e| e.to_string())
+    }
+
     fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
         let devices = self.0.audio_devices().map_err(|e| e.to_string())?;
         Ok(devices

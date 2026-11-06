@@ -26,6 +26,8 @@ pub struct Settings {
     pub shuffle: bool,
     /// Closing the window hides it to the tray (Windows).
     pub close_to_tray: bool,
+    /// 300 ms volume fade on play / pause (`audioFadeOnStatusChange`).
+    pub fade_on_pause: bool,
     /// Stream a transcode instead of the original file (`None`: original,
     /// the bit-perfect default). Ignored when the server cannot.
     pub transcode: Option<api::Transcode>,
@@ -184,6 +186,7 @@ impl Default for Settings {
             repeat: Repeat::Off,
             shuffle: false,
             close_to_tray: false,
+            fade_on_pause: true,
             transcode: None,
             lyrics: LyricsSettings::default(),
             shortcuts: crate::shortcuts::Shortcuts::default(),
@@ -262,6 +265,7 @@ mod tests {
             repeat: Repeat::One,
             shuffle: true,
             close_to_tray: true,
+            fade_on_pause: false,
             shortcuts: crate::shortcuts::Shortcuts::default(),
             transcode: Some(api::Transcode::Mp3(320)),
             lyrics: LyricsSettings {
