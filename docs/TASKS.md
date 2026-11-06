@@ -5,6 +5,8 @@
 
 ## 当前状态（2026-10-28）
 
+- **UI 改版（v3 Editorial）待实施**（2026-11-06 定稿）：计划见 `UI-REDESIGN.md`，设计稿在本地 `prototypes/claude-v3-final/`。任务见下方"UI 改版"一节。
+
 - **v0.1.9 正式版构建已安排**：修复中日文字体混用（界面和中文内容统一 Noto Sans SC，含假名的内容用 Noto Sans JP，拉丁字符用 Inter）。正式安装包由 `v0.1.9` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.1.9 。
 
 - **v0.1.8 正式版构建已安排**：包含单曲右键菜单触发修复、全部用途标识的 Electron 风格作品卡弹层。正式安装包由 `v0.1.8` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.1.8 。
@@ -27,6 +29,17 @@
   当前 preview 是 `main` 的 `af55df5`（M4 第四轮反馈）。注意 `preview` 只有一个：从任何分支运行 Package 都会覆盖它（每次运行的 Actions 构件仍保留 90 天）。
 - M1 有意没做的（记在各小节）：最小化到托盘、Linux 托盘。
 - 已知缺口（按里程碑排期）：歌词翻译、歌词面板手动滚动 / 点击跳转（M3）；主页、作品、系列、播放记录（M3）。
+
+## UI 改版（v3 Editorial）
+
+计划、规格、行为差异 D1-D6 见 `UI-REDESIGN.md`。每个阶段完成后把该阶段的 **[Win]** 项整理到本节末尾，请用户一次验证。
+
+- [ ] P0 ui-snapshot 宽屏画布（2300x1190 / 1600x900 / 1280x800）与假数据（长标题、作品海报、OP / ED）
+- [ ] P1 Theme token（含亮色）、字号 token、新图标集
+- [ ] P2 外壳：左导航（去封面、图标条）、右侧正在播放栏（页签）、播放条、断点
+- [ ] P3 首页：横幅、区块标题、各模块
+- [ ] P4 专辑页（头部、曲目表、OP / ED 弹窗样式、信息栏）与列表页
+- [ ] P5 全屏播放器三段式
 
 ## M4 验证清单（Windows，进行中，P0 做完后用新 preview 包）
 
