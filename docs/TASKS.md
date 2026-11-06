@@ -5,7 +5,12 @@
 
 ## 当前状态（2026-10-28）
 
-- **UI 改版（v3 Editorial）待实施**（2026-11-06 定稿）：计划见 `UI-REDESIGN.md`，设计稿在本地 `prototypes/claude-v3-final/`。任务见下方"UI 改版"一节。
+- **v0.2.0 正式版构建已安排**：界面改版（v3 Editorial）：新外壳（左导航图标条、右侧正在播放栏的歌词 | 队列页签、新播放条）、
+  首页贴边横幅和杂志式分节、专辑页超大标题和新曲目表、列表页、全屏播放器三段式，新配色和图标。行为变化只有 `UI-REDESIGN.md`
+  的 D1-D6。正式安装包由 `v0.2.0` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.0 。
+  Windows 验收清单见下方"UI 改版"一节末尾。
+
+- **UI 改版（v3 Editorial）已完成**（2026-11-07，P0-P5）：计划见 `UI-REDESIGN.md`，设计稿在本地 `prototypes/claude-v3-final/`。
 
 - **v0.1.9 正式版构建已安排**：修复中日文字体混用（界面和中文内容统一 Noto Sans SC，含假名的内容用 Noto Sans JP，拉丁字符用 Inter）。正式安装包由 `v0.1.9` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.1.9 。
 
