@@ -183,6 +183,12 @@ fn work_card(w: &views::WorkItem, home: bool) -> Card {
         subtitle: artist,
         year: 0,
         artwork: w.artwork.clone(),
+        // The home's work card ends with "收录 N 首".
+        added: if home && w.track_count > 0 {
+            format!("收录 {} 首", w.track_count)
+        } else {
+            String::new()
+        },
         // The home's horizontal card prints "系列：<badge>".
         badge: if home {
             w.series_title.clone()
@@ -405,9 +411,6 @@ impl Ui {
 
     fn show_tab(&self, w: &AppWindow, tab: SpotlightTab) {
         let home = w.global::<Home>();
-        if self.m032.borrow().tab != tab {
-            home.set_hero_backdrop(Image::default());
-        }
         // Spotlight art follows the width (clamp(180px, 17vw, 244px)).
         self.unbind(Bind::Hero);
         let art = home.get_hero_art().max(1.0);
@@ -462,14 +465,8 @@ impl Ui {
             home.set_series_fan(ModelRc::from(fan.clone()));
             for (i, path) in pane.fan.iter().enumerate() {
                 let fan = fan.clone();
-                let weak = self.window.clone();
                 self.bind_image(w, Bind::Hero, path, (art * 0.77).floor(), move |image| {
                     fan.set_row_data(i, image.clone());
-                    if i == 0
-                        && let Some(w) = weak.upgrade()
-                    {
-                        w.global::<Home>().set_hero_backdrop(hero_backdrop(image));
-                    }
                 });
             }
             return;
@@ -521,7 +518,6 @@ impl Ui {
                 if i64::from(p.album_id) == album_id {
                     p.cover = image.clone();
                     home.set_pane(p);
-                    home.set_hero_backdrop(hero_backdrop(image));
                 }
             }
         });
@@ -1514,7 +1510,7 @@ pub(super) fn set_row_favorite(model: &VecModel<HomeRow>, id: i64, favorite: boo
     }
 }
 
-/// Blurred, saturated copy of the spotlight cover for the card background.
+/// Blurred, saturated copy of a cover (the full-screen player background).
 pub(super) fn hero_backdrop(cover: &Image) -> Image {
     cover
         .to_rgba8()

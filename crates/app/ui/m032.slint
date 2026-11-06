@@ -4,9 +4,10 @@
 // the components (forwarded by app.slint) or of the globals.
 
 import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
-import { Fonts, Theme } from "theme.slint";
+import { Fonts, Theme, Shell } from "theme.slint";
 import { PlayingBars,
-    Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab,
+    Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
+    RoundIconButton,
 } from "controls.slint";
 import { AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
 import { CardRows } from "library.slint";
@@ -153,8 +154,6 @@ export global Home {
     // Spotlight cover size (logical), set by the page; `action("hero-art")`
     // reloads the art at a new size.
     in-out property <length> hero-art: 220px;
-    // Blurred cover behind the spotlight (empty: plain surface).
-    in property <image> hero-backdrop;
     in property <[NamedItem]> series-works;
     in property <[NamedItem]> series-albums;
     in property <[HomeRow]> mixes;
@@ -248,57 +247,123 @@ export component LinkText inherits Text {
 component Pill inherits Rectangle {
     in property <string> text;
     in property <bool> accent;
-    width: pill-text.preferred-width + 12px;
+    width: pill-text.preferred-width + 14px;
     height: 20px;
-    border-radius: 10px;
+    border-radius: 5px;
     background: root.accent ? Theme.accent-dim : Theme.raised;
     pill-text := Text {
         text: root.text;
         font-family: Fonts.family(self.text);
-        color: root.accent ? Theme.accent : Theme.text-dim;
-        font-size: 12px;
+        color: root.accent ? Theme.accent-text : Theme.text-dim;
+        font-size: 11.5px;
+        font-weight: 700;
     }
 }
 
-// Section title, a dim count and tools on the right.
+// "◆ OP": a work use (theme songs, track tags).
+component UseTag inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent: true;
+    width: use-row.preferred-width;
+    height: 24px;
+    border-radius: 12px;
+    background: root.accent ? Theme.accent-dim : Theme.raised;
+    use-row := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: "◆";
+            color: root.accent ? Theme.accent-text : Theme.text-dim;
+            font-size: 9px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-family: Fonts.family(self.text);
+            color: root.accent ? Theme.accent-text : Theme.text-dim;
+            font-size: 11.5px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Section title (26 / 780), a faint note, a rule to the right edge, and
+// tools at the end (v3 Editorial `.rule`).
 component SectionHead inherits HorizontalLayout {
     in property <string> title;
     in property <string> count;
-    spacing: 10px;
-    height: 32px;
+    spacing: 16px;
+    height: 40px;
     Text {
         text: root.title;
+        font-family: Fonts.family(self.text);
         color: Theme.text;
-        font-size: 20px;
-        font-weight: 800;
+        font-size: Shell.tier == 2 ? 26px : Shell.tier == 1 ? 22px : 20px;
+        font-weight: 780;
+        letter-spacing: -0.4px;
         vertical-alignment: center;
     }
-    Text {
+    if root.count != "": Text {
         text: root.count;
         font-family: Fonts.family(self.text);
         color: Theme.text-faint;
         font-size: 13px;
+        font-weight: 500;
         vertical-alignment: center;
-        horizontal-stretch: 1;
         overflow: elide;
+        max-width: 360px;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        min-width: 24px;
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
     }
     @children
 }
 
-// Home "按作品漫游" card: a small 2:3 poster beside type, title, uses and
-// series (Electron `work-card`). `card.artist` is "动画 · 2023",
-// `card.note` the uses, `card.badge` the series.
+// Small segmented choice in a section head (works type).
+component SegItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    y: (40px - self.height) / 2;
+    height: 28px;
+    width: seg-label.preferred-width + 20px;
+    border-radius: 8px;
+    background: root.selected ? Theme.raised : seg-area.has-hover ? Theme.surface-hover : transparent;
+    seg-label := Text {
+        text: root.text;
+        color: root.selected ? Theme.text : Theme.text-dim;
+        font-size: 13.5px;
+        font-weight: root.selected ? 600 : 400;
+    }
+    seg-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Home "按作品漫游" card: a 2:3 poster beside type · year, the title (three
+// lines), the uses, the series and "收录 N 首". `card.artist` is
+// "动画 · 2023", `card.note` the uses, `card.badge` the series,
+// `card.added` the track count.
 component WorkCardH inherits Rectangle {
     in property <AlbumCard> card;
     // Poster width.
-    in property <length> art: 76px;
+    in property <length> art: 128px;
+    in property <length> card-width: 294px;
     callback action(string, int);
-    width: 288px;
+    width: root.card-width;
     height: root.art * 1.5 + 24px;
-    border-radius: 14px;
-    background: Theme.surface;
-    border-width: 1px;
-    border-color: area.has-hover ? Theme.accent-dim : Theme.border;
+    border-radius: 12px;
+    background: area.has-hover ? Theme.surface-hover : Theme.surface;
 
     area := TouchArea {
         mouse-cursor: pointer;
@@ -309,50 +374,53 @@ component WorkCardH inherits Rectangle {
 
     HorizontalLayout {
         padding: 12px;
-        spacing: 14px;
+        spacing: 16px;
         Rectangle {
             width: root.art;
             height: root.art * 1.5;
-            border-radius: 8px;
+            border-radius: 6px;
             background: Theme.raised;
-            clip: true;
-            if root.card.cover.width == 0: Text {
-                text: "作";
-                color: Theme.text-faint;
-                font-size: 22px;
-            }
-            Image {
-                source: root.card.cover;
-                width: 100%;
-                height: 100%;
-                image-fit: ImageFit.cover;
+            drop-shadow-blur: 18px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #00000055;
+            Rectangle {
+                border-radius: 6px;
+                clip: true;
+                if root.card.cover.width == 0: Text {
+                    text: "作";
+                    color: Theme.text-faint;
+                    font-size: 22px;
+                }
+                Image {
+                    source: root.card.cover;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
             }
             if root.card.playing: Rectangle {
-                // Electron `.card-badge`: dark pill, accent bars.
                 x: parent.width - 30px;
                 y: 8px;
                 width: 22px;
                 height: 22px;
                 border-radius: 11px;
                 background: Theme.bg.with-alpha(0.78);
-                drop-shadow-blur: 8px;
-                drop-shadow-color: #00000040;
                 PlayingBars {
                     width: 11px;
                     height: 11px;
                 }
             }
             if area.has-hover: Rectangle {
-                x: parent.width - 38px;
-                y: parent.height - 38px;
-                width: 32px;
-                height: 32px;
-                border-radius: 16px;
+                x: parent.width - 42px;
+                y: parent.height - 42px;
+                width: 34px;
+                height: 34px;
+                border-radius: 17px;
                 background: play-area.has-hover ? Theme.accent.brighter(15%) : Theme.accent;
                 Icon {
                     kind: IconKind.play;
-                    width: 13px;
-                    height: 13px;
+                    width: 14px;
+                    height: 14px;
                     color: #ffffff;
                 }
                 play-area := TouchArea {
@@ -364,14 +432,15 @@ component WorkCardH inherits Rectangle {
             }
         }
         VerticalLayout {
-            alignment: center;
-            spacing: 3px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 8px;
             horizontal-stretch: 1;
             Text {
                 text: root.card.artist;
                 font-family: Fonts.family(self.text);
-                color: Theme.accent;
-                font-size: 12px;
+                color: Theme.accent-text;
+                font-size: 12.5px;
                 font-weight: 600;
                 overflow: elide;
             }
@@ -379,24 +448,36 @@ component WorkCardH inherits Rectangle {
                 text: root.card.title;
                 font-family: Fonts.family(self.text);
                 color: Theme.text;
-                font-size: 14px;
-                font-weight: 700;
+                font-size: 16.5px;
+                font-weight: 750;
                 wrap: word-wrap;
                 overflow: elide;
-                max-height: 40px;
+                max-height: 66px;
             }
-            if root.card.note != "": Text {
-                text: root.card.note;
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                font-size: 12px;
-                overflow: elide;
+            if root.card.note != "": HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                Pill {
+                    text: root.card.note;
+                    accent: true;
+                    max-width: root.card-width - root.art - 40px;
+                }
             }
             if root.card.badge != "": Text {
                 text: "系列：" + root.card.badge;
                 font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
-                font-size: 12px;
+                font-size: 12.5px;
+                overflow: elide;
+            }
+            Rectangle {
+                vertical-stretch: 1;
+            }
+            if root.card.added != "": Text {
+                text: root.card.added;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 12.5px;
                 overflow: elide;
             }
         }
@@ -428,22 +509,22 @@ component WorkCardH inherits Rectangle {
 
 // One row of cards that pages sideways with arrow buttons (no nested
 // scrolling inside the page). `kind` 5: horizontal work cards (`size` is
-// the poster width).
+// the poster width, `card-w` the card width).
 component ShelfArrow inherits Rectangle {
-    in property <string> text;
+    in property <bool> left;
     callback clicked();
-    width: 34px;
-    height: 34px;
-    border-radius: 17px;
-    background: arrow-area.has-hover ? #000000c0 : #00000090;
-    border-width: 1px;
-    border-color: #ffffff30;
-    Text {
-        text: root.text;
-        font-family: Fonts.family(self.text);
-        color: #ffffff;
-        font-size: 20px;
-        font-weight: 600;
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: arrow-area.has-hover ? Theme.surface-hover : Theme.raised;
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: #00000066;
+    Icon {
+        kind: root.left ? IconKind.back : IconKind.chevron-right;
+        width: 18px;
+        height: 18px;
+        color: Theme.text;
     }
     arrow-area := TouchArea {
         mouse-cursor: pointer;
@@ -457,16 +538,19 @@ export component CardShelf inherits Rectangle {
     in property <[AlbumRow]> rows;
     in property <int> kind;
     in property <length> size: 150px;
+    in property <length> card-w: 294px;
+    in property <length> side: Shell.pad;
+    in property <length> gap: root.kind == 5 ? 20px : 18px;
     in property <[PlaylistChoice]> playlists;
     callback layout-changed(length);
     callback action(string, int, int);
     property <length> offset: 0px;
     property <length> content: row.preferred-width;
     // Cards scroll inside the page padding (clipped at the content edge).
-    property <length> view-w: root.width - 64px;
+    property <length> view-w: root.width - 2 * root.side;
     property <length> max-offset: max(0px, root.content - root.view-w);
     property <length> art-h: root.kind == 5 ? root.size * 1.5 + 24px : root.kind == 3 || root.kind == 4 ? root.size * 1.5 : root.size;
-    height: root.art-h + (root.kind == 5 ? 12px : 86px);
+    height: root.art-h + (root.kind == 5 ? 12px : 90px);
     init => {
         root.layout-changed(root.size);
     }
@@ -478,21 +562,22 @@ export component CardShelf inherits Rectangle {
     }
 
     Rectangle {
-        x: 32px;
+        x: root.side;
         width: root.view-w;
         clip: true;
         row := HorizontalLayout {
             x: -root.offset;
             width: max(root.view-w, self.preferred-width);
-            spacing: root.kind == 5 ? 14px : 18px;
+            spacing: root.gap;
             alignment: start;
             animate x { duration: 250ms; easing: ease-out; }
             for r in root.rows: HorizontalLayout {
-                spacing: root.kind == 5 ? 14px : 18px;
+                spacing: root.gap;
                 for card in r.items: HorizontalLayout {
                     if root.kind == 5: WorkCardH {
                         card: card;
                         art: root.size;
+                        card-width: root.card-w;
                         action(what, arg) => {
                             root.action(what, card.id, arg);
                         }
@@ -512,17 +597,16 @@ export component CardShelf inherits Rectangle {
     }
 
     if root.offset > 0: ShelfArrow {
-        x: 32px + 8px;
+        x: root.side + 8px;
         y: (root.art-h - self.height) / 2;
-        text: "‹";
+        left: true;
         clicked => {
             root.offset = max(0px, root.offset - root.view-w * 0.8);
         }
     }
     if root.offset < root.max-offset: ShelfArrow {
-        x: root.width - 32px - 8px - self.width;
+        x: root.width - root.side - 8px - self.width;
         y: (root.art-h - self.height) / 2;
-        text: "›";
         clicked => {
             root.offset = min(root.max-offset, root.offset + root.view-w * 0.8);
         }
@@ -532,7 +616,7 @@ export component CardShelf inherits Rectangle {
 component Cover inherits Rectangle {
     in property <image> source;
     in property <string> placeholder: "032";
-    border-radius: Theme.radius;
+    border-radius: 5px;
     background: Theme.raised;
     clip: true;
     if root.source.width == 0: Text {
@@ -549,41 +633,59 @@ component Cover inherits Rectangle {
     }
 }
 
-// A row of 接着听 / 最近播放 / 主题曲 / 今日推荐. (action, argument):
-// play, album (id), link (id), last, open, and the track menu actions.
+// A row of 今日推荐 (`mix`), 最近播放, 主题曲 (`item.tag`), or a 接着听 card
+// (`card`). (action, argument): play, album (id), link (id), last, open,
+// and the track menu actions.
 export component HomeRowView inherits Rectangle {
     in property <HomeRow> item;
     in property <bool> playing;
     in property <bool> mix;
+    in property <bool> card;
     in property <bool> show-add;
     // Narrow layouts drop the work link and the time column.
     in property <bool> hide-link;
     in property <bool> hide-note;
     in property <[PlaylistChoice]> playlists;
     callback action(string, int);
-    height: 60px;
-    border-radius: Theme.radius;
-    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    property <bool> song: root.item.tag != "";
+    property <length> art: root.card ? 84px : root.mix ? (Shell.tier == 0 ? 52px : 64px) : 48px;
+    height: root.card ? 108px : root.mix ? (Shell.tier == 0 ? 66px : 80px) : root.song ? 68px : 64px;
+    border-radius: root.card ? 12px : 0px;
+    background: root.card ? (row-area.has-hover ? Theme.surface-hover : Theme.surface) : row-area.has-hover ? Theme.surface-hover.with-alpha(0.6) : transparent;
     opacity: root.item.dimmed ? 0.55 : 1;
 
     row-area := TouchArea {
+        mouse-cursor: root.mix ? pointer : default;
+        clicked => {
+            if root.mix {
+                root.action("open", 0);
+            }
+        }
         double-clicked => {
             root.action(root.mix ? "open" : "play", 0);
         }
     }
 
+    if !root.card: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
     HorizontalLayout {
-        padding: 6px;
-        spacing: 12px;
+        padding: root.card ? 12px : 0px;
+        spacing: root.card ? 16px : root.mix ? 16px : 16px;
         Rectangle {
-            width: 48px;
-            height: 48px;
+            width: root.art;
+            height: root.art;
+            y: (parent.height - self.height) / 2;
             if root.item.covers.length < 4: Cover {
+                border-radius: root.mix || root.card ? 6px : 5px;
                 source: root.item.cover;
                 placeholder: root.mix ? "♪" : "032";
             }
             if root.item.covers.length >= 4: Rectangle {
-                border-radius: Theme.radius;
+                border-radius: 6px;
                 background: Theme.raised;
                 clip: true;
                 for img[i] in root.item.covers: Image {
@@ -595,12 +697,13 @@ export component HomeRowView inherits Rectangle {
                     image-fit: ImageFit.cover;
                 }
             }
-            Rectangle {
-                border-radius: Theme.radius;
-                background: art-area.has-hover || root.playing ? #00000080 : transparent;
+            if !root.card: Rectangle {
+                border-radius: 5px;
+                background: art-area.has-hover || root.playing ? #0000008c : transparent;
                 if root.playing && !art-area.has-hover: PlayingBars {
                     width: 16px;
                     height: 14px;
+                    bar-color: #ffffff;
                 }
                 Icon {
                     visible: art-area.has-hover;
@@ -608,6 +711,25 @@ export component HomeRowView inherits Rectangle {
                     width: 16px;
                     height: 16px;
                     color: #ffffff;
+                }
+            }
+            // 接着听: a white play button on the cover.
+            if root.card: Rectangle {
+                x: parent.width - 36px;
+                y: parent.height - 36px;
+                width: 30px;
+                height: 30px;
+                border-radius: 15px;
+                background: art-area.has-hover ? #ffffff : #ffffffeb;
+                if root.playing: PlayingBars {
+                    width: 12px;
+                    height: 11px;
+                }
+                if !root.playing: Icon {
+                    kind: IconKind.play;
+                    width: 13px;
+                    height: 13px;
+                    color: #111113;
                 }
             }
             art-area := TouchArea {
@@ -619,37 +741,29 @@ export component HomeRowView inherits Rectangle {
         }
         VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: root.mix ? 4px : 3px;
             horizontal-stretch: 1;
+            min-width: 0px;
             Text {
                 text: root.item.title;
                 font-family: Fonts.family(self.text);
-                color: root.playing ? Theme.accent : Theme.text;
-                font-weight: 600;
+                color: root.playing ? Theme.accent-text : Theme.text;
+                font-size: root.card ? 15.5px : root.mix ? (Shell.tier == 0 ? 14.5px : 16px) : 15px;
+                font-weight: root.card || root.mix ? 650 : 600;
                 overflow: elide;
-                TouchArea {
-                    mouse-cursor: root.mix ? pointer : default;
-                    clicked => {
-                        if root.mix {
-                            root.action("open", 0);
-                        }
-                    }
-                }
             }
-            HorizontalLayout {
-                spacing: 4px;
-                Text {
-                    text: root.item.subtitle;
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text-dim;
-                    font-size: 13px;
-                    overflow: elide;
-                }
+            Text {
+                text: root.item.subtitle;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: root.mix ? 13.5px : 13px;
+                overflow: elide;
             }
             if root.item.percent >= 0: HorizontalLayout {
-                spacing: 8px;
+                padding-top: root.card ? 9px : 2px;
+                spacing: 10px;
                 Rectangle {
-                    height: 4px;
+                    height: 3px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 2px;
                     background: Theme.raised;
@@ -666,58 +780,78 @@ export component HomeRowView inherits Rectangle {
                     font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 12px;
+                    font-weight: 500;
                 }
             }
         }
-        if root.item.tag != "": VerticalLayout {
+        if root.song: VerticalLayout {
             alignment: center;
-            Pill {
+            UseTag {
                 text: root.item.tag;
                 accent: root.item.tag-accent;
             }
         }
-        if root.item.link != "" && !root.hide-link: LinkText {
-            text: root.item.link;
-            max-width: 160px;
-            overflow: elide;
-            clicked => {
-                root.action("link", root.item.link-id);
+        if root.item.link != "" && !root.hide-link: Rectangle {
+            width: 240px;
+            Text {
+                x: 0;
+                width: min(self.preferred-width, parent.width);
+                text: root.item.link;
+                font-family: Fonts.family(self.text);
+                color: link-area.has-hover ? Theme.text : Theme.text-dim;
+                font-size: 13.5px;
+                overflow: elide;
+                vertical-alignment: center;
+                link-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("link", root.item.link-id);
+                    }
+                }
             }
         }
-        if root.item.note != "" && !root.hide-note: Text {
-            text: root.item.note;
+        if !root.card && !root.mix && !root.song && !root.hide-note && (root.item.note != "" || root.playing): Text {
+            text: root.playing ? "正在播放" : root.item.note;
             font-family: Fonts.family(self.text);
-            color: Theme.text-faint;
-            font-size: 12px;
+            color: root.playing ? Theme.accent-text : Theme.text-faint;
+            font-size: 13px;
+            font-weight: 500;
+            width: 100px;
+            horizontal-alignment: right;
             vertical-alignment: center;
         }
-        if root.item.percent < 0 && root.item.duration != "": Text {
+        if !root.card && root.item.percent < 0 && root.item.duration != "": Text {
             text: root.item.duration;
             font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 13px;
+            font-weight: 500;
             vertical-alignment: center;
-            width: 44px;
+            width: 48px;
             horizontal-alignment: right;
         }
-        if root.show-add: IconButton {
-            kind: IconKind.plus;
-            size: 28px;
-            icon-size: 14px;
-            clicked => {
-                root.action("last", 0);
+        if root.show-add: Rectangle {
+            width: 28px;
+            Icon {
+                kind: IconKind.list-plus;
+                width: 18px;
+                height: 18px;
+                color: add-area.has-hover ? Theme.text : Theme.text-faint;
             }
-        }
-        if root.mix: Text {
-            text: "›";
-            color: Theme.text-faint;
-            font-size: 20px;
-            vertical-alignment: center;
-            TouchArea {
+            add-area := TouchArea {
                 mouse-cursor: pointer;
                 clicked => {
-                    root.action("open", 0);
+                    root.action("last", 0);
                 }
+            }
+        }
+        if root.mix: Rectangle {
+            width: 24px;
+            Icon {
+                kind: IconKind.chevron-right;
+                width: 18px;
+                height: 18px;
+                color: row-area.has-hover ? Theme.text : Theme.text-faint;
             }
         }
     }
@@ -785,97 +919,183 @@ export component HomeRowView inherits Rectangle {
     }
 }
 
+// A preview row of the spotlight (tracks or related albums).
+component PreviewRow inherits Rectangle {
+    in property <string> number;
+    in property <string> title;
+    in property <string> sub;
+    in property <string> end;
+    in property <bool> playing;
+    in property <image> cover;
+    in property <bool> has-cover;
+    callback clicked();
+    height: 62px;
+    background: pr-area.has-hover ? Theme.surface-hover.with-alpha(0.5) : transparent;
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+    pr-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        spacing: 12px;
+        if !root.has-cover: Rectangle {
+            width: 28px;
+            if !root.playing: Text {
+                x: 0;
+                text: root.number;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            if root.playing: PlayingBars {
+                x: 2px;
+                width: 12px;
+                height: 11px;
+            }
+        }
+        if root.has-cover: Cover {
+            width: 44px;
+            height: 44px;
+            y: (parent.height - self.height) / 2;
+            source: root.cover;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: root.title;
+                font-family: Fonts.family(self.text);
+                color: root.playing ? Theme.accent-text : Theme.text;
+                font-size: 15.5px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.sub;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 13px;
+                overflow: elide;
+            }
+        }
+        Text {
+            text: root.end;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 13px;
+            font-weight: 500;
+            width: 48px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Home spotlight (v3 Editorial): a full-bleed neutral band (D3) with the
+// cover, segmented tabs over an oversized title, and on wide windows the
+// preview list on the right.
 component Spotlight inherits Rectangle {
     in property <int> playing-id;
-    in property <[int]> playing-works;
-    // Wide layout (container >= 1440px): the preview list shows on the
-    // right and the "专辑详情" link hides (Electron `.hero-side`).
+    // The preview list shows on the right (wide windows).
     in property <bool> wide;
-    // Cover size and padding scale with the width.
-    in property <length> art: 220px;
-    in property <length> pad: 24px;
-    // Title: clamp(1.7rem, 2.5vw, 2.45rem); follows the art size (which
-    // follows the page width) to avoid a loop through this width.
-    property <length> title-size: round((27px + (root.art - 180px) * 12 / 64) / 1px) * 1px;
-    // Width of the preview list (wide layout only).
-    in property <length> side-w: 320px;
+    in property <length> art: 340px;
+    in property <length> pad-x: 40px;
+    in property <length> pad-y: 44px;
+    in property <length> gap: 44px;
+    in property <length> title-size: 112px;
+    in property <length> side-w: 520px;
     callback track-action(int, string, int, int);
     callback navigate(int, int);
-    height: max(root.art, info.preferred-height) + 2 * root.pad;
-    border-radius: 20px;
-    background: Theme.surface;
-    clip: true;
-
-    // Backdrop (Electron `.hero-bg`): the blurred cover at 45%, faded
-    // towards the bottom left so the text stays readable.
-    if Home.hero-backdrop.width > 0: Image {
-        x: -80px;
-        y: -80px;
-        width: root.width + 160px;
-        height: root.height + 160px;
-        source: Home.hero-backdrop;
-        image-fit: ImageFit.cover;
-        opacity: 0.45;
-    }
-    if Home.hero-backdrop.width > 0: Rectangle {
-        background: @linear-gradient(100deg, Theme.surface.with-alpha(0.75) 0%, Theme.surface.with-alpha(0) 60%);
-    }
-    if Home.hero-backdrop.width > 0: Rectangle {
-        background: @linear-gradient(0deg, Theme.surface.with-alpha(0.75) 0%, Theme.surface.with-alpha(0) 45%);
-    }
+    property <bool> has-side: root.wide && (Home.tab == 2 ? Home.series-albums.length > 0 : Home.pane-tracks.length > 0);
+    height: max(root.art, info.preferred-height) + 2 * root.pad-y;
+    background: @linear-gradient(90deg, Theme.hero-from 0%, Theme.hero-to 60%, Theme.hero-to 100%);
 
     HorizontalLayout {
-        padding: root.pad;
-        spacing: root.pad;
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        padding-top: root.pad-y;
+        padding-bottom: root.pad-y;
+        spacing: root.gap;
 
         // Art: the album cover, or up to three covers fanned out.
-        if Home.tab != 2: Cover {
+        if Home.tab != 2: Rectangle {
             width: root.art;
             height: root.art;
             y: (parent.height - self.height) / 2;
-            source: Home.pane.cover;
+            background: Theme.raised;
+            drop-shadow-blur: 40px;
+            drop-shadow-offset-y: 24px;
+            drop-shadow-color: #000000a0;
+            Image {
+                source: Home.pane.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: ImageFit.cover;
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    Home.action("open-album", Home.pane.album-id);
+                }
+            }
         }
         if Home.tab == 2: Rectangle {
             width: root.art;
             // Three covers fanned out inside the art box.
             property <length> fan: floor(root.art * 0.77 / 1px) * 1px;
-            for img[i] in Home.series-fan: Cover {
+            for img[i] in Home.series-fan: Rectangle {
                 x: i * (root.art - parent.fan) / 2;
                 y: (parent.height - root.art) / 2 + i * (root.art - parent.fan) / 2;
                 width: parent.fan;
                 height: parent.fan;
-                source: img;
-                drop-shadow-blur: 12px;
+                background: Theme.raised;
+                drop-shadow-blur: 16px;
                 drop-shadow-color: #00000080;
+                Image {
+                    source: img;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
             }
         }
 
         info := VerticalLayout {
             horizontal-stretch: 1;
-            spacing: 8px;
-            alignment: center;
+            min-width: 0px;
+            spacing: 0px;
             // Segmented tabs (Electron `SegmentedControl`).
             HorizontalLayout {
                 alignment: start;
                 Rectangle {
-                    border-radius: 8px;
-                    background: Theme.dark ? #00000040 : #0000000f;
+                    border-radius: 12px;
+                    background: Theme.dark ? #0000004d : #0000000f;
                     width: seg-row.preferred-width;
-                    height: 30px;
+                    height: 40px;
                     seg-row := HorizontalLayout {
-                        padding: 3px;
+                        padding: 4px;
                         spacing: 2px;
                         for label[i] in Home.tab-labels: Rectangle {
                             property <bool> on: Home.tab-ids[i] == Home.tab;
-                            width: seg-text.preferred-width + 20px;
-                            border-radius: 6px;
-                            background: self.on ? Theme.surface-hover : seg-area.has-hover ? (Theme.dark ? #ffffff10 : #0000000a) : transparent;
+                            width: seg-text.preferred-width + 28px;
+                            border-radius: 8px;
+                            background: self.on ? (Theme.dark ? #ffffff1f : #ffffff) : seg-area.has-hover ? (Theme.dark ? #ffffff10 : #0000000a) : transparent;
                             seg-text := Text {
                                 text: label;
                                 font-family: Fonts.family(self.text);
                                 color: parent.on ? Theme.text : Theme.text-dim;
-                                font-size: 12px;
-                                font-weight: 600;
+                                font-size: 13.5px;
+                                font-weight: parent.on ? 600 : 400;
                             }
                             seg-area := TouchArea {
                                 mouse-cursor: pointer;
@@ -887,19 +1107,17 @@ component Spotlight inherits Rectangle {
                     }
                 }
             }
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 16px;
+            }
 
             if Home.tab != 2: VerticalLayout {
-                spacing: 8px;
-                Text {
+                spacing: 0px;
+                BigTitle {
                     text: Home.pane.title;
-                    font-family: Fonts.family(self.text);
-                    color: title-area.has-hover ? Theme.accent : Theme.text;
-                    // clamp(1.7rem, 2.5vw, 2.45rem), at most two lines.
-                    font-size: root.title-size;
-                    font-weight: 800;
-                    wrap: word-wrap;
-                    overflow: elide;
-                    max-height: self.font-size * 2.6;
+                    max-size: root.title-size;
+                    text-color: title-area.has-hover ? Theme.accent-text : Theme.text;
                     title-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
@@ -907,77 +1125,88 @@ component Spotlight inherits Rectangle {
                         }
                     }
                 }
-                LinkText {
-                    text: Home.pane.artist;
-                    font-size: 17px;
-                    font-weight: 600;
-                    enabled: Home.pane.artist-id > 0;
-                    clicked => {
-                        root.navigate(11, Home.pane.artist-id);
+                HorizontalLayout {
+                    alignment: start;
+                    padding-top: Shell.tier == 2 ? 14px : 8px;
+                    Text {
+                        text: Home.pane.artist;
+                        font-family: Fonts.family(self.text);
+                        color: artist-area.has-hover && Home.pane.artist-id > 0 ? Theme.accent-text : Theme.text;
+                        font-size: Shell.tier == 2 ? 24px : Shell.tier == 1 ? 20px : 18px;
+                        font-weight: 600;
+                        overflow: elide;
+                        artist-area := TouchArea {
+                            mouse-cursor: Home.pane.artist-id > 0 ? pointer : default;
+                            clicked => {
+                                if Home.pane.artist-id > 0 {
+                                    root.navigate(11, Home.pane.artist-id);
+                                }
+                            }
+                        }
                     }
-                }
-                Text {
-                    text: Home.pane.facts;
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text-dim;
-                    font-size: 14px;
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 10px;
                     alignment: start;
-                    if Home.pane.spec != "": Pill {
-                        text: Home.pane.spec;
-                        accent: true;
-                    }
+                    padding-top: 12px;
                     Text {
+                        text: Home.pane.facts;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-dim;
+                        font-size: 14.5px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if Home.pane.spec != "": Pill {
+                        y: (parent.height - self.height) / 2;
+                        text: Home.pane.spec;
+                    }
+                    if Home.pane.note != "": Text {
                         text: Home.pane.note;
                         font-family: Fonts.family(self.text);
-                        color: Theme.text-faint;
-                        font-size: 13px;
+                        color: Theme.text-dim;
+                        font-size: 14.5px;
                         vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 10px;
                     alignment: start;
-                    padding-top: 8px;
+                    padding-top: Shell.tier == 2 ? 26px : 16px;
                     PrimaryButton {
                         text: Home.pane.resume != "" ? Home.pane.resume : "播放";
                         has-icon: true;
-                        width: max(96px, self.preferred-width + 12px);
-                        height: 34px;
-                        border-radius: 17px;
                         clicked => {
                             Home.action(Home.pane.resume != "" ? "resume" : "play-pane", 0);
                         }
                     }
                     GhostButton {
-                        height: 34px;
-                        border-radius: 17px;
+                        height: 40px;
                         has-icon: true;
-                        icon: Home.pane.resume != "" ? IconKind.play : IconKind.queue;
+                        icon: Home.pane.resume != "" ? IconKind.play : IconKind.list-plus;
                         text: Home.pane.resume != "" ? "从头播放" : "加入队列";
                         clicked => {
                             Home.action(Home.pane.resume != "" ? "play-pane" : "append-pane", 0);
                         }
                     }
-                    IconButton {
+                    RoundIconButton {
                         kind: Home.pane.favorite ? IconKind.heart : IconKind.heart-outline;
                         active: Home.pane.favorite;
-                        size: 34px;
-                        icon-size: 16px;
                         clicked => {
                             Home.action("favorite", Home.pane.favorite ? 0 : 1);
                         }
                     }
                     if Home.tab == 3: GhostButton {
+                        height: 40px;
                         text: "换一张";
                         clicked => {
                             Home.action("reroll", 0);
                         }
                     }
-                    if !root.wide: LinkText {
-                        text: "专辑详情 ›";
+                    if !root.has-side: MoreLink {
+                        y: (parent.height - self.height) / 2;
+                        text: "专辑详情";
                         clicked => {
                             Home.action("open-album", Home.pane.album-id);
                         }
@@ -986,83 +1215,99 @@ component Spotlight inherits Rectangle {
             }
 
             if Home.tab == 2: VerticalLayout {
-                spacing: 8px;
-                Text {
+                spacing: 0px;
+                BigTitle {
                     text: Home.series.title;
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text;
-                    font-size: root.title-size;
-                    font-weight: 800;
-                    overflow: elide;
+                    max-size: root.title-size;
                 }
                 Text {
                     text: Home.series.by;
                     font-family: Fonts.family(self.text);
-                    color: Theme.text-dim;
-                }
-                Text {
-                    text: Home.series.facts;
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text-dim;
-                    font-size: 13px;
+                    color: Theme.text;
+                    font-size: Shell.tier == 2 ? 24px : Shell.tier == 1 ? 20px : 18px;
+                    font-weight: 600;
+                    overflow: elide;
                 }
                 HorizontalLayout {
-                    spacing: 6px;
-                    alignment: start;
-                    for w in Home.series-works: Rectangle {
-                        height: 26px;
-                        width: chip-row.preferred-width + 16px;
-                        border-radius: 13px;
-                        background: chip-area.has-hover ? Theme.surface-hover : Theme.raised;
-                        chip-row := HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 6px;
-                            Text {
-                                text: w.title;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                max-width: 160px;
+                    padding-top: 12px;
+                    Text {
+                        text: Home.series.facts;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-dim;
+                        font-size: 14.5px;
+                        overflow: elide;
+                    }
+                }
+                // Work capsules, clipped: their width must not widen the band.
+                Rectangle {
+                    height: Home.series-works.length > 0 ? 50px : 0px;
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    clip: true;
+                    HorizontalLayout {
+                        x: 0;
+                        y: 14px;
+                        height: 36px;
+                        width: max(parent.width, self.preferred-width);
+                        spacing: 8px;
+                        alignment: start;
+                        for w in Home.series-works: Rectangle {
+                            height: 36px;
+                            width: chip-row.preferred-width;
+                            border-radius: 18px;
+                            background: chip-area.has-hover ? Theme.surface-hover : Theme.raised;
+                            chip-row := HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 8px;
+                                Text {
+                                    text: w.title;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text;
+                                    font-size: 13.5px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    max-width: 220px;
+                                }
+                                Text {
+                                    text: w.meta;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-faint;
+                                    font-size: 12.5px;
+                                    vertical-alignment: center;
+                                }
                             }
-                            Text {
-                                text: w.meta;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                        }
-                        chip-area := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.navigate(13, w.id);
+                            chip-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.navigate(13, w.id);
+                                }
                             }
                         }
                     }
                 }
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: 10px;
                     alignment: start;
-                    padding-top: 8px;
+                    padding-top: Shell.tier == 2 ? 22px : 14px;
                     PrimaryButton {
                         text: Home.series.is-series ? "播放系列全部歌曲" : "播放作品全部歌曲";
-                        width: self.preferred-width + 32px;
-                        height: 32px;
+                        has-icon: true;
                         clicked => {
                             Home.action("play-series", 0);
                         }
                     }
                     GhostButton {
+                        height: 40px;
                         text: Home.series.is-series ? "查看系列" : "查看作品";
                         clicked => {
                             Home.action("open-series", 0);
                         }
                     }
-                    LinkText {
-                        text: "全部作品 ›";
+                    MoreLink {
+                        y: (parent.height - self.height) / 2;
+                        text: "全部作品";
                         clicked => {
                             root.navigate(21, 0);
                         }
@@ -1071,168 +1316,76 @@ component Spotlight inherits Rectangle {
             }
         }
 
-        // Preview tracks / related albums.
-        // Preview list in an inset card (Electron `.hero-side`).
-        if root.wide && Home.tab != 2 && Home.pane-tracks.length > 0: Rectangle {
+        // Preview tracks / related albums (wide windows), after a rule.
+        if root.has-side: HorizontalLayout {
             width: root.side-w;
-            border-radius: 14px;
-            background: Theme.dark ? #00000038 : #ffffff99;
-          VerticalLayout {
-            padding: 12px;
-            spacing: 6px;
-            HorizontalLayout {
-                height: 24px;
-                Text {
-                    text: "曲目";
-                    color: Theme.text;
-                    font-weight: 600;
-                }
-                Text {
-                    text: Home.pane.track-count + " 首";
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text-faint;
-                    font-size: 13px;
-                    horizontal-alignment: right;
-                }
+            spacing: 32px;
+            Rectangle {
+                width: 1px;
+                background: Theme.border;
             }
-            ListView {
-                vertical-stretch: 1;
-                for t[i] in Home.pane-tracks: Rectangle {
-                    height: 42px;
-                    border-radius: 4px;
-                    background: t-area.has-hover ? Theme.surface-hover : transparent;
-                    t-area := TouchArea {
-                        mouse-cursor: pointer;
+            VerticalLayout {
+                alignment: end;
+                spacing: 0px;
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    padding-bottom: 8px;
+                    Text {
+                        text: Home.tab == 2 ? "关联专辑" : "曲目";
+                        color: Theme.text-faint;
+                        font-size: 13px;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: Home.tab == 2 ? Home.series.album-count + " 张专辑" : Home.pane.track-count + " 首";
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-faint;
+                        font-size: 13px;
+                    }
+                }
+                if Home.tab != 2: VerticalLayout {
+                    for t[i] in Home.pane-tracks: PreviewRow {
+                        visible: i < 4;
+                        height: i < 4 ? 62px : 0px;
+                        number: t.number;
+                        title: t.title;
+                        sub: t.artist;
+                        end: t.duration;
+                        playing: t.id == root.playing-id;
                         clicked => {
                             root.track-action(Home.pane.list, "play", t.index, 0);
                         }
                     }
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        spacing: 8px;
-                        Rectangle {
-                            width: 32px;
-                            if t.id != root.playing-id: Text {
-                                x: 0;
-                                text: t.number;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
-                            if t.id == root.playing-id: PlayingBars {
-                                x: 2px;
-                                width: 12px;
-                                height: 11px;
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            horizontal-stretch: 1;
-                            Text {
-                                text: t.title;
-                                font-family: Fonts.family(self.text);
-                                color: t.id == root.playing-id ? Theme.accent : Theme.text;
-                                font-size: 13px;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: t.artist;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 12px;
-                                overflow: elide;
-                            }
-                        }
-                        Text {
-                            text: t.duration;
-                            font-family: Fonts.family(self.text);
-                            color: Theme.text-faint;
-                            font-size: 13px;
-                            vertical-alignment: center;
-                        }
-                    }
                 }
-            }
-            LinkText {
-                text: Home.pane.more + " ›";
-                clicked => {
-                    Home.action("open-album", Home.pane.album-id);
-                }
-            }
-        }
-        }
-        if root.wide && Home.tab == 2 && Home.series-albums.length > 0: VerticalLayout {
-            width: root.side-w;
-            spacing: 6px;
-            HorizontalLayout {
-                height: 24px;
-                Text {
-                    text: "关联专辑";
-                    color: Theme.text;
-                    font-weight: 600;
-                }
-                Text {
-                    text: Home.series.album-count + " 张专辑";
-                    font-family: Fonts.family(self.text);
-                    color: Theme.text-faint;
-                    font-size: 13px;
-                    horizontal-alignment: right;
-                }
-            }
-            ListView {
-                vertical-stretch: 1;
-                for a in Home.series-albums: Rectangle {
-                    height: 48px;
-                    border-radius: 4px;
-                    background: a-area.has-hover ? Theme.surface-hover : transparent;
-                    a-area := TouchArea {
-                        mouse-cursor: pointer;
+                if Home.tab == 2: VerticalLayout {
+                    for a[i] in Home.series-albums: PreviewRow {
+                        visible: i < 4;
+                        height: i < 4 ? 62px : 0px;
+                        has-cover: true;
+                        cover: a.cover;
+                        title: a.title;
+                        sub: a.meta;
+                        end: a.year;
                         clicked => {
                             root.navigate(10, a.id);
                         }
                     }
-                    HorizontalLayout {
-                        padding: 4px;
-                        spacing: 8px;
-                        Cover {
-                            width: 40px;
-                            height: 40px;
-                            source: a.cover;
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            horizontal-stretch: 1;
-                            Text {
-                                text: a.title;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text;
-                                font-size: 13px;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: a.meta;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 12px;
-                                overflow: elide;
-                            }
-                        }
-                        Text {
-                            text: a.year;
-                            font-family: Fonts.family(self.text);
-                            color: Theme.text-faint;
-                            font-size: 13px;
-                            vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    padding-top: 14px;
+                    alignment: start;
+                    if Home.tab != 2: MoreLink {
+                        text: "专辑详情";
+                        clicked => {
+                            Home.action("open-album", Home.pane.album-id);
                         }
                     }
-                }
-            }
-            if Home.series.is-series: LinkText {
-                text: "查看系列 ›";
-                clicked => {
-                    Home.action("open-series", 0);
+                    if Home.tab == 2 && Home.series.is-series: MoreLink {
+                        text: "查看系列";
+                        clicked => {
+                            Home.action("open-series", 0);
+                        }
+                    }
                 }
             }
         }
@@ -1259,14 +1412,14 @@ export component HomePage inherits Flickable {
     callback open-web(string);
     content-height: page.preferred-height;
 
-    // Breakpoints of the Electron home (container widths, see
-    // `music032-home.module.css`).
-    property <bool> wide: root.width >= 1440px;
-    property <bool> narrow: root.width <= 1040px;
-    property <bool> compact: root.width <= 760px;
+    // Window breakpoints (`Shell`), and the page width for the columns.
+    property <int> tier: Shell.tier;
+    property <length> pad: Shell.pad;
+    property <length> content-w: root.width - 2 * root.pad;
     property <bool> tiny: root.width <= 700px;
-    property <length> content-w: root.width - 64px;
-    property <length> hero-art: floor(clamp(root.width * 0.17, 180px, 244px) / 1px) * 1px;
+    // Spotlight: cover 340 / 252 / 220; the preview needs room beside the title.
+    property <length> hero-art: root.tier == 2 ? 340px : root.tier == 1 ? 252px : 220px;
+    property <bool> hero-wide: root.tier == 2 && root.content-w >= root.hero-art + 520px + 88px + 380px;
     changed hero-art => {
         hero-timer.restart();
     }
@@ -1288,34 +1441,47 @@ export component HomePage inherits Flickable {
             Home.action("hero-art", 0);
         }
     }
-    property <length> hero-pad: clamp(root.width * 0.03, 24px, 40px);
-    property <length> duo-gap: clamp(root.width * 0.034, 28px, 52px);
-    // 7fr / 5fr; the left column is 520-720px when wide.
-    property <length> duo-main-w: root.narrow ? root.content-w : root.wide ? clamp(root.content-w - root.duo-gap - 320px, 520px, 720px) : (root.content-w - root.duo-gap) * 7 / 12;
-    property <length> duo-side-w: root.narrow ? root.content-w : root.content-w - root.duo-gap - root.duo-main-w;
-    // 最近添加: 3 columns x 2 rows; 4 / 5 / 6 columns when wider; one
-    // row of 6 when the columns stack; 3 columns again when tiny.
-    property <int> recent-cols: root.tiny ? 3 : root.narrow ? 6 : root.width >= 2240px ? 6 : root.width >= 1880px ? 5 : root.wide ? 4 : 3;
-    property <int> recent-max: root.narrow && !root.tiny ? 6 : root.recent-cols * 2;
+    // Two columns: 今日推荐 / 最近播放 (at most 760) and 最近添加 (852 / 520
+    // / 452); one column when the left would be narrower than 380.
+    property <length> duo-gap: root.tier == 2 ? 56px : root.tier == 1 ? 36px : 28px;
+    property <length> side-base: root.tier == 2 ? 852px : root.tier == 1 ? 520px : 452px;
+    property <bool> stack: root.content-w - root.duo-gap - root.side-base < 380px;
+    property <length> duo-side-w: root.stack ? root.content-w : root.tier == 2 ? max(root.side-base, root.content-w - root.duo-gap - 760px) : root.side-base;
+    property <length> duo-main-w: root.stack ? root.content-w : root.content-w - root.duo-gap - root.duo-side-w;
+    property <length> recent-gap: root.tier == 0 ? 16px : 17px;
+    // 最近添加: 4 columns of 200 (more when the page is wider), 3 otherwise;
+    // one row of up to 6 when the columns stack.
+    property <int> recent-cols: root.stack ? max(3, min(6, floor((root.content-w + 16px) / 156px))) : root.tier == 2 ? max(4, floor((root.duo-side-w + 17px) / 217px)) : 3;
+    property <int> recent-max: root.stack && !root.tiny ? root.recent-cols : root.recent-cols * 2;
+    // 按作品漫游: cards of at least 280 (five at 2300), posters 128 / 104.
+    property <int> work-cols: max(2, min(5, floor((root.content-w + 20px) / 300px)));
+    property <length> work-w: floor((root.content-w - (root.work-cols - 1) * 20px) / root.work-cols / 1px) * 1px;
+    property <length> work-art: root.work-w >= 290px ? 128px : 104px;
+    // 接着听 cards: four per row when they are at least 250 wide.
+    property <int> resume-cols: max(1, min(4, floor((root.content-w + 20px) / 270px)));
+    property <length> resume-w: (root.content-w - (root.resume-cols - 1) * 20px) / root.resume-cols;
     // Shelf cards: clamp(150px, 10.5cqi, 232px), whole physical pixels.
     property <length> shelf-card: floor(clamp(root.width * 0.105, 150px, 232px) / 1phx) * 1phx;
+    property <length> section-gap: root.tier == 2 ? 52px : 40px;
 
     page := VerticalLayout {
         width: root.width;
-        padding-top: 24px;
         padding-bottom: 48px;
-        spacing: 28px;
+        spacing: 0px;
         alignment: start;
 
         // No page title (Electron home starts with the spotlight).
         if Home.loading && !Home.unavailable: Text {
-            x: 32px;
+            x: root.pad;
+            height: 80px;
             text: "加载中…";
             color: Theme.text-faint;
+            vertical-alignment: center;
         }
 
         if Home.unavailable: VerticalLayout {
-            padding-left: 32px;
+            padding-left: root.pad;
+            padding-top: 40px;
             spacing: 12px;
             Text {
                 text: "此服务端没有 032 主页接口";
@@ -1339,14 +1505,15 @@ export component HomePage inherits Flickable {
 
         // First run: the library is empty.
         if !Home.loading && Home.empty: VerticalLayout {
-            padding-left: 32px;
-            padding-right: 32px;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            padding-top: 40px;
             spacing: 12px;
             Text {
                 text: "曲库还是空的";
                 color: Theme.text;
-                font-size: 22px;
-                font-weight: 700;
+                font-size: 26px;
+                font-weight: 780;
             }
             Text {
                 text: "在控制台确认音乐目录并运行一次扫描。扫描只读取文件和标签，不会改写、移动或删除源文件；完成后，这里会出现最近添加、作品和你的播放进度。";
@@ -1358,13 +1525,12 @@ export component HomePage inherits Flickable {
                 alignment: start;
                 PrimaryButton {
                     text: "前往控制台扫描";
-                    width: self.preferred-width + 32px;
-                    height: 32px;
                     clicked => {
                         root.open-web("/admin");
                     }
                 }
                 GhostButton {
+                    height: 40px;
                     text: "配置数据来源";
                     clicked => {
                         root.open-web("/admin/settings/metadata");
@@ -1394,43 +1560,48 @@ export component HomePage inherits Flickable {
         }
 
         if !Home.loading && !Home.empty && !Home.unavailable: VerticalLayout {
-            spacing: 32px;
+            spacing: 0px;
 
-            if Home.tab-labels.length > 0: HorizontalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
-                Spotlight {
-                    playing-id: root.playing-id;
-                    wide: root.wide;
-                    art: root.hero-art;
-                    pad: root.hero-pad;
-                    side-w: clamp((root.content-w - root.hero-art - 4 * root.hero-pad) * 0.4, 320px, 420px);
-                    track-action(list, what, i, arg) => {
-                        root.track-action(list, what, i, arg);
-                    }
-                    navigate(page, id) => {
-                        root.navigate(page, id);
-                    }
+            if Home.tab-labels.length > 0: Spotlight {
+                playing-id: root.playing-id;
+                wide: root.hero-wide;
+                art: root.hero-art;
+                pad-x: root.pad;
+                pad-y: root.tier == 2 ? 44px : 36px;
+                gap: root.tier == 2 ? 44px : root.tier == 1 ? 32px : 28px;
+                title-size: root.tier == 2 ? Theme.font-hero : root.tier == 1 ? 76px : 72px;
+                track-action(list, what, i, arg) => {
+                    root.track-action(list, what, i, arg);
+                }
+                navigate(page, id) => {
+                    root.navigate(page, id);
                 }
             }
 
-            // Daily mixes or 接着听 next to 最近添加; one column when narrow.
+            // Daily mixes (or 最近播放 first) next to 最近添加; one column
+            // when narrow.
             HorizontalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
+                padding-left: root.pad;
+                padding-right: root.pad;
+                padding-top: root.tier == 2 ? 44px : root.tier == 1 ? 32px : 26px;
                 duo := Rectangle {
-                    height: root.narrow ? main.preferred-height + (Home.recent-albums.length > 0 ? root.duo-gap + side.preferred-height : 0px) : max(main.preferred-height, side.preferred-height);
+                    height: root.stack ? main.preferred-height + (Home.recent-albums.length > 0 ? root.duo-gap + side.preferred-height : 0px) : max(main.preferred-height, side.preferred-height);
                     main := VerticalLayout {
                         x: 0;
                         y: 0;
                         width: root.duo-main-w;
                         height: self.preferred-height;
-                        spacing: 8px;
+                        spacing: 0px;
                         alignment: start;
                         if Home.mixes.length > 0 || Home.mixes-generating: SectionHead {
                             title: "今日推荐";
+                            count: "每日 6:00 更新";
+                        }
+                        if Home.mixes.length > 0 || Home.mixes-generating: Rectangle {
+                            height: 10px;
                         }
                         if Home.mixes.length == 0 && Home.mixes-generating: VerticalLayout {
+                            padding-bottom: 12px;
                             Text {
                                 text: "正在生成今天的推荐";
                                 color: Theme.text;
@@ -1449,14 +1620,21 @@ export component HomePage inherits Flickable {
                                 Home.action(what == "play" ? "mix-play" : "mix-open", m.id);
                             }
                         }
+                        if Home.mixes.length > 0 || Home.mixes-generating: Rectangle {
+                            height: 40px;
+                        }
                         SectionHead {
                             title: "最近播放";
-                            LinkText {
-                                text: "播放记录 ›";
+                            MoreLink {
+                                y: (parent.height - self.height) / 2;
+                                text: "播放记录";
                                 clicked => {
                                     root.navigate(23, 0);
                                 }
                             }
+                        }
+                        Rectangle {
+                            height: 10px;
                         }
                         if Home.recent.length == 0: VerticalLayout {
                             Text {
@@ -1472,50 +1650,41 @@ export component HomePage inherits Flickable {
                         for r in Home.recent: HomeRowView {
                             item: r;
                             playing: r.id == root.playing-id;
-                            hide-note: root.compact;
+                            hide-note: root.duo-main-w < 480px;
                             playlists: root.playlists;
                             action(what, arg) => {
                                 root.track-action(8, what, r.index, arg);
                             }
                         }
-                        if Home.mixes.length == 0 && !Home.mixes-generating && Home.resume.length > 0: SectionHead {
-                            title: "接着听";
-                        }
-                        if Home.mixes.length == 0 && !Home.mixes-generating: VerticalLayout {
-                            for r in Home.resume: HomeRowView {
-                                item: r;
-                                playing: r.id == root.playing-id;
-                                hide-note: root.compact;
-                                playlists: root.playlists;
-                                action(what, arg) => {
-                                    root.track-action(7, what, r.index, arg);
-                                }
-                            }
-                        }
                     }
                     side := VerticalLayout {
-                        x: root.narrow ? 0 : root.duo-main-w + root.duo-gap;
-                        y: root.narrow ? main.preferred-height + root.duo-gap : 0;
+                        x: root.stack ? 0 : root.duo-main-w + root.duo-gap;
+                        y: root.stack ? main.preferred-height + root.duo-gap : 0;
                         width: root.duo-side-w;
                         height: self.preferred-height;
                         visible: Home.recent-albums.length > 0;
-                        spacing: 8px;
+                        spacing: 0px;
                         alignment: start;
                         SectionHead {
                             title: "最近添加";
-                            LinkText {
-                                text: "查看全部 ›";
+                            MoreLink {
+                                y: (parent.height - self.height) / 2;
+                                text: "查看全部";
                                 clicked => {
                                     root.navigate(0, 0);
                                 }
                             }
+                        }
+                        Rectangle {
+                            height: 18px;
                         }
                         CardRows {
                             width: root.duo-side-w;
                             rows: Home.recent-albums;
                             kind: 0;
                             side: 0px;
-                            gap: 14px;
+                            gap: root.recent-gap;
+                            row-gap: root.tier == 2 ? 28px : root.tier == 1 ? 22px : 16px;
                             fixed-columns: root.recent-cols;
                             max-items: root.recent-max;
                             playlists: root.playlists;
@@ -1533,22 +1702,54 @@ export component HomePage inherits Flickable {
                 }
             }
 
+            // 接着听 (shown when there are no daily mixes, as before): cards.
+            if Home.mixes.length == 0 && !Home.mixes-generating && Home.resume.length > 0: VerticalLayout {
+                padding-left: root.pad;
+                padding-right: root.pad;
+                padding-top: root.section-gap;
+                spacing: 18px;
+                SectionHead {
+                    title: "接着听";
+                    count: Home.resume.length + " 首未听完";
+                }
+                resume-grid := Rectangle {
+                    height: ceil(Home.resume.length / root.resume-cols) * 128px - 20px;
+                    for r[i] in Home.resume: HomeRowView {
+                        x: mod(i, root.resume-cols) * (root.resume-w + 20px);
+                        y: floor(i / root.resume-cols) * 128px;
+                        width: root.resume-w;
+                        item: r;
+                        card: true;
+                        playing: r.id == root.playing-id;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            root.track-action(7, what, r.index, arg);
+                        }
+                    }
+                }
+            }
+
             if Home.works-count > 0: VerticalLayout {
-                spacing: 12px;
+                padding-top: root.section-gap;
+                spacing: 18px;
                 HorizontalLayout {
-                    padding-left: 32px;
-                    padding-right: 32px;
+                    padding-left: root.pad;
+                    padding-right: root.pad;
                     SectionHead {
                         title: "按作品漫游";
                         count: Home.works-count + " 部作品";
-                        for label[i] in ["全部", "动画", "游戏", "电影"]: Tab {
-                            text: label;
-                            selected: Home.works-type == i;
-                            clicked => {
-                                Home.action("works-type", i);
+                        HorizontalLayout {
+                            spacing: 4px;
+                            for label[i] in ["全部", "动画", "游戏", "电影"]: SegItem {
+                                text: label;
+                                selected: Home.works-type == i;
+                                clicked => {
+                                    Home.action("works-type", i);
+                                }
                             }
                         }
-                        if Home.works-pages > 1: GhostButton {
+                        if Home.works-pages > 1: MoreLink {
+                            y: (parent.height - self.height) / 2;
                             text: "换一批";
                             clicked => {
                                 Home.action("works-next", 0);
@@ -1557,14 +1758,16 @@ export component HomePage inherits Flickable {
                     }
                 }
                 if Home.works.length == 0: Text {
-                    x: 32px;
+                    x: root.pad;
                     text: "这个类型下还没有关联歌曲的作品";
                     color: Theme.text-faint;
                 }
                 CardShelf {
                     rows: Home.works;
                     kind: 5;
-                    size: 76px;
+                    size: root.work-art;
+                    card-w: root.work-w;
+                    side: root.pad;
                     playlists: root.playlists;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.works, 1000, size);
@@ -1576,20 +1779,23 @@ export component HomePage inherits Flickable {
             }
 
             if Home.songs-count > 0: VerticalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
-                spacing: 8px;
+                padding-left: root.pad;
+                padding-right: root.pad;
+                padding-top: root.section-gap;
+                spacing: 10px;
                 SectionHead {
                     title: "主题曲与插曲";
                     count: "来自作品关联的歌曲角色 · 每日轮换";
-                    if Home.songs-pages > 1: GhostButton {
+                    if Home.songs-pages > 1: MoreLink {
+                        y: (parent.height - self.height) / 2;
                         text: "换一批";
                         clicked => {
                             Home.action("songs-next", 0);
                         }
                     }
-                    LinkText {
-                        text: "歌曲 ›";
+                    MoreLink {
+                        y: (parent.height - self.height) / 2;
+                        text: "歌曲";
                         clicked => {
                             root.navigate(1, 0);
                         }
@@ -1597,17 +1803,18 @@ export component HomePage inherits Flickable {
                 }
                 // Two columns (row-major) when wide.
                 songs := Rectangle {
-                    property <int> cols: root.wide ? 2 : 1;
-                    property <length> col-w: (self.width - (self.cols - 1) * 28px) / self.cols;
-                    height: ceil(Home.songs.length / self.cols) * 60px;
+                    property <int> cols: root.content-w >= 1200px ? 2 : 1;
+                    property <length> col-gap: 56px;
+                    property <length> col-w: (self.width - (self.cols - 1) * self.col-gap) / self.cols;
+                    height: ceil(Home.songs.length / self.cols) * 68px;
                     for r[i] in Home.songs: HomeRowView {
-                        x: mod(i, songs.cols) * (songs.col-w + 28px);
-                        y: floor(i / songs.cols) * 60px;
+                        x: mod(i, songs.cols) * (songs.col-w + songs.col-gap);
+                        y: floor(i / songs.cols) * 68px;
                         width: songs.col-w;
                         item: r;
                         playing: r.id == root.playing-id;
                         show-add: true;
-                        hide-link: root.tiny;
+                        hide-link: songs.col-w < 620px;
                         playlists: root.playlists;
                         action(what, arg) => {
                             if what == "link" {
@@ -1621,30 +1828,31 @@ export component HomePage inherits Flickable {
             }
 
             if Home.years.length > 0: VerticalLayout {
-                spacing: 12px;
+                padding-top: root.section-gap;
+                spacing: 18px;
                 HorizontalLayout {
-                    padding-left: 32px;
-                    padding-right: 32px;
+                    padding-left: root.pad;
+                    padding-right: root.pad;
                     SectionHead {
                         title: "编年";
                         count: "按发行年份 · 点击柱子查看那一年";
                     }
                 }
-                // Year chart (Electron `.year-chart`): the bars share the
-                // whole width, 128px high over a baseline, the count above
-                // the hovered / selected bar; axis labels skip years when
-                // the columns are too narrow for "2026".
+                // Year chart: the bars share the whole width, 120px high over
+                // a baseline, the count above the hovered / selected bar;
+                // axis labels every five years (ten when narrow).
                 Rectangle {
-                    height: 128px + 22px;
+                    height: 120px + 26px + 8px;
                     chart := Rectangle {
-                        x: 32px;
-                        width: parent.width - 64px;
+                        x: root.pad;
+                        y: 26px;
+                        width: parent.width - 2 * root.pad;
+                        height: 120px + 22px;
                         property <int> n: max(1, Home.years.length);
-                        property <length> gap: self.colw >= 20px ? 4px : 2px;
-                        property <length> colw: (self.width - (self.n - 1) * 4px) / self.n;
+                        property <length> gap: self.width / self.n >= 24px ? 8px : self.width / self.n >= 12px ? 4px : 2px;
                         property <length> pitch: (self.width + self.gap) / self.n;
-                        property <int> step: max(2, ceil(34px / self.pitch));
-                        property <length> plot: 128px;
+                        property <int> step: self.pitch * 5 >= 40px ? 5 : 10;
+                        property <length> plot: 120px;
                         Rectangle {
                             y: chart.plot;
                             height: 1px;
@@ -1655,7 +1863,7 @@ export component HomePage inherits Flickable {
                             y: 0;
                             width: chart.pitch - chart.gap;
                             height: chart.plot;
-                            property <length> h: max(4px, chart.plot * max(3, bar.height) / 100 - 16px);
+                            property <length> h: max(4px, chart.plot * max(3, bar.height) / 100);
                             bar-area := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
@@ -1665,47 +1873,49 @@ export component HomePage inherits Flickable {
                             Rectangle {
                                 y: parent.height - parent.h;
                                 height: parent.h;
-                                border-top-left-radius: 4px;
-                                border-top-right-radius: 4px;
-                                background: bar.year == Home.year ? Theme.accent : bar-area.has-hover ? Theme.text-faint.with-alpha(0.55) : Theme.text-faint.with-alpha(0.3);
+                                border-top-left-radius: 3px;
+                                border-top-right-radius: 3px;
+                                background: bar.year == Home.year ? Theme.accent : bar-area.has-hover ? Theme.text-faint.with-alpha(0.55) : Theme.bar;
                                 animate background { duration: 140ms; }
                             }
                             if bar-area.has-hover || bar.year == Home.year: Text {
                                 x: (parent.width - self.width) / 2;
-                                y: parent.height - parent.h - 16px;
+                                y: parent.height - parent.h - 20px;
                                 width: 48px;
-                                height: 14px;
+                                height: 16px;
                                 text: bar.count;
                                 font-family: Fonts.family(self.text);
-                                color: bar.year == Home.year ? Theme.accent : Theme.text-dim;
-                                font-size: 12px;
-                                font-weight: 600;
+                                color: bar.year == Home.year ? Theme.accent-text : Theme.text-dim;
+                                font-size: 13px;
+                                font-weight: 700;
                                 horizontal-alignment: center;
                             }
                         }
                         for bar[i] in Home.years: Text {
-                            visible: bar.year == Home.year || mod(Home.years.length - 1 - i, chart.step) == 0;
+                            visible: bar.year == Home.year || mod(bar.year, chart.step) == 0;
                             x: i * chart.pitch + (chart.pitch - chart.gap - self.width) / 2;
-                            y: chart.plot + 6px;
+                            y: chart.plot + 8px;
                             width: 40px;
                             height: 16px;
                             text: bar.year;
                             font-family: Fonts.family(self.text);
-                            color: bar.year == Home.year ? Theme.accent : Theme.text-faint;
+                            color: bar.year == Home.year ? Theme.accent-text : Theme.text-faint;
                             font-size: 12px;
-                            font-weight: bar.year == Home.year ? 700 : 400;
+                            font-weight: bar.year == Home.year ? 700 : 500;
                             horizontal-alignment: center;
                         }
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 32px;
-                    padding-right: 32px;
+                    padding-left: root.pad;
+                    padding-right: root.pad;
+                    padding-top: 22px;
                     SectionHead {
                         title: Home.year + " 年";
                         count: Home.year-total + " 张专辑";
-                        LinkText {
-                            text: "查看全部 ›";
+                        MoreLink {
+                            y: (parent.height - self.height) / 2;
+                            text: "查看全部";
                             clicked => {
                                 Home.action("year-all", Home.year);
                             }
@@ -1713,7 +1923,7 @@ export component HomePage inherits Flickable {
                     }
                 }
                 if Home.chronicle.length == 0: Text {
-                    x: 32px;
+                    x: root.pad;
                     text: Home.year + " 年没有专辑";
                     font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
@@ -1722,6 +1932,7 @@ export component HomePage inherits Flickable {
                     rows: Home.chronicle;
                     kind: 0;
                     size: root.shelf-card;
+                    side: root.pad;
                     playlists: root.playlists;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.chronicle, 1000, size);
@@ -1733,14 +1944,16 @@ export component HomePage inherits Flickable {
             }
 
             if Home.playlists.length > 0: VerticalLayout {
-                spacing: 12px;
+                padding-top: root.section-gap - 18px;
+                spacing: 18px;
                 HorizontalLayout {
-                    padding-left: 32px;
-                    padding-right: 32px;
+                    padding-left: root.pad;
+                    padding-right: root.pad;
                     SectionHead {
                         title: "歌单";
-                        LinkText {
-                            text: "全部歌单 ›";
+                        MoreLink {
+                            y: (parent.height - self.height) / 2;
+                            text: "全部歌单";
                             clicked => {
                                 root.navigate(4, 0);
                             }
@@ -1751,6 +1964,7 @@ export component HomePage inherits Flickable {
                     rows: Home.playlists;
                     kind: 2;
                     size: root.shelf-card;
+                    side: root.pad;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.playlists, 1000, size);
                     }
@@ -1762,8 +1976,9 @@ export component HomePage inherits Flickable {
 
             // Footer statistics.
             HorizontalLayout {
-                padding-left: 32px;
-                padding-right: 32px;
+                padding-left: root.pad;
+                padding-right: root.pad;
+                padding-top: 24px;
                 spacing: 16px;
                 alignment: start;
                 Text {
@@ -1771,12 +1986,14 @@ export component HomePage inherits Flickable {
                     font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
+                    vertical-alignment: center;
                 }
                 if Home.stats.last-scan != "": Text {
                     text: Home.stats.last-scan;
                     font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: 13px;
+                    vertical-alignment: center;
                 }
                 LinkText {
                     text: "作品关联待审核" + (Home.stats.pending > 0 ? "（" + Home.stats.pending + "）" : "");

@@ -517,12 +517,12 @@ pub fn record_item(record: &PlaybackRecord) -> RecordItem {
     }
 }
 
-/// A recently played track (no progress).
+/// A recently played track (no progress; "今天 23:37").
 pub fn recent_item(track: &Track) -> RecordItem {
     RecordItem {
         track: track_item(track),
         artwork: track.artwork_url.clone(),
-        when: format::date_time(track.last_played_at.as_deref().unwrap_or("")),
+        when: format::day_time(track.last_played_at.as_deref().unwrap_or("")),
         ..RecordItem::default()
     }
 }

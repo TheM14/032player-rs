@@ -168,9 +168,51 @@ pub fn date_time(iso: &str) -> String {
     })
 }
 
+/// Short local time for recent plays: "今天 23:37", "昨天 21:48",
+/// "10月27日" (this year) or "2025年10月27日".
+pub fn day_time(iso: &str) -> String {
+    day_time_at(iso, chrono::Local::now())
+}
+
+fn day_time_at(iso: &str, now: chrono::DateTime<chrono::Local>) -> String {
+    use chrono::Datelike;
+    let Some(time) = parse_time(iso) else {
+        return String::new();
+    };
+    let t = time.with_timezone(&chrono::Local);
+    let days = (now.date_naive() - t.date_naive()).num_days();
+    match days {
+        0 => t.format("今天 %H:%M").to_string(),
+        1 => t.format("昨天 %H:%M").to_string(),
+        _ if t.year() == now.year() => t.format("%-m月%-d日").to_string(),
+        _ => t.format("%Y年%-m月%-d日").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_times() {
+        use chrono::TimeZone;
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 28, 12, 0, 0)
+            .unwrap();
+        let iso = |y, mo, d, h, mi| {
+            chrono::Local
+                .with_ymd_and_hms(y, mo, d, h, mi, 0)
+                .unwrap()
+                .to_utc()
+                .to_rfc3339()
+        };
+        let r = |iso: String| day_time_at(&iso, now);
+        assert_eq!(r(iso(2026, 10, 28, 9, 5)), "今天 09:05");
+        assert_eq!(r(iso(2026, 10, 27, 23, 37)), "昨天 23:37");
+        assert_eq!(r(iso(2026, 10, 3, 8, 0)), "10月3日");
+        assert_eq!(r(iso(2025, 12, 31, 8, 0)), "2025年12月31日");
+        assert_eq!(day_time_at("", now), "");
+    }
 
     #[test]
     fn relative_times() {

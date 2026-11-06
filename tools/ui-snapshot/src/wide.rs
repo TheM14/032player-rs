@@ -722,18 +722,27 @@ fn int_arg(args: &[Value], i: usize) -> i32 {
     }
 }
 
+/// Renders (and throws away) a few frames: `changed` handlers only run once
+/// the properties are evaluated by a real render.
 fn settle(window: &MinimalSoftwareWindow, size: PhysicalSize) {
     window.set_size(size);
-    for _ in 0..4 {
+    let (w, h) = (size.width as usize, size.height as usize);
+    let mut buf = vec![super::Px::default(); w * h];
+    for _ in 0..2 {
         slint::platform::update_timers_and_animations();
         window.request_redraw();
-        window.draw_if_needed(|_| {});
+        window.draw_if_needed(|renderer| {
+            renderer.render(&mut buf, w);
+        });
     }
 }
 
 /// Fills the grids that follow the layout (albums, home 最近添加).
 fn fill_grids(inst: &ComponentInstance, layouts: &Layouts) {
     let l = layouts.borrow();
+    if std::env::var_os("UI_SNAPSHOT_DEBUG").is_some() {
+        eprintln!("layouts {:?}", *l);
+    }
     let (cols, _) = l.get(&0).copied().unwrap_or((6, 0));
     set(inst, "album-rows", rows(&album_cards(24), cols, 0));
     let (cols, max) = l.get(&11).copied().unwrap_or((4, 8));
@@ -753,8 +762,12 @@ fn shot(
     size: PhysicalSize,
     path: &str,
 ) {
-    settle(window, size);
-    fill_grids(inst, layouts);
+    // `changed` callbacks (window width -> `Shell` -> grid columns) report
+    // the layout a few frames late.
+    for _ in 0..2 {
+        settle(window, size);
+        fill_grids(inst, layouts);
+    }
     settle(window, size);
     render(window, size, path);
 }

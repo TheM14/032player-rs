@@ -1217,7 +1217,6 @@ fn main() {
     set_g(&inst, "Home", "songs-count", n(112.0));
     set_g(&inst, "Home", "songs-pages", n(6.0));
     set_g(&inst, "Home", "recent-albums", recent_rows(3, 6));
-    set_g(&inst, "Home", "hero-backdrop", Value::Image(cover(7)));
     set_g(&inst, "Home", "works", album_rows(24));
     set_g(&inst, "Home", "works-count", n(87.0));
     set_g(&inst, "Home", "works-pages", n(4.0));

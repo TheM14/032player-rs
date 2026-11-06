@@ -261,16 +261,17 @@ export component CardView inherits Rectangle {
     // The artist of an album card is a link (Electron `albumArtists` row).
     property <bool> artist-link: root.kind == 0 && root.card.artist-id > 0 && root.card.artist != "";
     width: root.size;
-    height: root.art-h + 64px + (root.card.note != "" ? 18px : 0px) + (root.card.added != "" ? 18px : 0px);
+    height: card-col.preferred-height;
 
-    VerticalLayout {
-        spacing: 6px;
+    card-col := VerticalLayout {
+        spacing: 0px;
         alignment: start;
 
         Rectangle {
             width: root.size;
             height: root.art-h;
-            border-radius: root.kind == 1 ? root.size / 2 : Theme.radius;
+            // Square album covers (editorial); round artists; posters 6px.
+            border-radius: root.kind == 1 ? root.size / 2 : root.poster ? 6px : 0px;
             background: Theme.raised;
             clip: true;
 
@@ -329,7 +330,7 @@ export component CardView inherits Rectangle {
                 y: 8px;
                 width: badge-text.preferred-width + 12px;
                 height: 20px;
-                border-radius: 4px;
+                border-radius: 5px;
                 background: #000000a0;
                 badge-text := Text {
                     text: root.card.badge;
@@ -341,10 +342,13 @@ export component CardView inherits Rectangle {
         }
 
         Text {
+            height: 12px + self.preferred-height;
+            vertical-alignment: bottom;
             text: root.card.title;
             font-family: Fonts.family(self.text);
             color: Theme.text;
-            font-weight: 600;
+            font-size: 15px;
+            font-weight: 650;
             overflow: elide;
             width: root.size;
             horizontal-alignment: root.kind == 1 ? center : left;
@@ -352,6 +356,7 @@ export component CardView inherits Rectangle {
 
         sub := HorizontalLayout {
             width: root.size;
+            padding-top: 4px;
             alignment: root.kind == 1 ? center : start;
             artist-text := Text {
                 text: root.card.artist;
@@ -360,31 +365,42 @@ export component CardView inherits Rectangle {
                 color: artist-area.has-hover ? Theme.text : Theme.text-dim;
                 font-size: 13px;
                 overflow: elide;
-                max-width: root.size - (year-text.visible ? year-text.preferred-width : 0px);
-            }
-            year-text := Text {
-                visible: root.card.year != "";
-                text: root.card.artist == "" ? root.card.year : " · " + root.card.year;
-                font-family: Fonts.family(self.text);
-                color: Theme.text-dim;
-                font-size: 13px;
+                max-width: root.size;
             }
         }
 
+        if root.card.year != "": Text {
+            height: 3px + self.preferred-height;
+            vertical-alignment: bottom;
+            text: root.card.year;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 12.5px;
+            font-weight: 500;
+            overflow: elide;
+            width: root.size;
+            horizontal-alignment: root.kind == 1 ? center : left;
+        }
+
         if root.card.note != "": Text {
+            height: 3px + self.preferred-height;
+            vertical-alignment: bottom;
             text: root.card.note;
             font-family: Fonts.family(self.text);
-            color: Theme.accent;
-            font-size: 13px;
+            color: Theme.accent-text;
+            font-size: 12.5px;
             overflow: elide;
             width: root.size;
         }
 
         if root.card.added != "": Text {
+            height: 3px + self.preferred-height;
+            vertical-alignment: bottom;
             text: root.card.added;
             font-family: Fonts.family(self.text);
             color: Theme.text-faint;
-            font-size: 13px;
+            font-size: 12px;
+            font-weight: 500;
             overflow: elide;
             width: root.size;
         }

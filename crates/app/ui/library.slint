@@ -215,8 +215,9 @@ export component CardRows inherits VerticalLayout {
     in property <length> side: 32px;
     // Fixed column count (0: as many as fit `min-size`).
     in property <int> fixed-columns: 0;
-    // Gap between cards in a row.
+    // Gap between cards in a row, and between rows.
     in property <length> gap: 24px;
+    in property <length> row-gap: 20px;
     // Cards shown at most (0: all); reported through `limit-changed`.
     in property <int> max-items: 0;
     callback layout-changed(int, length);
@@ -238,7 +239,7 @@ export component CardRows inherits VerticalLayout {
         root.limit-changed(root.max-items);
         root.layout-changed(root.columns, root.card-size);
     }
-    spacing: 20px;
+    spacing: root.row-gap;
 
     for row in root.rows: HorizontalLayout {
         padding-left: root.side;
