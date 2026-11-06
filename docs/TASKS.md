@@ -5,6 +5,8 @@
 
 ## 当前状态（2026-10-28）
 
+- **M4 后续（2026-11-06）A-E 全部完成**（淡入淡出、全屏播放器、P0 零碎项、浅色主题、更新提示），preview 包 `032player-windows-x64-5e3a49b.zip`
+  （https://github.com/lux032/032player-rs/releases/tag/preview ）。待用户 Windows 验证：见下方"M4 后续"各节的 **[Win]** 项。
 - **v0.1.3 已发布**（2026-10-29）：https://github.com/lux032/032player-rs/releases/tag/v0.1.3 ，专辑卡片播放中角标；v0.1.2 播放中动态图标、侧栏歌单封面放大；v0.1.1 记住窗口大小，v0.1.0 是第一个正式版。
 - **M4 进行中**：用户看过 M1-M3，基本功能可用；M4 先做界面细节和能力与 Electron 版对齐，再做主题 / 打包 / i18n。任务见下方"M4 - 对齐与打磨"。
   P0 五项的主体已完成并提交（`5fd3e29`），preview 包已更新（`032player-windows-x64-5fd3e29.zip`），ui-snapshot 检查过（`home-*.png`、`queue*.png`、`artist.png`、`album-works*.png`），等用户按"M4 验证清单"验证。
