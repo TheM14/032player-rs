@@ -63,11 +63,6 @@ export component SettingsView inherits Rectangle {
     // 0 system, 1 dark, 2 light.
     in-out property <int> theme-mode;
     callback theme-selected(int);
-    // Panes of the right panel (Electron `showQueueInSidebar` /
-    // `showLyricsInSidebar`).
-    in-out property <bool> panel-queue;
-    in-out property <bool> panel-lyrics;
-    callback panel-changed();
     callback fade-on-pause-toggled(bool);
     // Index 0: the original file.
     in property <[string]> transcode-options;
@@ -257,37 +252,6 @@ export component SettingsView inherits Rectangle {
             GhostButton {
                 text: "恢复默认快捷键";
                 clicked => { root.reset-shortcuts(); }
-            }
-
-            Text {
-                text: "右侧栏";
-                color: Theme.text-dim;
-                font-size: 13px;
-                font-weight: 600;
-            }
-
-            SettingRow {
-                title: "显示播放队列";
-                description: "播放条的队列按钮打开 / 收起整个右侧栏。";
-                Switch {
-                    y: (parent.height - self.height) / 2;
-                    checked <=> root.panel-queue;
-                    toggled => {
-                        root.panel-changed();
-                    }
-                }
-            }
-
-            SettingRow {
-                title: "显示歌词";
-                description: "两者都显示时上下分栏，可拖动分隔线；歌词面板右上角可调整顺序。";
-                Switch {
-                    y: (parent.height - self.height) / 2;
-                    checked <=> root.panel-lyrics;
-                    toggled => {
-                        root.panel-changed();
-                    }
-                }
             }
 
             Text {

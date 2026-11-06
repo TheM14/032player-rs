@@ -385,6 +385,15 @@ impl Ui {
             }
         }
         self.grids[GRID_HOME_PLAYLISTS].set(view.playlists.into_iter().map(Card::from).collect());
+        let host = super::server_host(&self.m032.borrow().server);
+        w.set_server_status(
+            if view.stats.tracks > 0 {
+                format!("{host} · {} 首", super::thousands(view.stats.tracks))
+            } else {
+                host
+            }
+            .into(),
+        );
         home.set_stats(HomeStats {
             albums: int(view.stats.albums),
             tracks: int(view.stats.tracks),

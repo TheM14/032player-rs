@@ -1,0 +1,310 @@
+// Right "now playing" panel (v3 Editorial, `docs/UI-REDESIGN.md` D2): the
+// current cover and track on top, then 歌词 | 队列 tabs over the lyrics and
+// queue panes (the children of the panel, sized by `pane-width` /
+// `pane-height`).
+
+import { Fonts, Theme } from "theme.slint";
+import { Icon, IconKind } from "controls.slint";
+
+// Pill tab of the panel / full-screen player ("歌词", "队列 11").
+export component PillTab inherits Rectangle {
+    in property <string> text;
+    in property <string> count;
+    in property <bool> selected;
+    // Light text on the dark full-screen stage.
+    in property <bool> on-stage;
+    callback clicked();
+    height: 34px;
+    width: pill-row.preferred-width;
+    border-radius: 9px;
+    background: root.selected ? (root.on-stage ? #ffffff24 : Theme.raised) : pill-area.has-hover ? Theme.surface-hover : transparent;
+    pill-row := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 6px;
+        Text {
+            text: root.text;
+            color: root.selected ? Theme.text : Theme.text-dim;
+            font-size: 14px;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+        }
+        if root.count != "": Text {
+            text: root.count;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 12px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+    pill-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Small bordered label ("LRC 文件").
+export component SourceBadge inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    width: badge-text.preferred-width + 14px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: Theme.border;
+    badge-text := Text {
+        text: root.text;
+        font-family: Fonts.family(self.text);
+        color: Theme.text-faint;
+        font-size: 11px;
+        font-weight: 600;
+    }
+}
+
+// Quality tag ("FLAC 24bit / 48kHz").
+export component QualityTag inherits Rectangle {
+    in property <string> text;
+    in property <color> text-color: Theme.text-dim;
+    in property <color> fill: Theme.raised;
+    height: 20px;
+    width: q-text.preferred-width + 14px;
+    border-radius: 5px;
+    background: root.fill;
+    q-text := Text {
+        text: root.text;
+        font-family: Fonts.family(self.text);
+        color: root.text-color;
+        font-size: 11.5px;
+        font-weight: 600;
+    }
+}
+
+// "独占 · bit-perfect" (green): exclusive output of the original file.
+export component ExclusiveState inherits HorizontalLayout {
+    in property <bool> bit-perfect;
+    spacing: 6px;
+    Icon {
+        kind: IconKind.speaker;
+        width: 15px;
+        height: 15px;
+        y: (parent.height - self.height) / 2;
+        color: Theme.ok;
+    }
+    Text {
+        text: root.bit-perfect ? "独占 · bit-perfect" : "独占";
+        color: Theme.ok;
+        font-size: 12.5px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
+export component NowPlayingPanel inherits Rectangle {
+    in property <bool> has-track;
+    in property <string> title;
+    in property <string> artist;
+    in property <string> album;
+    in property <string> quality;
+    in property <image> cover;
+    in property <bool> favorite;
+    in property <bool> exclusive;
+    in property <bool> bit-perfect;
+    // Cover side (logical).
+    in property <length> art: 372px;
+    // 0 lyrics, 1 queue.
+    in property <int> tab;
+    in property <int> queue-count;
+    in property <string> lyrics-source;
+    // Shown as an overlay (narrow windows): a shadow on the left.
+    in property <bool> floating;
+    callback tab-selected(int);
+    callback toggle-favorite();
+    callback open-album();
+    callback open-artist();
+    callback open-full();
+    out property <length> pane-width: pane.width;
+    out property <length> pane-height: pane.height;
+    background: Theme.panel;
+    drop-shadow-blur: root.floating ? 32px : 0px;
+    drop-shadow-color: #00000080;
+
+    // Keep clicks and wheel events away from the page underneath.
+    TouchArea {
+        scroll-event(e) => {
+            return accept;
+        }
+    }
+
+    Rectangle {
+        x: 0;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding-top: 24px;
+        Rectangle {
+            height: root.art;
+            Rectangle {
+                x: 24px;
+                width: root.art;
+                height: root.art;
+                border-radius: 12px;
+                background: Theme.raised;
+                drop-shadow-blur: 24px;
+                drop-shadow-offset-y: 10px;
+                drop-shadow-color: #00000066;
+                Rectangle {
+                    border-radius: 12px;
+                    clip: true;
+                    Image {
+                        source: root.cover;
+                        width: 100%;
+                        height: 100%;
+                        image-fit: ImageFit.cover;
+                    }
+                }
+                art-area := TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.open-full();
+                    }
+                }
+            }
+        }
+        // Title, "artist · album", favorite.
+        HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 18px;
+            spacing: 12px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 4px;
+                Text {
+                    text: root.has-track ? root.title : "未在播放";
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text;
+                    font-size: 24px;
+                    font-weight: 780;
+                    letter-spacing: -0.24px;
+                    overflow: elide;
+                }
+                if root.has-track: HorizontalLayout {
+                    alignment: start;
+                    spacing: 0px;
+                    Text {
+                        text: root.artist;
+                        font-family: Fonts.family(self.text);
+                        color: artist-area.has-hover ? Theme.text : Theme.text-dim;
+                        font-size: 14.5px;
+                        overflow: elide;
+                        artist-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-artist();
+                            }
+                        }
+                    }
+                    if root.album != "": Text {
+                        text: " · ";
+                        color: Theme.text-dim;
+                        font-size: 14.5px;
+                    }
+                    if root.album != "": Text {
+                        text: root.album;
+                        font-family: Fonts.family(self.text);
+                        color: album-area.has-hover ? Theme.text : Theme.text-dim;
+                        font-size: 14.5px;
+                        overflow: elide;
+                        album-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-album();
+                            }
+                        }
+                    }
+                }
+            }
+            if root.has-track: Rectangle {
+                width: 36px;
+                height: 36px;
+                border-radius: 18px;
+                background: fav-area.has-hover ? Theme.surface-hover : Theme.raised;
+                Icon {
+                    kind: root.favorite ? IconKind.heart : IconKind.heart-outline;
+                    width: 17px;
+                    height: 17px;
+                    color: root.favorite ? Theme.accent-text : Theme.text-dim;
+                }
+                fav-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.toggle-favorite();
+                    }
+                }
+            }
+        }
+        if root.has-track && (root.quality != "" || root.exclusive): HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 12px;
+            spacing: 10px;
+            alignment: start;
+            if root.quality != "": QualityTag {
+                text: root.quality;
+            }
+            if root.exclusive: ExclusiveState {
+                bit-perfect: root.bit-perfect;
+            }
+        }
+        // Tabs.
+        Rectangle {
+            height: 20px;
+        }
+        Rectangle {
+            height: 1px;
+            Rectangle {
+                x: 24px;
+                width: parent.width - 48px;
+                background: Theme.border;
+            }
+        }
+        HorizontalLayout {
+            padding-left: 24px;
+            padding-right: 24px;
+            padding-top: 16px;
+            padding-bottom: 6px;
+            spacing: 4px;
+            PillTab {
+                text: "歌词";
+                selected: root.tab == 0;
+                clicked => {
+                    root.tab-selected(0);
+                }
+            }
+            PillTab {
+                text: "队列";
+                count: root.queue-count > 0 ? root.queue-count : "";
+                selected: root.tab == 1;
+                clicked => {
+                    root.tab-selected(1);
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if root.tab == 0 && root.lyrics-source != "": SourceBadge {
+                y: (parent.height - self.height) / 2;
+                text: root.lyrics-source;
+            }
+        }
+        pane := Rectangle {
+            vertical-stretch: 1;
+            @children
+        }
+    }
+}

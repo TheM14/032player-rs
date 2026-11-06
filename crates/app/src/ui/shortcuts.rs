@@ -38,6 +38,7 @@ fn key_name(e: &slint::language::KeyEvent) -> Option<String> {
 }
 
 fn refresh(w: &AppWindow, keys: &Shortcuts) {
+    w.set_search_shortcut(keys.binding("search").into());
     w.set_shortcuts(ModelRc::new(VecModel::from(
         ACTIONS
             .iter()
@@ -141,13 +142,7 @@ pub(super) fn install(w: &AppWindow, settings: &Settings) {
             "repeat" => {
                 w.invoke_cycle_repeat();
             }
-            "queue" => {
-                w.set_panel_open(!w.get_panel_open());
-                if !w.get_panel_queue() && !w.get_panel_lyrics() {
-                    w.set_panel_queue(true);
-                }
-                w.invoke_panel_changed();
-            }
+            "queue" => w.invoke_toggle_panel(true),
             "search" => ui.navigate(w, Route::Page(6)),
             _ => {}
         });

@@ -762,6 +762,8 @@ fn shot(
 fn shell(inst: &ComponentInstance) {
     set(inst, "logged-in", Value::Bool(true));
     set(inst, "server-label", s("https://music.032.example"));
+    set(inst, "server-status", s("music.032 · 18,930 首"));
+    set(inst, "search-shortcut", s("Ctrl+K"));
     set(inst, "browse", Value::Bool(true));
     set(inst, "has-home", Value::Bool(true));
     set(
@@ -1079,6 +1081,33 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
         &format!("{out}/home-resume-2300.png"),
     );
     set_g(&inst, "Home", "mixes", mixes());
+
+    // Queue tab; the narrow overlay; the smallest window.
+    set(&inst, "panel-queue-tab", Value::Bool(true));
+    shot(
+        &inst,
+        window,
+        &layouts,
+        PhysicalSize::new(2300, 1190),
+        &format!("{out}/home-queue-2300.png"),
+    );
+    set(&inst, "panel-queue-tab", Value::Bool(false));
+    set(&inst, "overlay-open", Value::Bool(true));
+    shot(
+        &inst,
+        window,
+        &layouts,
+        PhysicalSize::new(1280, 800),
+        &format!("{out}/home-overlay-1280.png"),
+    );
+    set(&inst, "overlay-open", Value::Bool(false));
+    shot(
+        &inst,
+        window,
+        &layouts,
+        PhysicalSize::new(960, 640),
+        &format!("{out}/home-960.png"),
+    );
 
     // Panel closed: the player bar shows the cover.
     set(&inst, "panel-open", Value::Bool(false));

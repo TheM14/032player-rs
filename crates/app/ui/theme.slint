@@ -61,10 +61,11 @@ export global Theme {
 }
 
 // Window-width breakpoints (`docs/UI-REDESIGN.md` 外壳尺寸与断点), set by
-// AppWindow and read by the pages: tier 2 at >= 1700, 1 at >= 1280, else 0.
+// AppWindow and read by the pages: tier 2 at >= 1700, 1 above 1280, else 0 (1280 itself is narrow, as in
+// the final 1280x800 mockup).
 export global Shell {
     in-out property <length> window-width: 1280px;
-    out property <int> tier: root.window-width >= 1700px ? 2 : root.window-width >= 1280px ? 1 : 0;
+    out property <int> tier: root.window-width >= 1700px ? 2 : root.window-width > 1280px ? 1 : 0;
     // Page side padding.
     out property <length> pad: root.tier == 2 ? 40px : root.tier == 1 ? 28px : 24px;
 }

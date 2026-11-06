@@ -584,6 +584,8 @@ fn main() {
         println!("keyboard focus checks passed");
     }
     set(&inst, "server-label", s("https://music.example.com"));
+    set(&inst, "server-status", s("music.example.com · 10,342 首"));
+    set(&inst, "search-shortcut", s("Ctrl+K"));
     set(&inst, "browse", Value::Bool(true));
     set(
         &inst,

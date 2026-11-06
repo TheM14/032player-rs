@@ -37,33 +37,41 @@ pub struct Settings {
     pub shortcuts: crate::shortcuts::Shortcuts,
 }
 
-/// The right panel: queue and lyrics stacked (Electron `sidebar-play-queue`:
-/// `rightExpanded`, `showQueueInSidebar`, `showLyricsInSidebar`,
-/// `sidebarPanelOrder`, the split and the width).
+/// The right "now playing" panel: the current track over 歌词 | 队列 tabs
+/// (v3 redesign). `queue`, `lyrics`, `lyrics_first` and `split` described
+/// the earlier stacked layout (Electron `sidebar-play-queue`); they are
+/// still read and written so older files round-trip, but nothing uses them.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RightPanel {
-    /// The player bar's queue button toggles the whole panel.
+    /// The player bar's lyrics / queue buttons open and close the panel.
     pub open: bool,
+    /// The queue tab is selected (else lyrics).
+    pub queue_tab: bool,
     pub queue: bool,
     pub lyrics: bool,
-    /// Lyrics above the queue.
     pub lyrics_first: bool,
-    /// Share of the height taken by the upper pane when both show.
     pub split: f32,
-    /// Width in logical px.
+    /// Width in logical px (wide windows).
     pub width: f32,
 }
+
+/// Default panel width before the redesign; saved files still holding it
+/// get the new default.
+const OLD_PANEL_WIDTH: f32 = 360.0;
+/// Default sidebar width before the redesign (see [`OLD_PANEL_WIDTH`]).
+const OLD_SIDEBAR_WIDTH: f32 = 210.0;
 
 impl Default for RightPanel {
     fn default() -> Self {
         Self {
             open: true,
+            queue_tab: false,
             queue: true,
             lyrics: true,
             lyrics_first: false,
             split: 0.5,
-            width: 360.0,
+            width: 420.0,
         }
     }
 }
@@ -71,6 +79,9 @@ impl Default for RightPanel {
 impl RightPanel {
     fn sanitize(&mut self) {
         let d = Self::default();
+        if (self.width - OLD_PANEL_WIDTH).abs() < 0.01 {
+            self.width = d.width;
+        }
         self.split = if self.split.is_finite() {
             self.split.clamp(0.15, 0.85)
         } else {
@@ -134,7 +145,7 @@ impl WindowState {
 }
 
 /// Default left sidebar width (logical px).
-pub const SIDEBAR_WIDTH: f32 = 210.0;
+pub const SIDEBAR_WIDTH: f32 = 248.0;
 
 /// Sidebar width limits (Electron allows dragging between these).
 pub fn sidebar_width(width: f32) -> f32 {
@@ -224,6 +235,9 @@ impl Settings {
         }
         settings.volume = settings.volume.clamp(0.0, 100.0);
         settings.right_panel.sanitize();
+        if (settings.sidebar_width - OLD_SIDEBAR_WIDTH).abs() < 0.01 {
+            settings.sidebar_width = SIDEBAR_WIDTH;
+        }
         settings.sidebar_width = sidebar_width(settings.sidebar_width);
         settings.window.sanitize();
         settings.audio_device = settings
@@ -262,6 +276,7 @@ mod tests {
             exclusive: true,
             right_panel: RightPanel {
                 open: false,
+                queue_tab: true,
                 queue: true,
                 lyrics: false,
                 lyrics_first: true,
@@ -312,6 +327,28 @@ mod tests {
 
         fs::write(Settings::path(&dir), br#"{"sidebarWidth": 900}"#).unwrap();
         assert_eq!(Settings::load(&dir).sidebar_width, 400.0);
+
+        // The old defaults move to the redesign's (248 / 420); dragged
+        // widths stay, and the old stacked-panel fields are ignored.
+        fs::write(
+            Settings::path(&dir),
+            br#"{"sidebarWidth": 210, "rightPanel": {"width": 360, "split": 0.3, "lyricsFirst": true}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(loaded.sidebar_width, SIDEBAR_WIDTH);
+        assert_eq!(loaded.right_panel.width, 420.0);
+        assert!(!loaded.right_panel.queue_tab);
+        fs::write(
+            Settings::path(&dir),
+            br#"{"sidebarWidth": 230, "rightPanel": {"width": 500}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load(&dir);
+        assert_eq!(
+            (loaded.sidebar_width, loaded.right_panel.width),
+            (230.0, 500.0)
+        );
 
         fs::write(
             Settings::path(&dir),

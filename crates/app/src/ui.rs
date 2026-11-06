@@ -1228,12 +1228,10 @@ impl Ui {
         self.grids[GRID_SERIES_ALBUMS].set_playing(&ids);
     }
 
-    /// The current cover at the sidebar width (Electron sidebar image).
+    /// The current cover at the size of the right panel's cover.
     fn load_now_large(&self, w: &AppWindow, artwork: &str) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = ((w.get_sidebar_width() - 20.0) * self.scale(w))
-            .round()
-            .max(1.0) as u32;
+        let px = (w.get_np_art_side() * self.scale(w)).round().max(1.0) as u32;
         let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
         if *self.now_large_key.borrow() == key {
             return;
@@ -1423,6 +1421,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_volume(settings.volume as f32);
     let panel = settings.right_panel;
     window.set_panel_open(panel.open);
+    window.set_panel_queue_tab(panel.queue_tab);
     window.set_panel_queue(panel.queue);
     window.set_panel_lyrics(panel.lyrics);
     window.set_panel_lyrics_first(panel.lyrics_first);
@@ -1760,6 +1759,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         if let Some(w) = weak.upgrade() {
             c.send(Command::SetRightPanel(RightPanel {
                 open: w.get_panel_open(),
+                queue_tab: w.get_panel_queue_tab(),
                 queue: w.get_panel_queue(),
                 lyrics: w.get_panel_lyrics(),
                 lyrics_first: w.get_panel_lyrics_first(),
@@ -1773,12 +1773,14 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_sidebar_resized(move || {
         if let Some(w) = weak.upgrade() {
             c.send(Command::SetSidebarWidth(w.get_sidebar_width()));
-            // The sidebar cover follows the width.
-            with_ui(|ui, w| {
-                let artwork = ui.now.borrow().as_ref().map(|n| n.artwork.clone());
-                ui.load_now_large(w, &artwork.unwrap_or_default());
-            });
         }
+    });
+    // The right panel cover follows the panel width.
+    window.on_np_art_changed(|| {
+        with_ui(|ui, w| {
+            let artwork = ui.now.borrow().as_ref().map(|n| n.artwork.clone());
+            ui.load_now_large(w, &artwork.unwrap_or_default());
+        });
     });
     window.on_queue_search_changed(|text| {
         with_ui(|ui, w| {
@@ -2046,6 +2048,7 @@ pub fn apply(event: Event) {
             w.set_login_busy(false);
             w.set_logged_in(true);
             w.set_server_label(server_url.as_str().into());
+            w.set_server_status(server_host(server_url.as_str()).into());
             ui.logged_in(w, &features);
             ui.m032.borrow_mut().server = server_url;
         }
@@ -2333,4 +2336,43 @@ pub fn apply(event: Event) {
         Event::HistoryAppended { items, total } => ui.history_appended(w, items, total),
         Event::PlayingSources(sources) => ui.playing_sources(w, sources),
     });
+}
+
+/// Host of the server URL for the sidebar status ("music.032").
+pub(crate) fn server_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop user info.
+    host.rsplit_once('@').map_or(host, |(_, h)| h).to_owned()
+}
+
+/// "18930" -> "18,930".
+pub(crate) fn thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::{server_host, thousands};
+
+    #[test]
+    fn server_status_parts() {
+        assert_eq!(
+            server_host("https://music.032.example/"),
+            "music.032.example"
+        );
+        assert_eq!(server_host("http://u:p@10.0.0.2:8080/x"), "10.0.0.2:8080");
+        assert_eq!(server_host("music.local"), "music.local");
+        assert_eq!(thousands(18930), "18,930");
+        assert_eq!(thousands(930), "930");
+        assert_eq!(thousands(1_234_567), "1,234,567");
+    }
 }
