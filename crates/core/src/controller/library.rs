@@ -24,6 +24,59 @@ const SIMILAR_COUNT: u32 = 50;
 const SEARCH_ARTISTS: u32 = 20;
 const SEARCH_ALBUMS: u32 = 40;
 const SEARCH_TRACKS: u32 = 100;
+/// How long the artist page reuses the favorite tracks it fetched.
+const FAVORITES_FRESH: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Every favorite track of the session. The artist page filters it per
+/// artist, so opening one artist after another reuses one fetch for
+/// [`FAVORITES_FRESH`]. A track favorite changed here bumps `generation`,
+/// which drops the copy and keeps fetches started before the change from
+/// storing their outdated result.
+#[derive(Default)]
+pub(super) struct FavoriteTracks {
+    generation: u64,
+    fresh: Option<(std::time::Instant, Vec<Track>)>,
+}
+
+impl FavoriteTracks {
+    pub(super) fn invalidate(&mut self) {
+        self.generation += 1;
+        self.fresh = None;
+    }
+}
+
+fn lock_favorites(
+    cache: &std::sync::Mutex<FavoriteTracks>,
+) -> std::sync::MutexGuard<'_, FavoriteTracks> {
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Every favorite track: the copy from the last [`FAVORITES_FRESH`] when
+/// `reuse`, else a new fetch (which becomes the copy).
+async fn favorite_tracks(
+    client: &Client,
+    cache: &std::sync::Mutex<FavoriteTracks>,
+    reuse: bool,
+) -> Result<Vec<Track>, ApiError> {
+    let generation = {
+        let cache = lock_favorites(cache);
+        if reuse
+            && let Some((at, tracks)) = &cache.fresh
+            && at.elapsed() < FAVORITES_FRESH
+        {
+            return Ok(tracks.clone());
+        }
+        cache.generation
+    };
+    let all = client.favorite_tracks().await?;
+    let mut cache = lock_favorites(cache);
+    if cache.generation == generation {
+        cache.fresh = Some((std::time::Instant::now(), all.clone()));
+    }
+    Ok(all)
+}
 
 /// A seed for `sort=random` (0 .. 2^31, like `Math.random() * 2 ** 31`).
 pub(crate) fn random_seed() -> i64 {
@@ -184,6 +237,7 @@ impl Core {
         let Some(library) = &self.library else { return };
         let browse = library.browse();
         let seeds = library.seeds.clone();
+        let cache = library.favorite_tracks.clone();
         let Some((client, tx)) = self.request() else {
             return;
         };
@@ -191,7 +245,8 @@ impl Core {
             self.favorite_tracks = Some(filter.clone());
             let seq = self.next_seq(Target::FavoriteTracks);
             tokio::spawn(async move {
-                let msg = match client.favorite_tracks().await {
+                // The favorites page always shows the server's current set.
+                let msg = match favorite_tracks(&client, &cache, false).await {
                     Ok(all) => {
                         #[allow(clippy::cast_sign_loss)]
                         let seed = random_seed() as u64;
@@ -646,9 +701,12 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let Some(cache) = self.library.as_ref().map(|l| l.favorite_tracks.clone()) else {
+            return;
+        };
         let seq = self.next_seq(Target::ArtistFavorites);
         tokio::spawn(async move {
-            let msg = match client.favorite_tracks().await {
+            let msg = match favorite_tracks(&client, &cache, true).await {
                 Ok(all) => {
                     let filter = TrackFilter {
                         artist_id: Some(artist_id),
@@ -709,6 +767,7 @@ impl Core {
         }
         if kind == FavoriteKind::Track {
             if let Some(library) = self.library.as_mut() {
+                lock_favorites(&library.favorite_tracks).invalidate();
                 for track in library.lists.values_mut().flatten() {
                     if track.id == id {
                         track.is_favorite = favorite;

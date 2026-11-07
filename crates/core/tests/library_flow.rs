@@ -400,6 +400,72 @@ async fn favorites_are_sorted_locally_and_follow_changes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn artist_pages_share_one_favorites_fetch_until_a_favorite_changes() {
+    let server = server().await;
+    Mock::given(path("/api/v1/favorites/tracks"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![track(1, "b"), track(2, "a")], 2)),
+        )
+        .mount(&server)
+        .await;
+    for id in [5, 6] {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/artists/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "artist": { "id": id, "name": "歌手" }, "albums": [], "releases": [],
+                "topTracks": [], "tracksTotal": 0,
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums"))
+        .and(query_param("artist", "5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums"))
+        .and(query_param("artist", "6"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/tracks/3/favorite"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    let h = Harness::start(&server, Settings::default()).await;
+    let favorites_of = |artist: i64| {
+        let Event::ArtistFavorites { tracks, .. } = h.wait(
+            "artist favorites",
+            |e| matches!(e, Event::ArtistFavorites { artist_id, .. } if *artist_id == artist),
+        ) else {
+            unreachable!()
+        };
+        tracks.len()
+    };
+
+    h.send(Command::OpenArtist(5));
+    assert_eq!(favorites_of(5), 2, "tracks crediting artist 5");
+    h.send(Command::OpenArtist(6));
+    assert_eq!(favorites_of(6), 0);
+    let fetched = requests(&server, "GET", "/api/v1/favorites/tracks").await;
+    assert_eq!(fetched.len(), 1, "the second artist reuses the first fetch");
+
+    // A favorite changed here: the open artist page fetches the new set.
+    h.send(Command::SetFavorite {
+        kind: FavoriteKind::Track,
+        id: 3,
+        favorite: true,
+    });
+    favorites_of(6);
+    let fetched = requests(&server, "GET", "/api/v1/favorites/tracks").await;
+    assert_eq!(fetched.len(), 2);
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn album_detail_search_and_similar() {
     let server = server().await;
     Mock::given(path("/api/v1/tracks/2/similar"))

@@ -960,6 +960,7 @@ struct Library {
     /// Rows of the playable track lists.
     lists: HashMap<TrackList, Vec<Track>>,
     seeds: Arc<Mutex<RandomSeeds>>,
+    favorite_tracks: Arc<Mutex<library::FavoriteTracks>>,
 }
 
 impl Library {
@@ -2615,6 +2616,7 @@ impl Core {
             capabilities,
             lists: HashMap::new(),
             seeds: Arc::new(Mutex::new(RandomSeeds::new())),
+            favorite_tracks: Arc::default(),
         });
         self.emit(Event::LoggedIn {
             server_url: client.base_url().to_owned(),
