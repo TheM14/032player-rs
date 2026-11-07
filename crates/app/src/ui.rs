@@ -1454,6 +1454,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     let grids: Vec<Rc<CardGridModel>> = (0..GRIDS)
         .map(|_| CardGridModel::new(commander.clone()))
         .collect();
+    // The artist page's release groups share one Flickable (no ListView).
+    for grid in RELEASE_GRIDS {
+        grids[grid].set_lazy(true);
+    }
     let new_tracks = || Rc::new(VecModel::<TrackRow>::default());
     let ui = Rc::new(Ui {
         window: window.as_weak(),
@@ -1621,6 +1625,14 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             let logical = (card_size, card_size * if poster { 1.5 } else { 1.0 });
             if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
                 model.set_layout(usize::try_from(columns).unwrap_or(1), logical, ui.scale(w));
+            }
+        });
+    });
+    window.on_card_row_shown(|grid, row| {
+        with_ui(|ui, _| {
+            let model = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g));
+            if let (Some(model), Ok(row)) = (model, usize::try_from(row)) {
+                model.show_row(row);
             }
         });
     });

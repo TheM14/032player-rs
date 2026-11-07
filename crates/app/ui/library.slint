@@ -267,9 +267,16 @@ export component CardRows inherits VerticalLayout {
     in property <length> row-gap: 20px;
     // Cards shown at most (0: all); reported through `limit-changed`.
     in property <int> max-items: 0;
+    // A plain `for` instantiates every row: with `lazy`, a row reports
+    // `row-shown` once it overlaps [view-top, view-bottom] (this
+    // component's coordinates) and only then loads its covers.
+    in property <bool> lazy;
+    in property <length> view-top;
+    in property <length> view-bottom;
     callback layout-changed(int, length);
     callback limit-changed(int);
     callback action(string, int, int);
+    callback row-shown(int);
     out property <int> columns: root.fixed-columns > 0 ? root.fixed-columns : max(1, floor((self.width - 2 * root.side + root.gap) / (root.min-size + root.gap)));
     // Whole physical pixels, so covers decoded at this size draw 1:1.
     out property <length> card-size: floor(((self.width - 2 * root.side - (root.columns - 1) * root.gap) / root.columns) / 1phx) * 1phx;
@@ -288,7 +295,18 @@ export component CardRows inherits VerticalLayout {
     }
     spacing: root.row-gap;
 
-    for row in root.rows: HorizontalLayout {
+    for row[ri] in root.rows: HorizontalLayout {
+        property <bool> in-view: root.lazy && self.height > 0 && self.y + self.height > root.view-top && self.y < root.view-bottom;
+        changed in-view => {
+            if self.in-view {
+                root.row-shown(ri);
+            }
+        }
+        init => {
+            if self.in-view {
+                root.row-shown(ri);
+            }
+        }
         padding-left: root.side;
         padding-right: root.side;
         spacing: root.gap;

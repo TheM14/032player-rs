@@ -149,6 +149,8 @@ export component AppWindow inherits Window {
     callback card-layout-changed(int, int, length);
     // (grid, most cards shown; 0: all)
     callback card-limit-changed(int, int);
+    // (grid, row): a row of a lazy grid scrolled into view.
+    callback card-row-shown(int, int);
     // (grid, action, id, argument)
     callback card-action(int, string, int, int);
     // Track lists (`list` ids): 0 tracks page, 1 favorites, 2 detail,
@@ -1286,7 +1288,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        for g[gi] in root.artist-groups: VerticalLayout {
+                        for g[gi] in root.artist-groups: group := VerticalLayout {
                             HorizontalLayout {
                                 padding-left: Shell.pad;
                                 padding-right: Shell.pad;
@@ -1338,6 +1340,14 @@ export component AppWindow inherits Window {
                                 rows: g.rows;
                                 kind: 0;
                                 playlists: root.playlist-choices;
+                                // Covers of the rows on screen, plus half a
+                                // screen above and below.
+                                lazy: true;
+                                view-top: -artist-flick.content-y - group.y - self.y - artist-flick.height / 2;
+                                view-bottom: self.view-top + artist-flick.height * 2;
+                                row-shown(row) => {
+                                    root.card-row-shown(g.grid, row);
+                                }
                                 layout-changed(n, size) => {
                                     root.card-layout-changed(g.grid, n, size);
                                 }

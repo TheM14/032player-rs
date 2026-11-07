@@ -2,6 +2,11 @@
 //! `columns` cards for a virtualized ListView. Covers load lazily:
 //! `row_data` is only called for rows the ListView instantiates, and that
 //! is where artwork is requested.
+//!
+//! A plain `for` (the artist page's release groups inside one Flickable)
+//! instantiates every row at once. Such a grid is [`CardGridModel::set_lazy`]:
+//! its rows report when they scroll into view ([`CardGridModel::show_row`])
+//! and only cards shown so far request their cover.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -122,6 +127,8 @@ struct Entry {
     /// stays on screen until the current size arrives.
     cover: Option<(Image, ImageBox)>,
     requested: Cell<bool>,
+    /// Lazy grids: the card's row has been in view.
+    shown: Cell<bool>,
 }
 
 pub struct CardGridModel {
@@ -145,6 +152,8 @@ pub struct CardGridModel {
     commander: Commander,
     /// Ids marked as playing; also applied to cards added later.
     playing: RefCell<std::collections::HashSet<i64>>,
+    /// Covers wait for [`Self::show_row`] instead of `row_data`.
+    lazy: Cell<bool>,
 }
 
 impl CardGridModel {
@@ -162,7 +171,44 @@ impl CardGridModel {
             notify: ModelNotify::default(),
             commander,
             playing: RefCell::default(),
+            lazy: Cell::new(false),
         })
+    }
+
+    /// Requests covers only for rows reported by [`Self::show_row`].
+    pub fn set_lazy(&self, lazy: bool) {
+        self.lazy.set(lazy);
+    }
+
+    /// Lazy grids: row `row` is in view; its cards load their covers (now
+    /// and whenever the row is rebuilt).
+    pub fn show_row(&self, row: usize) {
+        let shown = self.shown();
+        let start = row.saturating_mul(self.columns.get());
+        if start >= shown {
+            return;
+        }
+        let end = start.saturating_add(self.columns.get()).min(shown);
+        let px = self.cover_px.get();
+        for entry in &self.entries.borrow()[start..end] {
+            entry.shown.set(true);
+            self.request(entry, px);
+        }
+    }
+
+    /// Asks for the cover of `entry` at `px` unless it is there or on its way.
+    fn request(&self, entry: &Entry, px: ImageBox) {
+        let path = &entry.item.artwork;
+        let current = entry.cover.as_ref().is_some_and(|(_, at)| *at == px);
+        if !current && !path.is_empty() && !entry.requested.get() {
+            entry.requested.set(true);
+            self.commander.send(Command::LoadImage {
+                key: image_key(path, px),
+                path: path.clone(),
+                width: px.0,
+                height: px.1,
+            });
+        }
     }
 
     fn rows_for(len: usize, columns: usize) -> usize {
@@ -199,6 +245,7 @@ impl CardGridModel {
                     item,
                     cover: None,
                     requested: Cell::new(false),
+                    shown: Cell::new(false),
                 });
             }
             (old_len, entries.len())
@@ -413,19 +460,12 @@ impl Model for CardGridModel {
         }
         let end = (start + columns).min(shown);
         let px = self.cover_px.get();
+        let lazy = self.lazy.get();
         let cards: Vec<AlbumCard> = entries[start..end]
             .iter()
             .map(|entry| {
-                let path = &entry.item.artwork;
-                let current = entry.cover.as_ref().is_some_and(|(_, at)| *at == px);
-                if !current && !path.is_empty() && !entry.requested.get() {
-                    entry.requested.set(true);
-                    self.commander.send(Command::LoadImage {
-                        key: image_key(path, px),
-                        path: path.clone(),
-                        width: px.0,
-                        height: px.1,
-                    });
+                if !lazy || entry.shown.get() {
+                    self.request(entry, px);
                 }
                 AlbumCard {
                     id: i32::try_from(entry.item.id).unwrap_or(i32::MAX),
