@@ -844,6 +844,7 @@ fn main() {
                 ("usage", s("OST · OP · ED")),
                 ("ost", Value::Bool(false)),
                 ("poster", Value::Image(cover(11))),
+                ("chip", Value::Image(cover(11))),
                 (
                     "uses",
                     uses(&[
@@ -863,6 +864,7 @@ fn main() {
                 ("usage", s("OST")),
                 ("ost", Value::Bool(true)),
                 ("poster", Value::Image(cover(12))),
+                ("chip", Value::Image(cover(12))),
                 ("uses", uses(&[])),
             ]),
         ]),

@@ -368,7 +368,13 @@ export component AppWindow inherits Window {
     property <length> panel-w: root.wide ? clamp(root.panel-width, 300px, root.panel-max) : min(372px, root.width - 80px);
     // The current cover in the panel; Rust decodes `np-cover-large` at
     // this size (`np-art-changed`, after resizing settles).
-    out property <length> np-art-side: round(max(120px, min(root.wide ? root.panel-w - 48px : 248px, root.height - root.bar-h - 470px)) / 1px) * 1px;
+    out property <length> np-art-side: round(max(120px, min(root.wide ? root.panel-w - 48px : 248px, root.height - root.bar-h - 470px)) / 1phx) * 1phx;
+    // The detail header cover; Rust reloads it at this size.
+    out property <length> detail-art-side: round(Shell.detail-art / 1phx) * 1phx;
+    callback detail-art-changed();
+    changed detail-art-side => {
+        root.detail-art-changed();
+    }
     callback np-art-changed();
     changed np-art-side => {
         art-timer.restart();

@@ -272,7 +272,8 @@ export component CardView inherits Rectangle {
     // (action, argument): see `card-action` in app.slint.
     callback action(string, int);
     property <bool> poster: root.kind == 3 || root.kind == 4;
-    property <length> art-h: root.poster ? root.size * 1.5 : root.size;
+    // Whole physical pixels (Rust decodes posters at round(size x 1.5)).
+    property <length> art-h: root.poster ? round(root.size * 1.5 / 1phx) * 1phx : root.size;
     // The pointer is on the round play button (bottom right of the cover).
     property <bool> over-play: area.has-hover && area.mouse-x >= root.size - 52px && area.mouse-x <= root.size - 12px
         && area.mouse-y >= root.art-h - 52px && area.mouse-y <= root.art-h - 12px;

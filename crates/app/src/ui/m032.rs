@@ -12,7 +12,7 @@ use client_core::{
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
 use super::{Route, Ui, int, track_row};
-use crate::cards::{Card, image_key};
+use crate::cards::{Card, image_key, physical_box};
 use crate::{
     AlbumWorkRow, AppWindow, FactRow, Home, HomeRow, HomeStats, Lib032, LyricLine, LyricsResult,
     LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, SeriesInfo, SeriesPane, WorkInfo,
@@ -83,9 +83,30 @@ fn tab_from_id(id: i32) -> SpotlightTab {
 
 /// The home page is reloaded when shown after this long.
 const HOME_STALE: Duration = Duration::from_secs(60);
-/// Small covers of rows (logical px).
-const ROW_COVER: f32 = 48.0;
-const POSTER_HEIGHT: f32 = 240.0;
+// Image boxes (logical px); they must match the `.slint` sizes, since
+// covers are decoded to exactly the box and drawn 1:1.
+/// Home rows (`HomeRowView`, plain).
+const ROW_COVER: (f32, f32) = (48.0, 48.0);
+/// 接着听 cards (`HomeRowView`, `card`).
+const CARD_ROW_COVER: (f32, f32) = (84.0, 84.0);
+/// Daily mix rows (`HomeRowView`, `mix`: 64, 52 on narrow windows) and
+/// a quarter of their 2x2 mosaic.
+const MIX_COVER: (f32, f32) = (64.0, 64.0);
+const MIX_TILE: (f32, f32) = (32.0, 32.0);
+/// Spotlight series album rows (`PreviewRow`).
+const PREVIEW_COVER: (f32, f32) = (44.0, 44.0);
+/// Album inspector people (`AlbumInspector`).
+const PERSON_AVATAR: (f32, f32) = (36.0, 36.0);
+/// Work posters: album inspector and the "◆ OP" popover, header capsules.
+const WORK_POSTER: (f32, f32) = (72.0, 108.0);
+const WORK_CHIP: (f32, f32) = (20.0, 30.0);
+/// Sidebar playlists.
+const SIDE_COVER: (f32, f32) = (42.0, 42.0);
+/// Work / series page poster (`DetailHero`).
+const DETAIL_POSTER: (f32, f32) = (160.0, 240.0);
+/// Daily mix page cover: one, or a 2x2 mosaic.
+const MIX_PAGE_COVER: (f32, f32) = (180.0, 180.0);
+const MIX_PAGE_TILE: (f32, f32) = (90.0, 90.0);
 const WORK_TYPES: [&str; 4] = ["all", "anime", "game", "movie"];
 const LANGUAGES: [&str; 3] = ["zh-Hans", "zh-Hant", "en"];
 
@@ -207,20 +228,20 @@ fn work_card(w: &views::WorkItem, home: bool) -> Card {
 impl Ui {
     // ------------------------------------------------------------ images
 
-    /// Loads `path` at `size` logical px and hands it to `set` (once).
+    /// Loads `path` for a `(width, height)` logical box and hands it to
+    /// `set` (once).
     pub(super) fn bind_image(
         &self,
         w: &AppWindow,
         group: Bind,
         path: &str,
-        size: f32,
+        (width, height): (f32, f32),
         set: impl Fn(&Image) + 'static,
     ) {
         if path.is_empty() {
             return;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (size * self.scale(w)).round().max(1.0) as u32;
+        let px = physical_box(width, height, self.scale(w));
         let key = image_key(path, px);
         let first = {
             let mut state = self.m032.borrow_mut();
@@ -232,7 +253,8 @@ impl Ui {
             self.send(Command::LoadImage {
                 key,
                 path: path.to_owned(),
-                px,
+                width: px.0,
+                height: px.1,
             });
         }
     }
@@ -259,10 +281,11 @@ impl Ui {
         group: Bind,
         model: &std::rc::Rc<VecModel<HomeRow>>,
         paths: &[String],
+        size: (f32, f32),
     ) {
         for (i, path) in paths.iter().enumerate() {
             let model = model.clone();
-            self.bind_image(w, group, path, ROW_COVER, move |image| {
+            self.bind_image(w, group, path, size, move |image| {
                 if let Some(mut row) = model.row_data(i) {
                     row.cover = image.clone();
                     model.set_row_data(i, row);
@@ -360,7 +383,7 @@ impl Ui {
             .collect();
         self.home_resume.set_vec(resume);
         let covers: Vec<String> = view.resume.iter().map(|r| r.artwork.clone()).collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_resume, &covers);
+        self.bind_row_covers(w, Bind::Home, &self.home_resume, &covers, CARD_ROW_COVER);
 
         // Electron rows: title, artists, "入库于 …" (no year).
         self.grids[GRID_HOME_ALBUMS].set(
@@ -454,7 +477,7 @@ impl Ui {
             home.set_series_albums(ModelRc::from(albums.clone()));
             for (i, a) in pane.albums.iter().enumerate() {
                 let albums = albums.clone();
-                self.bind_image(w, Bind::Home, &a.artwork, 40.0, move |image| {
+                self.bind_image(w, Bind::Home, &a.artwork, PREVIEW_COVER, move |image| {
                     if let Some(mut row) = albums.row_data(i) {
                         row.cover = image.clone();
                         albums.set_row_data(i, row);
@@ -465,7 +488,8 @@ impl Ui {
             home.set_series_fan(ModelRc::from(fan.clone()));
             for (i, path) in pane.fan.iter().enumerate() {
                 let fan = fan.clone();
-                self.bind_image(w, Bind::Hero, path, (art * 0.77).floor(), move |image| {
+                let side = (art * 0.77).floor();
+                self.bind_image(w, Bind::Hero, path, (side, side), move |image| {
                     fan.set_row_data(i, image.clone());
                 });
             }
@@ -511,16 +535,22 @@ impl Ui {
         );
         let weak = self.window.clone();
         let album_id = pane.album.id;
-        self.bind_image(w, Bind::Hero, &pane.album.artwork, art, move |image| {
-            if let Some(w) = weak.upgrade() {
-                let home = w.global::<Home>();
-                let mut p = home.get_pane();
-                if i64::from(p.album_id) == album_id {
-                    p.cover = image.clone();
-                    home.set_pane(p);
+        self.bind_image(
+            w,
+            Bind::Hero,
+            &pane.album.artwork,
+            (art, art),
+            move |image| {
+                if let Some(w) = weak.upgrade() {
+                    let home = w.global::<Home>();
+                    let mut p = home.get_pane();
+                    if i64::from(p.album_id) == album_id {
+                        p.cover = image.clone();
+                        home.set_pane(p);
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// A new pane for a tab (换一张).
@@ -572,7 +602,7 @@ impl Ui {
                 .collect::<Vec<_>>(),
         );
         let covers: Vec<String> = songs.items.iter().map(|r| r.artwork.clone()).collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_songs, &covers);
+        self.bind_row_covers(w, Bind::Home, &self.home_songs, &covers, ROW_COVER);
     }
 
     pub(super) fn home_recent(&self, w: &AppWindow, items: Vec<views::RecordItem>) {
@@ -588,7 +618,7 @@ impl Ui {
                 .collect::<Vec<_>>(),
         );
         let covers: Vec<String> = items.iter().map(|r| r.artwork.clone()).collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_recent, &covers);
+        self.bind_row_covers(w, Bind::Home, &self.home_recent, &covers, ROW_COVER);
     }
 
     pub(super) fn home_mixes(&self, w: &AppWindow, generating: bool, items: &[views::MixItem]) {
@@ -613,7 +643,7 @@ impl Ui {
                 row.covers = ModelRc::from(tiles.clone());
                 for (i, path) in m.covers.iter().take(4).enumerate() {
                     let tiles = tiles.clone();
-                    self.bind_image(w, group, path, ROW_COVER / 2.0, move |image| {
+                    self.bind_image(w, group, path, MIX_TILE, move |image| {
                         tiles.set_row_data(i, image.clone());
                     });
                 }
@@ -623,7 +653,7 @@ impl Ui {
             }
         }
         model.set_vec(rows);
-        self.bind_row_covers(w, group, model, &single);
+        self.bind_row_covers(w, group, model, &single, MIX_COVER);
     }
 
     pub(super) fn chronicle(&self, w: &AppWindow, c: views::ChronicleView) {
@@ -908,7 +938,7 @@ impl Ui {
         for (i, p) in album.people.iter().enumerate() {
             let people = people.clone();
             let path = format!("/api/v1/artists/{}/image", p.id);
-            self.bind_image(w, Bind::Detail, &path, 32.0, move |image| {
+            self.bind_image(w, Bind::Detail, &path, PERSON_AVATAR, move |image| {
                 if let Some(mut row) = people.row_data(i) {
                     row.avatar = image.clone();
                     people.set_row_data(i, row);
@@ -941,6 +971,7 @@ impl Ui {
                     usage: s(&wk.usage),
                     ost: wk.ost,
                     poster: Image::default(),
+                    chip: Image::default(),
                     uses: rc(wk
                         .tracks
                         .iter()
@@ -955,16 +986,22 @@ impl Ui {
         w.set_album_works(ModelRc::from(model.clone()));
         for (i, wk) in works.iter().enumerate() {
             let model = model.clone();
-            // Inspector posters are 56 x 84; the capsules reuse them.
-            self.bind_image(w, Bind::Detail, &wk.poster, 84.0, move |image| {
+            let chips = model.clone();
+            self.bind_image(w, Bind::Detail, &wk.poster, WORK_POSTER, move |image| {
                 if let Some(mut row) = model.row_data(i) {
                     row.poster = image.clone();
                     model.set_row_data(i, row);
                 }
             });
+            self.bind_image(w, Bind::Detail, &wk.poster, WORK_CHIP, move |image| {
+                if let Some(mut row) = chips.row_data(i) {
+                    row.chip = image.clone();
+                    chips.set_row_data(i, row);
+                }
+            });
             let tracks = self.detail_tracks.clone();
             let work_id = int(wk.id);
-            self.bind_image(w, Bind::Detail, &wk.poster, 84.0, move |image| {
+            self.bind_image(w, Bind::Detail, &wk.poster, WORK_POSTER, move |image| {
                 for i in 0..tracks.row_count() {
                     let Some(row) = tracks.row_data(i) else {
                         continue;
@@ -1084,7 +1121,7 @@ impl Ui {
         w.set_side_playlists(ModelRc::from(model.clone()));
         for (i, p) in items.iter().enumerate() {
             let model = model.clone();
-            self.bind_image(w, Bind::Side, &p.artwork, 48.0, move |image| {
+            self.bind_image(w, Bind::Side, &p.artwork, SIDE_COVER, move |image| {
                 if let Some(mut row) = model.row_data(i) {
                     row.cover = image.clone();
                     model.set_row_data(i, row);
@@ -1099,7 +1136,7 @@ impl Ui {
 
     fn bind_poster(&self, w: &AppWindow, path: &str, set: fn(&Lib032, Image)) {
         let weak = self.window.clone();
-        self.bind_image(w, Bind::Detail, path, POSTER_HEIGHT, move |image| {
+        self.bind_image(w, Bind::Detail, path, DETAIL_POSTER, move |image| {
             if let Some(w) = weak.upgrade() {
                 set(&w.global::<Lib032>(), image.clone());
             }
@@ -1222,7 +1259,11 @@ impl Ui {
                 let covers =
                     std::rc::Rc::new(VecModel::from(vec![Image::default(); v.covers.len()]));
                 lib.set_mix_covers(ModelRc::from(covers.clone()));
-                let size = if v.covers.len() >= 4 { 90.0 } else { 180.0 };
+                let size = if v.covers.len() >= 4 {
+                    MIX_PAGE_TILE
+                } else {
+                    MIX_PAGE_COVER
+                };
                 for (i, path) in v.covers.iter().enumerate() {
                     let covers = covers.clone();
                     self.bind_image(w, Bind::Detail, path, size, move |image| {

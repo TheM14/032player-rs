@@ -207,19 +207,22 @@ pub enum Command {
     CheckUpdate,
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
-    /// Load artwork `path` for display at `px` physical pixels (long side);
-    /// answered with [`Event::Image`] carrying `key`.
+    /// Load artwork `path` for a `width` x `height` box (physical pixels,
+    /// cover-fit and cropped to exactly that size); answered with
+    /// [`Event::Image`] carrying `key`.
     LoadImage {
         key: String,
         path: String,
-        px: u32,
+        width: u32,
+        height: u32,
     },
     /// Like [`Command::LoadImage`], but downloads the original artwork (no
-    /// `size`; the full-screen player) and decodes it to `px`.
+    /// `size`; the full-screen player).
     LoadOriginalImage {
         key: String,
         path: String,
-        px: u32,
+        width: u32,
+        height: u32,
     },
     /// Songs similar to track `id` ([`Event::Related`], `TrackList::Related`).
     LoadRelated(i64),
@@ -1619,8 +1622,18 @@ impl Core {
                 let track = self.queue.current().map(|i| i.track.clone());
                 self.emit_track_info(track.as_ref());
             }
-            Command::LoadImage { key, path, px } => self.load_image(key, path, px, false),
-            Command::LoadOriginalImage { key, path, px } => self.load_image(key, path, px, true),
+            Command::LoadImage {
+                key,
+                path,
+                width,
+                height,
+            } => self.load_image(key, path, (width, height), false),
+            Command::LoadOriginalImage {
+                key,
+                path,
+                width,
+                height,
+            } => self.load_image(key, path, (width, height), true),
         }
     }
 
@@ -1633,22 +1646,22 @@ impl Core {
         }
     }
 
-    /// Loads artwork for display at `px`; `original`: the uploaded file
-    /// rather than a server-rendered size.
-    fn load_image(&self, key: String, path: String, px: u32, original: bool) {
+    /// Loads artwork for a `(width, height)` box; `original`: the uploaded
+    /// file rather than a server-rendered size.
+    fn load_image(&self, key: String, path: String, (width, height): (u32, u32), original: bool) {
         let Some(library) = &self.library else { return };
         let images = library.images.clone();
         let url = if original {
             images.original_url(&path)
         } else {
-            images.url(&path, px)
+            images.url(&path, width, height)
         };
         let Some(url) = url else {
             return;
         };
         let sink = self.sink.clone();
         tokio::spawn(async move {
-            match images.load(url, px).await {
+            match images.load(url, width, height).await {
                 Ok(image) => sink(Event::Image { key, image }),
                 Err(e) => tracing::debug!("artwork {path}: {e}"),
             }

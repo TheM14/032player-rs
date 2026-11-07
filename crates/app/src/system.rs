@@ -94,7 +94,7 @@ pub fn install(window: &AppWindow, commander: Commander) {
 #[cfg(windows)]
 fn tray() -> Option<os::tray::Tray> {
     use os::tray::{Tray, TrayAction};
-    let icon = match client_core::decode(include_bytes!("../assets/tray.png"), 32) {
+    let icon = match client_core::decode(include_bytes!("../assets/tray.png"), 32, 32) {
         Ok(icon) => icon,
         Err(e) => {
             tracing::warn!("tray icon: {e}");

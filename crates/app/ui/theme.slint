@@ -68,4 +68,8 @@ export global Shell {
     out property <int> tier: root.window-width >= 1700px ? 2 : root.window-width > 1280px ? 1 : 0;
     // Page side padding.
     out property <length> pad: root.tier == 2 ? 40px : root.tier == 1 ? 28px : 24px;
+    // Detail header cover (album / artist / playlist); the header and
+    // `detail-art-side` (Rust decodes the cover at it) snap it to whole
+    // physical pixels.
+    out property <length> detail-art: root.tier == 2 ? 380px : root.tier == 1 ? 280px : 220px;
 }

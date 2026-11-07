@@ -19,7 +19,7 @@ use slint::{
     VecModel,
 };
 
-use crate::cards::{Card, CardGridModel, image_key, key_path};
+use crate::cards::{Card, CardGridModel, image_key, key_path, physical_box};
 use crate::{
     AppWindow, CreditPart, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult,
     LyricsSearch, PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
@@ -67,11 +67,9 @@ const PAGE_TRACKS: i32 = 1;
 const PAGE_PLAYLISTS: i32 = 4;
 const PAGE_DETAIL: i32 = 10;
 
-/// Detail header cover size (logical px).
-const DETAIL_COVER: f32 = 200.0;
-/// Player bar cover (logical px).
 /// Queue thumbnails (logical px).
 const QUEUE_COVER: f32 = 40.0;
+/// Player bar cover (logical px).
 const NP_COVER: f32 = 56.0;
 /// Playlist artwork upload limit of the server.
 const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
@@ -1139,7 +1137,7 @@ impl Ui {
                 w,
                 m032::Bind::Queue,
                 &path.clone(),
-                QUEUE_COVER,
+                (QUEUE_COVER, QUEUE_COVER),
                 move |image| {
                     covers.borrow_mut().insert(path.clone(), image.clone());
                     for (i, p) in paths.borrow().iter().enumerate() {
@@ -1189,20 +1187,16 @@ impl Ui {
         }
         self.queue_covers.borrow_mut().clear();
         self.show_queue(w);
-        if let Some(path) = self.detail_cover_key.borrow().as_deref().and_then(key_path) {
-            let path = path.to_owned();
-            *self.detail_cover_key.borrow_mut() = None;
-            self.load_detail_cover(w, &path);
-        }
+        self.reload_detail_cover(w);
         let artwork = self.now.borrow().as_ref().map(|n| n.artwork.clone());
         if let Some(artwork) = artwork.filter(|a| !a.is_empty()) {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let px = (NP_COVER * scale).round().max(1.0) as u32;
+            let px = physical_box(NP_COVER, NP_COVER, scale);
             let key = image_key(&artwork, px);
             self.send(Command::LoadImage {
                 key: key.clone(),
                 path: artwork,
-                px,
+                width: px.0,
+                height: px.1,
             });
             *self.now_cover_key.borrow_mut() = Some(key);
             *self.now_large_key.borrow_mut() = None;
@@ -1230,8 +1224,8 @@ impl Ui {
 
     /// The current cover at the size of the right panel's cover.
     fn load_now_large(&self, w: &AppWindow, artwork: &str) {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (w.get_np_art_side() * self.scale(w)).round().max(1.0) as u32;
+        let side = w.get_np_art_side();
+        let px = physical_box(side, side, self.scale(w));
         let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
         if *self.now_large_key.borrow() == key {
             return;
@@ -1240,7 +1234,8 @@ impl Ui {
             Some(key) => self.send(Command::LoadImage {
                 key: key.clone(),
                 path: artwork.to_owned(),
-                px,
+                width: px.0,
+                height: px.1,
             }),
             None => w.set_np_cover_large(Image::default()),
         }
@@ -1263,8 +1258,8 @@ impl Ui {
             .as_ref()
             .map(|n| (n.artwork.clone(), n.track_id))
             .unwrap_or_default();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (w.get_full_cover_side() * self.scale(w)).round().max(1.0) as u32;
+        let side = w.get_full_cover_side();
+        let px = physical_box(side, side, self.scale(w));
         let key = (!artwork.is_empty() && w.get_full_cover_side() > 0.0)
             .then(|| format!("full|{}", image_key(&artwork, px)));
         if *self.full_cover_key.borrow() != key {
@@ -1282,7 +1277,8 @@ impl Ui {
                     self.send(Command::LoadOriginalImage {
                         key: key.clone(),
                         path: artwork.clone(),
-                        px,
+                        width: px.0,
+                        height: px.1,
                     });
                 }
                 None => w.set_full_cover(Image::default()),
@@ -1297,23 +1293,41 @@ impl Ui {
         }
     }
 
+    /// The detail header cover, decoded at the header's cover size
+    /// (`detail-art-side`, which follows the window width tier).
     fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = (DETAIL_COVER * self.scale(w)).round() as u32;
+        let side = w.get_detail_art_side();
+        let px = physical_box(side, side, self.scale(w));
         let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
-        let same = *self.detail_cover_key.borrow() == key;
-        if same {
+        let old = self.detail_cover_key.replace(key.clone());
+        if old == key {
             return;
         }
-        w.set_detail_cover(Image::default());
-        if let Some(key) = &key {
+        // Another size of the same artwork stays until the new one arrives.
+        if old.as_deref().and_then(key_path) != Some(artwork) {
+            w.set_detail_cover(Image::default());
+        }
+        if let Some(key) = key {
             self.send(Command::LoadImage {
-                key: key.clone(),
+                key,
                 path: artwork.to_owned(),
-                px,
+                width: px.0,
+                height: px.1,
             });
         }
-        *self.detail_cover_key.borrow_mut() = key;
+    }
+
+    /// Reloads the open detail cover for a new header size or scale.
+    fn reload_detail_cover(&self, w: &AppWindow) {
+        let path = self
+            .detail_cover_key
+            .borrow()
+            .as_deref()
+            .and_then(key_path)
+            .map(str::to_owned);
+        if let Some(path) = path {
+            self.load_detail_cover(w, &path);
+        }
     }
 
     fn favorite_changed(&self, w: &AppWindow, kind: FavoriteKind, id: i64, favorite: bool) {
@@ -1599,12 +1613,12 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_clear_filter(|target| with_ui(|ui, w| ui.filter_by_artist(w, target == 0, None)));
     window.on_card_layout_changed(|grid, columns, card_size| {
         with_ui(|ui, w| {
-            // Posters are 2:3: request their long side.
+            // Posters are 2:3.
             let poster = matches!(
                 usize::try_from(grid).unwrap_or(0),
                 GRID_WORKS | GRID_SERIES | GRID_HOME_WORKS | GRID_MEMBERS
             );
-            let logical = card_size * if poster { 1.5 } else { 1.0 };
+            let logical = (card_size, card_size * if poster { 1.5 } else { 1.0 });
             if let Some(model) = usize::try_from(grid).ok().and_then(|g| ui.grids.get(g)) {
                 model.set_layout(usize::try_from(columns).unwrap_or(1), logical, ui.scale(w));
             }
@@ -1769,6 +1783,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             c.send(Command::SetSidebarWidth(w.get_sidebar_width()));
         }
     });
+    // The detail header cover follows the header's cover size.
+    window.on_detail_art_changed(|| with_ui(|ui, w| ui.reload_detail_cover(w)));
     // The right panel cover follows the panel width.
     window.on_np_art_changed(|| {
         with_ui(|ui, w| {
@@ -2172,8 +2188,7 @@ pub fn apply(event: Event) {
             w.set_np_favorite(now.favorite);
             // Decoded at the player bar size: a large grid cover shrunk
             // by the renderer (no mipmaps) looks jagged.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let px = (NP_COVER * ui.scale(w)).round().max(1.0) as u32;
+            let px = physical_box(NP_COVER, NP_COVER, ui.scale(w));
             let key = (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px));
             match &key {
                 Some(key) => {
@@ -2182,7 +2197,8 @@ pub fn apply(event: Event) {
                     ui.send(Command::LoadImage {
                         key: key.clone(),
                         path: now.artwork.clone(),
-                        px,
+                        width: px.0,
+                        height: px.1,
                     });
                 }
                 None => w.set_np_cover(Image::default()),

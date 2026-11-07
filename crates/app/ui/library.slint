@@ -41,7 +41,10 @@ export struct AlbumWorkRow {
     relation: string,
     usage: string,
     ost: bool,
+    // 72 x 108 (inspector), and the 20 x 30 capsule copy (a big texture
+    // shrunk by the renderer looks jagged).
     poster: image,
+    chip: image,
     uses: [WorkUseRow],
 }
 
@@ -349,7 +352,7 @@ export component DetailHeader inherits Rectangle {
     // artist-tracks, artist-albums, work (id).
     callback action(string, int);
     property <length> pad: Shell.pad;
-    property <length> art: Shell.tier == 2 ? 380px : Shell.tier == 1 ? 280px : 220px;
+    property <length> art: round(Shell.detail-art / 1phx) * 1phx;
     property <length> gap: Shell.tier == 2 ? 48px : Shell.tier == 1 ? 36px : 28px;
     property <length> top: Shell.tier == 2 ? 56px : 44px;
     property <length> bottom: Shell.tier == 2 ? 40px : 28px;
@@ -484,7 +487,7 @@ export component DetailHeader inherits Rectangle {
                                 background: Theme.surface;
                                 clip: true;
                                 Image {
-                                    source: w.poster;
+                                    source: w.chip;
                                     width: 100%;
                                     height: 100%;
                                     image-fit: ImageFit.cover;

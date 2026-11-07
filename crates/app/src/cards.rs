@@ -17,9 +17,19 @@ use crate::{AlbumCard, AlbumRow};
 /// A screen shows at most ~30 cards.
 const MAX_COVERS: usize = 96;
 
-/// Image request key: display size and artwork path.
-pub fn image_key(path: &str, px: u32) -> String {
-    format!("{px}|{path}")
+/// Physical pixel box an image is decoded for.
+pub type ImageBox = (u32, u32);
+
+/// Image request key: display box and artwork path.
+pub fn image_key(path: &str, (width, height): ImageBox) -> String {
+    format!("{width}x{height}|{path}")
+}
+
+/// Physical box of a `width` x `height` logical one at `scale`.
+pub fn physical_box(width: f32, height: f32, scale: f32) -> ImageBox {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let px = |v: f32| ((v * scale).round().max(1.0) as u32).min(4096);
+    (px(width), px(height))
 }
 
 /// Artwork path of an image key.
@@ -27,9 +37,10 @@ pub fn key_path(key: &str) -> Option<&str> {
     parse_key(key).map(|(_, path)| path)
 }
 
-fn parse_key(key: &str) -> Option<(u32, &str)> {
-    let (px, path) = key.split_once('|')?;
-    Some((px.parse().ok()?, path))
+fn parse_key(key: &str) -> Option<(ImageBox, &str)> {
+    let (size, path) = key.split_once('|')?;
+    let (width, height) = size.split_once('x')?;
+    Some(((width.parse().ok()?, height.parse().ok()?), path))
 }
 
 /// What a card shows.
@@ -107,9 +118,9 @@ impl From<PlaylistItem> for Card {
 
 struct Entry {
     item: Card,
-    /// Cover and the size it was decoded at. A cover of an older size
+    /// Cover and the box it was decoded for. A cover of an older size
     /// stays on screen until the current size arrives.
-    cover: Option<(Image, u32)>,
+    cover: Option<(Image, ImageBox)>,
     requested: Cell<bool>,
 }
 
@@ -118,12 +129,12 @@ pub struct CardGridModel {
     /// Entry indices by artwork path.
     by_path: RefCell<HashMap<String, Vec<usize>>>,
     columns: Cell<usize>,
-    /// Physical size covers are decoded at (card size x scale factor).
-    cover_px: Cell<u32>,
-    /// Size waiting for the resize to settle.
-    pending_px: Cell<u32>,
-    /// Last cover size in logical px (0 before the first layout).
-    logical: Cell<f32>,
+    /// Physical box covers are decoded for (cover box x scale factor).
+    cover_px: Cell<ImageBox>,
+    /// Box waiting for the resize to settle.
+    pending_px: Cell<ImageBox>,
+    /// Last cover box in logical px (0 before the first layout).
+    logical: Cell<(f32, f32)>,
     /// Cards shown at most (the home grids show a number that depends on
     /// the width).
     limit: Cell<usize>,
@@ -142,9 +153,9 @@ impl CardGridModel {
             entries: RefCell::default(),
             by_path: RefCell::default(),
             columns: Cell::new(4),
-            cover_px: Cell::new(256),
-            pending_px: Cell::new(0),
-            logical: Cell::new(0.0),
+            cover_px: Cell::new((256, 256)),
+            pending_px: Cell::new((0, 0)),
+            logical: Cell::new((0.0, 0.0)),
             limit: Cell::new(usize::MAX),
             resize_timer: slint::Timer::default(),
             loaded: RefCell::default(),
@@ -206,17 +217,16 @@ impl CardGridModel {
         }
     }
 
-    /// New column count and cover size (physical px). Covers are decoded
-    /// at exactly the displayed size so they are drawn 1:1 (a stretched or
-    /// shrunk texture looks soft); a new size applies once the resize has
-    /// settled for a moment, and the old covers stay until replaced.
+    /// New column count and cover box. Covers are decoded at exactly the
+    /// displayed size so they are drawn 1:1 (a stretched or shrunk texture
+    /// looks soft); a new size applies once the resize has settled for a
+    /// moment, and the old covers stay until replaced.
     ///
-    /// `logical` is the long side of a cover in logical px.
-    pub fn set_layout(self: &Rc<Self>, columns: usize, logical: f32, scale: f32) {
+    /// `logical` is the cover box (width, height) in logical px.
+    pub fn set_layout(self: &Rc<Self>, columns: usize, logical: (f32, f32), scale: f32) {
         self.logical.set(logical);
         let columns = columns.max(1);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let px = ((logical * scale).round().max(0.0) as u32).clamp(32, 2048);
+        let px = physical_box(logical.0.max(16.0), logical.1.max(16.0), scale);
         if columns != self.columns.get() {
             self.columns.set(columns);
             self.notify.reset();
@@ -258,13 +268,13 @@ impl CardGridModel {
     /// The window moved to a screen with another scale factor.
     pub fn rescale(self: &Rc<Self>, scale: f32) {
         let logical = self.logical.get();
-        if logical > 0.0 {
+        if logical.0 > 0.0 {
             self.set_layout(self.columns.get(), logical, scale);
         }
     }
 
-    fn apply_px(&self, px: u32) {
-        if px == 0 || px == self.cover_px.get() {
+    fn apply_px(&self, px: ImageBox) {
+        if px.0 == 0 || px == self.cover_px.get() {
             return;
         }
         self.cover_px.set(px);
@@ -413,7 +423,8 @@ impl Model for CardGridModel {
                     self.commander.send(Command::LoadImage {
                         key: image_key(path, px),
                         path: path.clone(),
-                        px,
+                        width: px.0,
+                        height: px.1,
                     });
                 }
                 AlbumCard {

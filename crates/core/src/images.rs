@@ -1,5 +1,6 @@
-//! Artwork loading: download at the server size covering the display size,
-//! decode and downscale to the display size on a blocking thread. The cache
+//! Artwork loading: download a server size comfortably above the display
+//! size, decode and resample to exactly the display box on a blocking
+//! thread, so the renderer draws every cover 1:1. The cache
 //! keeps the compressed bytes (tens of KB each) rather than decoded pixels,
 //! so it can be large; the UI only receives ready RGBA pixels.
 
@@ -21,9 +22,17 @@ pub struct Rgba {
 /// Artwork sizes the server renders (`capabilities.artwork.sizes`).
 const SERVER_SIZES: [u32; 5] = [256, 512, 768, 1024, 1536];
 
-/// Smallest server size covering `px`; `None` (original) above the largest.
+/// Server size to fetch for a box whose long side is `px`: an exact match
+/// (drawn without resampling), else the smallest size at least 1.25 x
+/// `px`. A source only slightly larger than the box goes soft when
+/// resampled (512 -> 480 smears every pixel over its neighbours), so
+/// there is headroom. `None` (original) above the largest.
 pub fn server_size(px: u32) -> Option<u32> {
-    SERVER_SIZES.iter().copied().find(|s| *s >= px)
+    if SERVER_SIZES.contains(&px) {
+        return Some(px);
+    }
+    let want = px.saturating_add(px.div_ceil(4));
+    SERVER_SIZES.iter().copied().find(|s| *s >= want)
 }
 
 pub(crate) struct Images {
@@ -42,8 +51,9 @@ impl Images {
         }
     }
 
-    pub(crate) fn url(&self, path: &str, px: u32) -> Option<Url> {
-        self.client.image_url(path, server_size(px))
+    /// URL of the server size for a `width` x `height` box.
+    pub(crate) fn url(&self, path: &str, width: u32, height: u32) -> Option<Url> {
+        self.client.image_url(path, server_size(width.max(height)))
     }
 
     /// The artwork as uploaded (no `size`; `size=0` is rejected).
@@ -51,8 +61,9 @@ impl Images {
         self.client.image_url(path, None)
     }
 
-    /// Fetches (or reuses) the artwork at `url` and decodes it to at most `px`.
-    pub(crate) async fn load(&self, url: Url, px: u32) -> Result<Rgba, String> {
+    /// Fetches (or reuses) the artwork at `url` and decodes it to fill a
+    /// `width` x `height` box.
+    pub(crate) async fn load(&self, url: Url, width: u32, height: u32) -> Result<Rgba, String> {
         let cached = self.lock().get(&url).cloned();
         let bytes = match cached {
             Some(bytes) => bytes,
@@ -71,7 +82,7 @@ impl Images {
                 bytes
             }
         };
-        tokio::task::spawn_blocking(move || decode(&bytes, px))
+        tokio::task::spawn_blocking(move || decode(&bytes, width, height))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -81,14 +92,16 @@ impl Images {
     }
 }
 
-/// Decodes and shrinks to at most `px` on the long side. The UI draws the
-/// result 1:1 (its boxes are snapped to physical pixels), so this is the
-/// only resampling step: use a sharp filter (Catmull-Rom) rather than the
-/// soft bilinear one.
-pub fn decode(bytes: &[u8], px: u32) -> Result<Rgba, String> {
+/// Decodes and resamples to exactly `width` x `height`, scaled to cover
+/// the box and center-cropped (what `ImageFit.cover` shows). The UI draws
+/// the result 1:1 (its boxes are snapped to physical pixels), so this is
+/// the only resampling step: use a sharp filter (Catmull-Rom) rather than
+/// the renderer's bilinear one, also when a small source has to grow.
+/// A zero side keeps the decoded size.
+pub fn decode(bytes: &[u8], width: u32, height: u32) -> Result<Rgba, String> {
     let mut image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
-    if px > 0 && (image.width() > px || image.height() > px) {
-        image = image.resize(px, px, image::imageops::FilterType::CatmullRom);
+    if width > 0 && height > 0 && (image.width(), image.height()) != (width, height) {
+        image = image.resize_to_fill(width, height, image::imageops::FilterType::CatmullRom);
     }
     let rgba = image.into_rgba8();
     let (width, height) = rgba.dimensions();
@@ -133,10 +146,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picks_the_smallest_covering_server_size() {
+    fn picks_a_server_size_with_headroom() {
         assert_eq!(server_size(1), Some(256));
         assert_eq!(server_size(256), Some(256));
-        assert_eq!(server_size(300), Some(512));
+        assert_eq!(server_size(204), Some(256));
+        assert_eq!(server_size(205), Some(512));
+        assert_eq!(server_size(480), Some(768));
+        assert_eq!(server_size(570), Some(768));
+        assert_eq!(server_size(1024), Some(1024));
+        assert_eq!(server_size(1300), None);
         assert_eq!(server_size(2000), None);
     }
 
@@ -146,9 +164,16 @@ mod tests {
         image::RgbaImage::from_pixel(400, 200, image::Rgba([1, 2, 3, 255]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let out = decode(&png, 100).unwrap();
-        assert_eq!((out.width, out.height), (100, 50));
+        // Covers the box, then the sides are cropped.
+        let out = decode(&png, 100, 100).unwrap();
+        assert_eq!((out.width, out.height), (100, 100));
         assert_eq!(&out.pixels[..4], &[1, 2, 3, 255]);
-        assert!(decode(b"nope", 100).is_err());
+        // Small sources grow to the box.
+        let out = decode(&png, 600, 900).unwrap();
+        assert_eq!((out.width, out.height), (600, 900));
+        // Zero: as decoded.
+        let out = decode(&png, 0, 0).unwrap();
+        assert_eq!((out.width, out.height), (400, 200));
+        assert!(decode(b"nope", 100, 100).is_err());
     }
 }

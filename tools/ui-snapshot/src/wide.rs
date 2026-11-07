@@ -581,6 +581,7 @@ fn album_works() -> Value {
             ("usage", s("OP")),
             ("ost", Value::Bool(false)),
             ("poster", Value::Image(poster("gunjou"))),
+            ("chip", Value::Image(poster("gunjou"))),
             ("uses", uses(&[("OP", "青のすみか")])),
         ]),
         st(&[
@@ -592,6 +593,7 @@ fn album_works() -> Value {
             ("usage", s("OP")),
             ("ost", Value::Bool(false)),
             ("poster", Value::Image(poster("kimitoakashita"))),
+            ("chip", Value::Image(poster("kimitoakashita"))),
             ("uses", uses(&[("OP", "ファタール")])),
         ]),
     ])
