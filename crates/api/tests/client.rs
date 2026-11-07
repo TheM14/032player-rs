@@ -351,3 +351,31 @@ async fn latest_release_reads_tag_and_page() {
     let missing = api::latest_release(&server.uri(), "nobody/none").await;
     assert_eq!(missing.unwrap_err().status(), Some(404));
 }
+
+#[tokio::test]
+async fn requests_and_decodes_gzip_json() {
+    // gzip of {"items":[],"limit":500,"offset":0,"total":7}
+    const BODY: [u8; 62] = [
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xab, 0x56, 0xca, 0x2c, 0x49,
+        0xcd, 0x2d, 0x56, 0xb2, 0x8a, 0x8e, 0xd5, 0x51, 0xca, 0xc9, 0xcc, 0xcd, 0x2c, 0x51, 0xb2,
+        0x32, 0x35, 0x30, 0xd0, 0x51, 0xca, 0x4f, 0x4b, 0x2b, 0x4e, 0x05, 0x72, 0x80, 0xcc, 0x92,
+        0xfc, 0x92, 0xc4, 0x1c, 0x25, 0x2b, 0xf3, 0x5a, 0x00, 0xf5, 0xea, 0xb7, 0x0f, 0x2d, 0x00,
+        0x00, 0x00,
+    ];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks"))
+        .and(header("accept-encoding", "gzip"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .insert_header("content-type", "application/json")
+                .set_body_bytes(BODY.to_vec()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(&server.uri(), API, MEDIA).unwrap();
+    let page: api::Page<Value> = client.get("/tracks", &api::Query::new()).await.unwrap();
+    assert_eq!(page.total, 7);
+}
