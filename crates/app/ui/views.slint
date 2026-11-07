@@ -615,24 +615,26 @@ export component TrackRowView inherits Rectangle {
     // them explicitly to the shared row menu.
     property <length> menu-x;
     property <length> menu-y;
-    property <bool> choosing-playlist;
     function row-menu(e: PointerEvent, x: length, y: length) {
         if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
             root.menu-x = x;
             root.menu-y = y;
-            root.choosing-playlist = false;
             track-popup.show();
         }
     }
     function menu-action(action: string, arg: int) {
         track-popup.close();
+        playlist-popup.close();
         root.action(action, arg);
     }
+    // Slint sizes a popup once when it is shown and a plain click inside
+    // closes it, so the playlist list is a second popup opened in place
+    // of the main menu instead of a page swapped inside it.
     track-popup := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
         width: 240px;
-        height: root.choosing-playlist ? min(380px, 86px + root.playlists.length * 34px) : 12px + (9 + (root.mode == 2 ? 1 : 0)) * 34px;
+        height: 12px + (9 + (root.mode == 2 ? 1 : 0)) * 34px;
         Rectangle {
             background: Theme.raised;
             border-radius: 8px;
@@ -640,11 +642,11 @@ export component TrackRowView inherits Rectangle {
             border-color: Theme.border;
             VerticalLayout {
                 padding: 6px;
-                if !root.choosing-playlist: VerticalLayout {
+                VerticalLayout {
                     TrackMenuItem { text: "播放"; triggered => { root.menu-action("play", 0); } }
                     TrackMenuItem { text: "下一首播放"; triggered => { root.menu-action("next", 0); } }
                     TrackMenuItem { text: "添加到播放队列末尾"; triggered => { root.menu-action("last", 0); } }
-                    TrackMenuItem { text: "添加到歌单 ›"; triggered => { root.choosing-playlist = true; } }
+                    TrackMenuItem { text: "添加到歌单 ›"; triggered => { track-popup.close(); playlist-popup.show(); } }
                     TrackMenuItem { text: root.track.favorite ? "取消收藏" : "收藏"; triggered => { root.menu-action("favorite", root.track.favorite ? 0 : 1); } }
                     TrackMenuItem { text: "相似歌曲"; triggered => { root.menu-action("similar", 0); } }
                     TrackMenuItem { text: "查看信息"; triggered => { root.menu-action("info", 0); } }
@@ -652,13 +654,29 @@ export component TrackRowView inherits Rectangle {
                     TrackMenuItem { text: "转到艺人"; triggered => { root.menu-action("artist", root.track.artist-id); } }
                     if root.mode == 2: TrackMenuItem { text: "从歌单移除"; triggered => { root.menu-action("remove", 0); } }
                 }
-                if root.choosing-playlist: VerticalLayout {
-                    TrackMenuItem { text: "‹ 返回"; triggered => { root.choosing-playlist = false; } }
-                    TrackMenuItem { text: "新建歌单…"; triggered => { root.menu-action("new-playlist", 0); } }
-                    ScrollView {
-                        VerticalLayout {
-                            for p in root.playlists: TrackMenuItem { text: p.name; triggered => { root.menu-action("add", p.id); } }
-                        }
+            }
+        }
+    }
+    // Clicks on the scroll bar must not close the list.
+    playlist-popup := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 240px;
+        height: min(380px, 12px + (2 + root.playlists.length) * 34px);
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                TrackMenuItem { text: "‹ 返回"; triggered => { playlist-popup.close(); track-popup.show(); } }
+                TrackMenuItem { text: "新建歌单…"; triggered => { root.menu-action("new-playlist", 0); } }
+                if root.playlists.length > 0: ScrollView {
+                    VerticalLayout {
+                        alignment: start;
+                        for p in root.playlists: TrackMenuItem { text: p.name; triggered => { root.menu-action("add", p.id); } }
                     }
                 }
             }
