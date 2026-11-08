@@ -1,0 +1,27 @@
+[package]
+name = "sonos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# `sonos::fake::FakeSpeaker`: a simulated speaker for tests.
+fake = ["dep:wiremock"]
+
+[dependencies]
+if-addrs.workspace = true
+reqwest.workspace = true
+roxmltree.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+url.workspace = true
+wiremock = { workspace = true, optional = true }
+
+[dev-dependencies]
+sonos = { path = ".", features = ["fake"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -15,6 +15,7 @@ lyrics = { path = "crates/lyrics" }
 client-core = { path = "crates/core" }
 player = { path = "crates/player" }
 os = { path = "crates/os" }
+sonos = { path = "crates/sonos" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -45,6 +46,9 @@ raw-window-handle = "0.6"
 # Opens 032 web console pages in the default browser.
 open = "5"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
+# Sonos control (UPnP SOAP replies, DIDL-Lite) and the SSDP interfaces.
+roxmltree = "0.21"
+if-addrs = "0.15"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
