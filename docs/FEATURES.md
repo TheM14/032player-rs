@@ -120,6 +120,27 @@
 | 更新提示（读本仓库 GitHub Releases，只提示和给链接） | `main/fork-config.ts` | M4 | [x] |
 | 设置导出 / 导入 | `renderer/components/export-import-settings-modal/` | 待定 | [ ] |
 
+## Sonos 投放
+
+参考 MusicBridge（`/workspace/MusicBridge`，Android 客户端）的 032 队列模式，路径相对
+`app/src/main/java/com/lux032/musicbridge`。Electron 版没有这个功能，以 MusicBridge 行为为准。
+
+| 功能 | 参考 | 里程碑 | 完成 |
+|------|------|--------|------|
+| SSDP 发现（每个 IPv4 网卡各发一次）+ ZoneGroupTopology 按编组协调器合并房间；手填音箱地址兜底 | `sonos/SonosDiscovery.kt`、032 服务端 `internal/upnp/discovery.go` | M4 | [x] `sonos` crate |
+| 播放条"投放"按钮（独占旁边）：本机 / 房间列表、重新搜索；选择后记住，重启自动连回 | `state/AppStatePlaybackCoordinator.kt` `switchPlaybackTarget` | M4 | [x] |
+| 整个队列写入音箱自己的队列（`x-rincon-queue`，`AddMultipleURIsToQueue` 每批 16），音箱自己连播，关掉本程序不影响；超过 2000 首按窗口推送 | `SonosController.replaceQueue`、`state/SonosQueue.kt` | M4 | [x] |
+| 转码策略：Opus（Sonos 不能解码）转 MP3 320k / FLAC；> 48 kHz 无损转 MP3 / FLAC 48k / 原样；其他 Sonos 不支持的格式转 MP3；FLAC 先预热服务端缓存，失败回退 MP3，后续 FLAC 后台预热 | `state/SonosPlan.kt`、`music/Music032Warmup.kt`、`ui/settings/sections/SonosAdvancedSection.kt` | M4 | [x] 设置页"Sonos 投放" |
+| 每秒轮询音箱状态，按 Track 序号 + URI 映射回队列；播放 / 暂停 / 进度跟随；进度条和歌词在两次轮询之间按时钟走 | `startPlaybackReporting` | M4 | [x] |
+| 控制：播放 / 暂停、上一首 / 下一首 / 队列点播（队列内跳转）、拖动进度（实时 MP3 带 `offsetMs` 重开该条目）、单曲 / 列表循环（`SetPlayMode`）、随机（客户端顺序，重推队列）、音量（组音量，10 秒同步一次） | `togglePause`、`seekPlayback`、`updatePlaybackMode`、`applyVolumeChange` | M4 | [x] |
+| 下一首播放 / 加到末尾 / 移除 / 拖动排序 / 清空 同步到音箱队列（单步编辑，其余重推） | `enqueueIntoSonosQueue`、032 网页 `cast.js` `diffQueue` | M4 | [x] |
+| 032 播放上报：沿用同一个上报器；本机与 Sonos 互切同一首不重新计数；音箱自己切歌按完成 / 替换结束；单曲循环绕回算新的一次；从未出声报错误 | README「032 播放会话」 | M4 | [x] |
+| 接管音箱上已在播放的 032 队列（本程序上次推送、网页播放器推送），按 mediaToken 或地址识别；循环模式一并同步 | `adoptSonosQueueIfPlaying`、`resolveAdoptableQueue` | M4 | [x] |
+| 睡眠定时：分钟到点暂停音箱；"本曲 / 本专辑结束后"在音箱切到下一首时停止 | `SleepTimerController` | M4 | [x] |
+| 服务器地址是 localhost / 127.0.0.1 时，推给音箱的 URL 换成本机局域网地址 | 032 服务端 `castBaseURL` | M4 | [x] |
+| Plex、非队列的单曲推送模式（`playTrack`） | MusicBridge Plex 兼容 | - | - 不做（D4 只支持 032） |
+| 普通 DLNA 渲染器 | 032 服务端 `internal/upnp/generic.go` | - | - 不做 |
+
 ## 外观与本地化
 
 | 功能 | 参考 | 里程碑 | 完成 |
@@ -130,7 +151,7 @@
 
 ## 待定（默认不做，见 PLAN.md）
 
-远程控制、Discord RPC、可视化、自定义主题、DLNA、标签编辑器、其余语言、Web 播放器引擎（Rust 版只用 mpv）。
+远程控制、Discord RPC、可视化、自定义主题、普通 DLNA（Sonos 已做，见上）、标签编辑器、其余语言、Web 播放器引擎（Rust 版只用 mpv）。
 
 ## 明确不做
 

@@ -13,12 +13,13 @@
     lyrics/             # 歌词时间轴（当前行定位）
     core/               # 包名 client-core（`core` 与标准库冲突）。队列、设置、登录态、图片缓存，
                         # 串起 api + session；播放器通过 trait 注入
+    sonos/              # Sonos 控制：SSDP 发现、拓扑、AVTransport 队列（无 032 知识，可 cargo test）
     player/             # libmpv 封装（只有这里依赖 libmpv）
     os/                 # SMTC / MPRIS / 托盘 / 单实例 / 更新
     app/                # Slint UI，二进制入口
 ```
 
-依赖方向：`app -> {core, player, os}`，`core -> {api, session, lyrics}`。
+依赖方向：`app -> {core, player, os}`，`core -> {api, session, lyrics, sonos}`。
 `core` 不依赖 `player` / `os`：播放器和系统集成以 trait 形式在 `core` 定义，由 `app` 注入实现。
 这样 `api` / `session` / `lyrics` / `core` 都能在无 libmpv、无显示的机器上 `cargo test`。
 
@@ -106,6 +107,20 @@
   艺人页和主页的中文区块标题显式指定 Noto Sans SC，避免 JP 覆盖不全导致同一标题混排；日文内容仍优先 JP。
   设为 sans-serif / system-ui 的字体栈（需要 slint 的 `unstable-fontique-011` 特性；先 `BackendSelector::select()`，再注册，再建窗口）。ui-snapshot 用同一个文件。
 - 主页聚焦卡背景：`core::backdrop` 把封面缩小、模糊、提饱和度成小图，Slint 拉伸铺底（Slint 没有模糊滤镜）。
+
+### Sonos 投放
+
+- `sonos` crate：SOAP 调用（`roxmltree` 解析应答、DIDL-Lite）、SSDP（`if-addrs` 列出网卡，每个 IPv4 网卡各发一次 M-SEARCH）+ 手填地址、
+  `GetZoneGroupState` 按协调器合并房间、`Speaker` 的队列操作（替换 / 插入 / 删除 / 移动 / 替换单条 / 跳转）、状态、音量。
+  请求不走系统代理。`fake` 特性提供模拟音箱（wiremock，记录收到的动作），`core` 的测试也用它。
+- `core::cast`（纯函数，有单元测试）：每首歌给音箱的形式（原文件 / 实时 MP3 / FLAC 缓存，对照 MusicBridge `SonosPlan.kt`）、
+  队列窗口（> 2000 首）、队列编辑 diff（对照 032 网页 `cast.js`）、按 Track 序号 + URI 路径定位条目、识别音箱队列里的 032 曲目（接管）。
+- `core/src/controller/cast.rs`：每个房间一个 actor 任务，按顺序执行命令，空闲时每秒轮询（每 10 次带音量），每 250 ms 发时钟 tick；
+  消息带房间 generation，切换房间后旧消息丢弃。`mirror` 是所有已发命令执行完后音箱队列的样子，命令未执行完时轮询结果丢弃（避免把乐观状态打回去）。
+  投放时引擎停着：`start_current` / `seek` / 暂停 / 停止 / 音量 / 队列变化各自分支到 cast，引擎事件只保留音量设置。
+  音箱切歌时 `start_current(false, false)`（与无缝切歌同一路径），所以上报、歌词、正在播放、睡眠定时都沿用本机逻辑。
+  切换输出：当前条目记为 `resume_at`、清 `started_uid`，再在新输出上 `play_current`，上报器看不到换曲，同一次聆听继续。
+- 选定的房间存 `settings.json` `cast.room`，登录后先连回（空闲时探测并接管音箱正在播的 032 队列），再后台重新搜索以更新地址。
 
 ### 登录态
 

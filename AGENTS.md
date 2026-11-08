@@ -4,7 +4,7 @@
 
 - 不使用长破折号 "—"，用普通 "-"。
 - 文档用中文，代码标识符和注释用英文。
-- Conventional Commits（`feat(api): ...`、`fix(player): ...`）。scope 用 crate 名：`api`、`session`、`player`、`core`、`lyrics`、`os`、`app`，文档用 `docs`，构建用 `build` / `ci`。
+- Conventional Commits（`feat(api): ...`、`fix(player): ...`）。scope 用 crate 名：`api`、`session`、`player`、`core`、`lyrics`、`os`、`sonos`、`app`，文档用 `docs`，构建用 `build` / `ci`。
 - 只在用户明确要求时提交。
 - YAGNI：先做 `docs/FEATURES.md` 里列出的功能，不为其他服务端留抽象。
 
