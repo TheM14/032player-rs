@@ -382,6 +382,21 @@ async fn favorites_are_sorted_locally_and_follow_changes() {
     );
     assert_eq!(h.queue_titles(), ["a", "b", "c"]);
 
+    // 播放 / 随机播放 of the favorites page: the whole list.
+    h.send(Command::Play(TrackSource::List(TrackList::Favorites)));
+    h.wait(
+        "playing the list",
+        |e| matches!(e, Event::NowPlaying(Some(n)) if n.track_id == 2),
+    );
+    assert_eq!(h.queue_titles(), ["a", "b", "c"]);
+    h.send(Command::ShufflePlay(TrackSource::List(
+        TrackList::Favorites,
+    )));
+    h.wait("shuffled", |e| matches!(e, Event::NowPlaying(Some(_))));
+    let mut titles = h.queue_titles();
+    titles.sort();
+    assert_eq!(titles, ["a", "b", "c"]);
+
     h.send(Command::SetFavorite {
         kind: FavoriteKind::Track,
         id: 2,
@@ -448,6 +463,12 @@ async fn artist_pages_share_one_favorites_fetch_until_a_favorite_changes() {
 
     h.send(Command::OpenArtist(5));
     assert_eq!(favorites_of(5), 2, "tracks crediting artist 5");
+    // The section's 播放 plays just these favorites.
+    h.send(Command::Play(TrackSource::List(TrackList::ArtistFavorites)));
+    h.wait("playing", |e| matches!(e, Event::NowPlaying(Some(_))));
+    let mut titles = h.queue_titles();
+    titles.sort();
+    assert_eq!(titles, ["a", "b"]);
     h.send(Command::OpenArtist(6));
     assert_eq!(favorites_of(6), 0);
     let fetched = requests(&server, "GET", "/api/v1/favorites/tracks").await;

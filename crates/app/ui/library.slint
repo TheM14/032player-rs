@@ -363,6 +363,8 @@ export component DetailHeader inherits Rectangle {
     in property <[AlbumWorkRow]> works;
     // Release facts shown on the right when there is room.
     in property <[FactRow]> facts;
+    // Artist: how many of its tracks are favorites (播放收藏).
+    in property <int> favorite-count;
     out property <bool> facts-shown: root.facts.length > 0 && Shell.tier == 2
         && root.width - 2 * root.pad - root.art - 360px - 2 * root.gap >= 420px;
     // (action, argument): play, shuffle, next, last, favorite, add,
@@ -569,6 +571,16 @@ export component DetailHeader inherits Rectangle {
                             root.action("shuffle", 0);
                         }
                     }
+                    // The artist's favorite tracks (its "收藏的歌曲").
+                    if root.info.kind == 1 && root.favorite-count > 0: GhostButton {
+                        height: 40px;
+                        text: "播放收藏";
+                        has-icon: true;
+                        icon: IconKind.heart;
+                        clicked => {
+                            root.action("play-favorites", 0);
+                        }
+                    }
                     if root.info.kind == 0 || root.info.kind == 1: RoundIconButton {
                         kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
                         active: root.info.favorite;
@@ -589,7 +601,7 @@ export component DetailHeader inherits Rectangle {
                             add-menu.show();
                         }
                     }
-                    more-button := RoundIconButton {
+                    if root.info.kind != 1: RoundIconButton {
                         kind: IconKind.more;
                         clicked => {
                             more-menu.show();
@@ -639,7 +651,8 @@ export component DetailHeader inherits Rectangle {
         }
     }
 
-    // Menus open under the buttons row (the last button is "more").
+    // Menus open under the buttons row (the last button is "more", or
+    // "add" on artists).
     property <length> menu-x: root.pad + root.art + root.gap + min(buttons.preferred-width, info-col.width) - 220px;
     property <length> menu-y: info-col.y + info-col.height + root.top - 6px;
 
@@ -664,18 +677,6 @@ export component DetailHeader inherits Rectangle {
                     text: "添加到队列末尾";
                     clicked => {
                         root.action("last", 0);
-                    }
-                }
-                if root.info.kind == 1: MenuRow {
-                    text: "查看全部曲目";
-                    clicked => {
-                        root.action("artist-tracks", 0);
-                    }
-                }
-                if root.info.kind == 1: MenuRow {
-                    text: "查看全部专辑";
-                    clicked => {
-                        root.action("artist-albums", 0);
                     }
                 }
                 if root.info.kind == 2: MenuRow {

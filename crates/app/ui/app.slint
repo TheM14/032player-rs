@@ -13,7 +13,7 @@ import { SettingsView, ShortcutRow } from "settings.slint";
 import { FullScreenPlayer } from "fullscreen.slint";
 import { NowPlayingPanel } from "nowplaying.slint";
 export { ShortcutRow } from "settings.slint";
-import { Playback, GhostButton, Icon, IconButton, IconKind, SearchField, Tab } from "controls.slint";
+import { Playback, GhostButton, Icon, IconButton, IconKind, PrimaryButton, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
@@ -194,6 +194,8 @@ export component AppWindow inherits Window {
     in property <int> track-total;
     in property <bool> tracks-loading;
     callback shuffle-all();
+    // Play a whole track list (`list` ids) in order, or shuffled.
+    callback play-list(int, bool);
 
     // Artists.
     in property <[AlbumRow]> artist-rows;
@@ -959,7 +961,6 @@ export component AppWindow inherits Window {
                         count: root.fav-tab == 0 ? root.count(root.fav-tracks.length, "首") : root.fav-tab == 1 ? root.count(root.fav-album-count, "张") : root.count(root.fav-artist-count, "位");
                         HorizontalLayout {
                             spacing: 8px;
-                            alignment: start;
                             Tab {
                                 text: "曲目";
                                 selected: root.fav-tab == 0;
@@ -979,6 +980,33 @@ export component AppWindow inherits Window {
                                 selected: root.fav-tab == 2;
                                 clicked => {
                                     root.fav-tab = 2;
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+                            // The filtered, sorted favorite tracks (list 1).
+                            if root.fav-tab == 0: HorizontalLayout {
+                                horizontal-stretch: 0;
+                                spacing: 10px;
+                                PrimaryButton {
+                                    horizontal-stretch: 0;
+                                    text: "播放";
+                                    has-icon: true;
+                                    enabled: root.fav-tracks.length > 0;
+                                    clicked => {
+                                        root.play-list(1, false);
+                                    }
+                                }
+                                GhostButton {
+                                    height: 40px;
+                                    text: "随机播放";
+                                    has-icon: true;
+                                    icon: IconKind.shuffle;
+                                    enabled: root.fav-tracks.length > 0;
+                                    clicked => {
+                                        root.play-list(1, true);
+                                    }
                                 }
                             }
                         }
@@ -1244,11 +1272,12 @@ export component AppWindow inherits Window {
                             cover: root.detail-cover;
                             loading: root.detail-loading;
                             playlists: root.playlist-choices;
+                            favorite-count: root.artist-favs.length;
                             action(what, arg) => {
                                 root.detail-action(what, arg);
                             }
                         }
-                        // Electron order: 关于, the release groups, 热门歌曲.
+                        // 关于, the release groups, 收藏的歌曲 (no 热门歌曲).
                         if root.artist-about != "": about := VerticalLayout {
                             padding-left: Shell.pad;
                             padding-right: Shell.pad;
@@ -1356,43 +1385,15 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.detail-tracks.length > 0: HorizontalLayout {
-                            padding-left: Shell.pad;
-                            padding-right: Shell.pad;
-                            padding-top: 12px;
-                            height: 52px;
-                            Text {
-                                text: "热门歌曲";
-                                color: Theme.text;
-                                font-size: Shell.tier == 2 ? 26px : 22px;
-                                font-weight: 780;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            LinkText {
-                                text: "查看全部 ›";
-                                clicked => {
-                                    root.detail-action("artist-tracks", 0);
-                                }
-                            }
+                        // Electron `FAVORITE_SONGS`. The gap above sits
+                        // outside the header so the actions centre on the
+                        // title (same header as the release groups).
+                        if root.artist-favs.length > 0: Rectangle {
+                            height: 12px;
                         }
-                        for track in root.detail-tracks: TrackRowView {
-                            track: track;
-                            mode: 0;
-                            playing: track.id == root.playing-id;
-                            playlists: root.playlist-choices;
-                            title-w: artist-flick.flex * 0.42;
-                            artist-w: artist-flick.flex * 0.24;
-                            album-w: artist-flick.flex * 0.34;
-                            action(what, arg) => {
-                                root.track-action(2, what, track.index, arg);
-                            }
-                        }
-                        // Electron `FAVORITE_SONGS`.
                         if root.artist-favs.length > 0: HorizontalLayout {
                             padding-left: Shell.pad;
                             padding-right: Shell.pad;
-                            padding-top: 12px;
                             height: 52px;
                             spacing: 10px;
                             Text {
@@ -1409,6 +1410,26 @@ export component AppWindow inherits Window {
                                 font-size: 13px;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
+                            }
+                            // Like the release groups: play / shuffle just
+                            // these favorites (track list 12).
+                            IconButton {
+                                kind: IconKind.play;
+                                size: 30px;
+                                icon-size: 14px;
+                                y: (parent.height - self.height) / 2;
+                                clicked => {
+                                    root.play-list(12, false);
+                                }
+                            }
+                            GhostButton {
+                                text: "随机播放";
+                                has-icon: true;
+                                icon: IconKind.shuffle;
+                                y: (parent.height - self.height) / 2;
+                                clicked => {
+                                    root.play-list(12, true);
+                                }
                             }
                         }
                         for track in root.artist-favs: TrackRowView {

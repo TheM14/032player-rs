@@ -776,11 +776,9 @@ impl Ui {
                     image: None,
                 });
             }
-            ("artist-tracks", DetailView::Artist(a)) => {
-                self.filter_by_artist(w, false, Some((a.id, a.name.clone())));
-            }
-            ("artist-albums", DetailView::Artist(a)) => {
-                self.filter_by_artist(w, true, Some((a.id, a.name.clone())));
+            // 播放收藏: the artist's "收藏的歌曲".
+            ("play-favorites", DetailView::Artist(_)) => {
+                self.send(Command::Play(TrackSource::List(TrackList::ArtistFavorites)));
             }
             // Group buttons of the artist page (Electron `AlbumSection`).
             ("group-play" | "group-next" | "group-last", DetailView::Artist(a)) => {
@@ -1667,6 +1665,15 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     });
     let c = commander.clone();
     window.on_shuffle_all(move || c.send(Command::ShuffleAll));
+    let c = commander.clone();
+    window.on_play_list(move |list, shuffle| {
+        let source = TrackSource::List(track_list(list));
+        c.send(if shuffle {
+            Command::ShufflePlay(source)
+        } else {
+            Command::Play(source)
+        });
+    });
     let c = commander.clone();
     let weak = window.as_weak();
     window.on_search(move |text| {
