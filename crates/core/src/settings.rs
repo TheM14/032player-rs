@@ -35,6 +35,55 @@ pub struct Settings {
     pub transcode: Option<api::Transcode>,
     pub lyrics: LyricsSettings,
     pub shortcuts: crate::shortcuts::Shortcuts,
+    /// Sonos output (MusicBridge).
+    pub cast: CastSettings,
+}
+
+/// Sonos hi-res lossless (> 48 kHz) tracks (MusicBridge `SonosHiResTranscodeMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CastHiRes {
+    /// Live MP3 320k from the server (recommended: starts at once).
+    #[default]
+    Mp3,
+    /// FLAC at 48 kHz from the server cache (the first play waits for it).
+    Flac48,
+    /// The original file (some speakers cannot play it).
+    Original,
+}
+
+/// Sonos Opus tracks (MusicBridge `OpusTranscodeMode`; Sonos has no Opus).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CastOpus {
+    /// Live MP3 320k.
+    #[default]
+    Mp3,
+    /// FLAC from the server cache.
+    Flac,
+}
+
+/// A Sonos room chosen as the output, remembered across restarts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CastRoomSetting {
+    /// Coordinator UUID.
+    pub id: String,
+    pub name: String,
+    /// `http://ip:1400` when last seen (refreshed by discovery).
+    pub base_url: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CastSettings {
+    /// The selected room; `None`: this computer.
+    pub room: Option<CastRoomSetting>,
+    pub hires: CastHiRes,
+    pub opus: CastOpus,
+    /// Speaker addresses probed besides SSDP (`192.168.1.30`, comma or
+    /// space separated), for networks where discovery does not get through.
+    pub hosts: String,
 }
 
 /// The right "now playing" panel: the current track over 歌词 | 队列 tabs
@@ -215,6 +264,7 @@ impl Default for Settings {
             transcode: None,
             lyrics: LyricsSettings::default(),
             shortcuts: crate::shortcuts::Shortcuts::default(),
+            cast: CastSettings::default(),
         }
     }
 }
@@ -302,6 +352,16 @@ mod tests {
                 translation_language: "en".into(),
                 translation_mode: TranslationMode::Translated,
                 auto_translate: true,
+            },
+            cast: CastSettings {
+                room: Some(CastRoomSetting {
+                    id: "RINCON_X".into(),
+                    name: "客厅".into(),
+                    base_url: "http://10.0.0.2:1400".into(),
+                }),
+                hires: CastHiRes::Flac48,
+                opus: CastOpus::Flac,
+                hosts: "10.0.0.2".into(),
             },
         };
         settings.save(&dir).unwrap();

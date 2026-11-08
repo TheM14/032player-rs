@@ -2,11 +2,13 @@
 //! from the UI and [`EngineEvent`]s from the audio engine, and pushes
 //! [`Event`]s to a sink. The UI never blocks on the network.
 
+mod cast;
 mod fade;
 mod library;
 mod lyrics;
 mod m032;
 
+pub use cast::CastRoom;
 pub use m032::PlayingSources;
 
 use std::collections::HashMap;
@@ -291,6 +293,17 @@ pub enum Command {
     /// Seek to a lyrics line.
     SeekToLyric(usize),
     SetLyricsSettings(LyricsSettings),
+    /// Look for Sonos rooms ([`Event::CastRooms`]).
+    DiscoverCast,
+    /// Play on a Sonos room (its id) or on this computer (`None`); the
+    /// current listen moves along. Answered with [`Event::CastOutput`].
+    SetCastOutput(Option<String>),
+    /// Sonos transcoding and the speaker addresses to probe.
+    SetCastOptions {
+        hires: crate::settings::CastHiRes,
+        opus: crate::settings::CastOpus,
+        hosts: String,
+    },
 }
 
 /// When playback stops by itself (the Electron sleep timer modes).
@@ -683,6 +696,14 @@ pub enum Event {
         track_id: i64,
         tracks: Vec<TrackItem>,
     },
+    /// Sonos rooms found (`searching`: a search is running).
+    CastRooms {
+        searching: bool,
+        rooms: Vec<CastRoom>,
+        error: Option<String>,
+    },
+    /// Playback goes to this Sonos room (`None`: this computer).
+    CastOutput(Option<CastRoom>),
     /// Something the user should see (load failure, playback error).
     Notice(String),
 }
@@ -720,6 +741,9 @@ pub struct LyricsResultItem {
 /// Messages from spawned tasks back into the loop.
 enum Internal {
     Reporter(u64, ReporterMsg),
+    /// From the Sonos room of this generation.
+    Cast(u64, cast::CastMsg),
+    CastRooms(Result<Vec<sonos::Room>, String>),
     LoggedIn(Box<(Client, Capabilities)>),
     LoginFailed(LoginFailure),
     /// A request with this API token got 401.
@@ -1159,6 +1183,12 @@ struct Core {
     fade: fade::Fader,
     /// Album ids per release group of the open artist page.
     artist_groups: Option<(i64, Vec<Vec<i64>>)>,
+    /// Playback goes to this Sonos room instead of the engine.
+    cast: Option<cast::Cast>,
+    /// Bumped per attached room; messages of older rooms are dropped.
+    cast_generation: u64,
+    cast_rooms: Vec<sonos::Room>,
+    cast_discovering: bool,
 }
 
 impl Core {
@@ -1221,6 +1251,10 @@ impl Core {
             playing_sources: PlayingSources::default(),
             fade: fade::Fader::default(),
             artist_groups: None,
+            cast: None,
+            cast_generation: 0,
+            cast_rooms: Vec::new(),
+            cast_discovering: false,
         }
     }
 
@@ -1464,6 +1498,7 @@ impl Core {
                 self.update_settings(|s| s.repeat = repeat);
                 self.emit(Event::Repeat(repeat));
                 self.sync_preload();
+                self.cast_play_mode();
             }
             Command::SetShuffle(shuffle) => {
                 self.queue.set_shuffle(shuffle);
@@ -1506,7 +1541,9 @@ impl Core {
             }
             Command::Seek { position_ms } => self.seek(position_ms),
             Command::SetVolume(volume) => {
-                if let Err(e) = self.engine.set_volume(volume) {
+                if self.casting() {
+                    self.cast_volume(volume);
+                } else if let Err(e) = self.engine.set_volume(volume) {
                     self.emit(Event::Notice(e));
                 }
             }
@@ -1635,6 +1672,20 @@ impl Core {
                 width,
                 height,
             } => self.load_image(key, path, (width, height), true),
+            Command::DiscoverCast => self.discover_cast(),
+            Command::SetCastOutput(id) => self.set_cast_output(id),
+            Command::SetCastOptions { hires, opus, hosts } => {
+                let changed = hires != self.settings.cast.hires || opus != self.settings.cast.opus;
+                self.update_settings(|s| {
+                    s.cast.hires = hires;
+                    s.cast.opus = opus;
+                    s.cast.hosts = hosts;
+                });
+                if changed && let Some(cast) = self.cast.as_mut() {
+                    // The next play builds the speaker queue with the new plan.
+                    cast.invalidate();
+                }
+            }
         }
     }
 
@@ -1688,7 +1739,12 @@ impl Core {
         }
         #[allow(clippy::cast_precision_loss)]
         let seconds = position_ms as f64 / 1000.0;
-        if self.lossy_transcode() {
+        if self.casting() {
+            if let Err(e) = self.cast_seek(position_ms) {
+                self.emit(Event::Notice(e));
+                return;
+            }
+        } else if self.lossy_transcode() {
             // No byte ranges: restart the stream at the new position.
             if !self.reload_at(position_ms) {
                 return;
@@ -1747,7 +1803,11 @@ impl Core {
     /// Stops the engine and ends the reported play; the queue is untouched.
     fn stop_playback(&mut self) {
         if !self.idle {
-            let _ = self.engine.stop();
+            if self.casting() {
+                self.cast_stop();
+            } else {
+                let _ = self.engine.stop();
+            }
             if let Some(r) = self.reporter.as_mut() {
                 r.act(|a| a.on_status(AdapterStatus::Stopped));
             }
@@ -1891,6 +1951,7 @@ impl Core {
             current: self.queue.position(),
         });
         self.sync_preload();
+        self.cast_queue_changed();
         self.schedule_queue_save();
     }
 
@@ -2037,7 +2098,7 @@ impl Core {
     /// Keeps the engine's next file equal to the queue's automatic next
     /// entry, so the engine continues into it without a gap.
     fn sync_preload(&mut self) {
-        if self.idle || self.loading {
+        if self.idle || self.loading || self.casting() {
             // Done once the current file has loaded.
             return;
         }
@@ -2095,33 +2156,51 @@ impl Core {
                 && (item.track.duration_millis <= 0 || start_ms < item.track.duration_millis))
                 .then_some(start_ms),
         };
+        let casting = self.casting();
         // Lossy transcodes start the stream there instead of seeking.
-        let offset_ms = if self.lossy_transcode() {
+        let offset_ms = if !casting && self.lossy_transcode() {
             resume_ms.unwrap_or(0)
         } else {
             0
         };
-        let Some(url) = self.track_url(item.track.id, offset_ms) else {
-            return;
+        let url = if casting {
+            None
+        } else {
+            let Some(url) = self.track_url(item.track.id, offset_ms) else {
+                return;
+            };
+            Some(url)
         };
         let from_silence = self.idle || self.paused;
-        if load
-            && let Err(e) = self
-                .engine
-                .load(&url)
-                .and_then(|()| self.unpause_engine(from_silence))
-        {
-            self.emit(Event::Notice(e));
-            return;
+        // Sonos: the live stream offset of the started entry.
+        let mut cast_offset = 0;
+        if load {
+            let result = match &url {
+                Some(url) => self
+                    .engine
+                    .load(url)
+                    .and_then(|()| self.unpause_engine(from_silence)),
+                None => self
+                    .cast_start(resume_ms.unwrap_or(0))
+                    .map(|offset| cast_offset = offset),
+            };
+            if let Err(e) = result {
+                self.emit(Event::Notice(e));
+                return;
+            }
+        } else if casting {
+            // The speaker moved on by itself.
+            cast_offset = self.cast_offset();
         }
         self.resume_at = None;
         self.idle = false;
-        self.loading = true;
+        // Sonos: loading until the speaker reports the pushed entry.
+        self.loading = !casting || load;
         self.paused = false;
         self.preloaded = None;
-        self.expected_path = Some(url);
-        self.stream_offset_ms = offset_ms;
-        self.pending_seek_ms = resume_ms.filter(|_| offset_ms == 0);
+        self.expected_path = url;
+        self.stream_offset_ms = if casting { cast_offset } else { offset_ms };
+        self.pending_seek_ms = resume_ms.filter(|_| !casting && offset_ms == 0);
         self.report_seek_ms = resume_ms.filter(|_| !restored);
         self.position_ms = resume_ms.unwrap_or(0);
         self.reported_step = self.position_ms / POSITION_STEP_MS;
@@ -2154,6 +2233,10 @@ impl Core {
                 a.on_status(AdapterStatus::Playing);
             });
         }
+        if casting && load {
+            // No sound until the speaker has loaded it.
+            self.apply_buffering(true);
+        }
 
         let track = &item.track;
         self.emit(Event::NowPlaying(Some(self.now_playing(track))));
@@ -2179,7 +2262,111 @@ impl Core {
         });
     }
 
+    /// Playback position (ms, absolute) from the engine or the speaker.
+    fn apply_position(&mut self, ms: i64) {
+        self.position_ms = ms.max(0);
+        let save_step = self.position_ms / POSITION_SAVE_STEP_MS;
+        if save_step != self.saved_position_step {
+            self.saved_position_step = save_step;
+            self.save_position();
+        }
+        let step = self.position_ms / POSITION_STEP_MS;
+        if step != self.reported_step {
+            self.reported_step = step;
+            #[allow(clippy::cast_precision_loss)]
+            let seconds = self.position_ms as f64 / 1000.0;
+            if let Some(r) = self.reporter.as_mut() {
+                r.act(|a| a.on_progress(seconds));
+            }
+            self.emit_position();
+        }
+        self.update_active_line();
+    }
+
+    /// The renderer paused or plays.
+    fn apply_paused(&mut self, paused: bool) {
+        if self.idle || paused == self.paused {
+            return;
+        }
+        self.paused = paused;
+        if let Some(r) = self.reporter.as_mut() {
+            let status = if paused {
+                AdapterStatus::Paused
+            } else {
+                AdapterStatus::Playing
+            };
+            r.act(|a| a.on_status(status));
+        }
+        if paused {
+            self.save_position();
+        }
+        self.emit(Event::Paused(paused));
+    }
+
+    fn apply_buffering(&mut self, buffering: bool) {
+        if let Some(r) = self.reporter.as_mut() {
+            r.act(|a| a.on_buffering(buffering));
+        }
+        self.emit(Event::Buffering(buffering));
+    }
+
+    /// The current file played to its end.
+    fn end_of_file(&mut self) {
+        if self.idle || self.loading {
+            return;
+        }
+        match self.queue.auto_next(self.settings.repeat) {
+            Some(Step::Play(pos)) if self.pause_at_end() => {
+                // Sleep timer: on to the next entry, stopped.
+                self.stop_playback();
+                self.queue.go(pos);
+                self.show_current_stopped();
+                self.emit_queue_position();
+                self.set_sleep_timer(None);
+            }
+            Some(Step::Play(pos)) => {
+                let gapless =
+                    self.preloaded.is_some() && self.queue.at(pos).map(|i| i.uid) == self.preloaded;
+                self.queue.go(pos);
+                // Gapless: the engine already moved on to the preload.
+                self.start_current(false, !gapless);
+                self.emit_queue_position();
+            }
+            step @ Some(Step::Stop(_)) => self.step(step, false),
+            None => {}
+        }
+    }
+
+    /// The current file cannot play.
+    fn playback_failed(&mut self, error: String) {
+        if self.idle {
+            return;
+        }
+        // Keeps the engine from moving on into the preload.
+        let _ = self.engine.stop();
+        self.preloaded = None;
+        self.idle = true;
+        self.loading = false;
+        self.paused = true;
+        if let Some(r) = self.reporter.as_mut() {
+            r.act(|a| {
+                a.on_error();
+                a.on_status(AdapterStatus::Paused);
+            });
+        }
+        self.emit(Event::Paused(true));
+        self.emit(Event::Notice(format!("播放失败：{error}")));
+    }
+
     fn engine_event(&mut self, event: EngineEvent) {
+        if self.casting() {
+            // The engine is stopped while a Sonos room plays; only the
+            // (local) volume setting follows it.
+            if let EngineEvent::Volume(volume) = event {
+                self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
+            }
+            return;
+        }
         match event {
             EngineEvent::TimePos(seconds) => {
                 if self.idle || self.loading {
@@ -2187,23 +2374,7 @@ impl Core {
                 }
                 #[allow(clippy::cast_possible_truncation)]
                 let ms = (seconds * 1000.0).round() as i64 + self.stream_offset_ms;
-                #[allow(clippy::cast_precision_loss)]
-                let seconds = ms as f64 / 1000.0;
-                self.position_ms = ms.max(0);
-                let save_step = self.position_ms / POSITION_SAVE_STEP_MS;
-                if save_step != self.saved_position_step {
-                    self.saved_position_step = save_step;
-                    self.save_position();
-                }
-                let step = self.position_ms / POSITION_STEP_MS;
-                if step != self.reported_step {
-                    self.reported_step = step;
-                    if let Some(r) = self.reporter.as_mut() {
-                        r.act(|a| a.on_progress(seconds));
-                    }
-                    self.emit_position();
-                }
-                self.update_active_line();
+                self.apply_position(ms);
             }
             EngineEvent::Duration(seconds) => {
                 if self.loading {
@@ -2216,29 +2387,9 @@ impl Core {
             }
             EngineEvent::Paused(paused) => {
                 self.fade.engine_paused(paused);
-                if self.idle || paused == self.paused {
-                    return;
-                }
-                self.paused = paused;
-                if let Some(r) = self.reporter.as_mut() {
-                    let status = if paused {
-                        AdapterStatus::Paused
-                    } else {
-                        AdapterStatus::Playing
-                    };
-                    r.act(|a| a.on_status(status));
-                }
-                if paused {
-                    self.save_position();
-                }
-                self.emit(Event::Paused(paused));
+                self.apply_paused(paused);
             }
-            EngineEvent::Buffering(buffering) => {
-                if let Some(r) = self.reporter.as_mut() {
-                    r.act(|a| a.on_buffering(buffering));
-                }
-                self.emit(Event::Buffering(buffering));
-            }
+            EngineEvent::Buffering(buffering) => self.apply_buffering(buffering),
             EngineEvent::Volume(volume) => {
                 self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
                 self.emit(Event::Volume(volume));
@@ -2275,52 +2426,9 @@ impl Core {
             }
             EngineEvent::EndFile { reason, error } => match reason {
                 EngineEnd::Stop => {}
-                EngineEnd::Eof => {
-                    if self.idle || self.loading {
-                        return;
-                    }
-                    match self.queue.auto_next(self.settings.repeat) {
-                        Some(Step::Play(pos)) if self.pause_at_end() => {
-                            // Sleep timer: on to the next entry, stopped.
-                            self.stop_playback();
-                            self.queue.go(pos);
-                            self.show_current_stopped();
-                            self.emit_queue_position();
-                            self.set_sleep_timer(None);
-                        }
-                        Some(Step::Play(pos)) => {
-                            let gapless = self.preloaded.is_some()
-                                && self.queue.at(pos).map(|i| i.uid) == self.preloaded;
-                            self.queue.go(pos);
-                            // Gapless: the engine already moved on to the preload.
-                            self.start_current(false, !gapless);
-                            self.emit_queue_position();
-                        }
-                        step @ Some(Step::Stop(_)) => self.step(step, false),
-                        None => {}
-                    }
-                }
+                EngineEnd::Eof => self.end_of_file(),
                 EngineEnd::Error => {
-                    if self.idle {
-                        return;
-                    }
-                    // Keeps the engine from moving on into the preload.
-                    let _ = self.engine.stop();
-                    self.preloaded = None;
-                    self.idle = true;
-                    self.loading = false;
-                    self.paused = true;
-                    if let Some(r) = self.reporter.as_mut() {
-                        r.act(|a| {
-                            a.on_error();
-                            a.on_status(AdapterStatus::Paused);
-                        });
-                    }
-                    self.emit(Event::Paused(true));
-                    self.emit(Event::Notice(format!(
-                        "播放失败：{}",
-                        error.unwrap_or_else(|| "未知错误".into())
-                    )));
+                    self.playback_failed(error.unwrap_or_else(|| "未知错误".into()));
                 }
             },
         }
@@ -2330,6 +2438,8 @@ impl Core {
 
     fn internal(&mut self, msg: Internal) {
         match msg {
+            Internal::Cast(generation, msg) => self.cast_msg(generation, msg),
+            Internal::CastRooms(result) => self.cast_rooms_found(result),
             Internal::Reporter(generation, msg) => {
                 if generation != self.list_generation {
                     return;
@@ -2515,6 +2625,11 @@ impl Core {
             // is rejected and the server times the session out.
             reporter.act(|a| a.on_status(AdapterStatus::Stopped));
         }
+        if self.casting() && !self.idle {
+            self.cast_stop();
+        }
+        self.drop_cast(false);
+        self.emit(Event::CastOutput(None));
         let _ = self.engine.stop();
         self.queue.clear();
         self.idle = true;
@@ -2624,6 +2739,7 @@ impl Core {
         });
 
         self.restore_queue();
+        self.restore_cast();
         self.query_albums(false, AlbumFilter::default());
         self.query_tracks(false, TrackFilter::initial(browse));
         self.load_playlists();

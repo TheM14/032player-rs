@@ -122,6 +122,9 @@ impl Core {
 
     /// Pauses the engine, fading out first when enabled.
     pub(super) fn pause_engine(&mut self) -> Result<(), String> {
+        if self.casting() {
+            return self.cast_pause(true);
+        }
         self.fade.cancel();
         if !self.settings.fade_on_pause
             || self.engine.set_fade_gain(gain(self.fade.level())).is_err()
@@ -138,6 +141,9 @@ impl Core {
     /// Unpauses the engine, fading in when enabled. `from_silence`: the
     /// engine was paused or stopped, so the fade starts at silence.
     pub(super) fn unpause_engine(&mut self, from_silence: bool) -> Result<(), String> {
+        if self.casting() {
+            return self.cast_pause(false);
+        }
         self.fade.cancel();
         if !self.settings.fade_on_pause {
             self.restore_gain();

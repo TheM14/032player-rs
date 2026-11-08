@@ -2,6 +2,7 @@
 //! No UI and no libmpv: the engine comes in through [`Engine`].
 
 pub mod browse;
+pub mod cast;
 mod controller;
 mod engine;
 pub mod format;
@@ -23,13 +24,16 @@ pub use browse::{
     TrackFilter, TrackItem, TrackList, release_groups,
 };
 pub use controller::{
-    Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow, LyricsResultItem,
-    LyricsTools, NowPlaying, PlayingSources, QueueEntry, QueuePosition, SavedLogin, ServerFeatures,
-    SignOutReason, SleepStatus, SleepTimer, TrackSource, start,
+    CastRoom, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow,
+    LyricsResultItem, LyricsTools, NowPlaying, PlayingSources, QueueEntry, QueuePosition,
+    SavedLogin, ServerFeatures, SignOutReason, SleepStatus, SleepTimer, TrackSource, start,
 };
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{Rgba, backdrop, decode, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
-pub use settings::{LyricsSettings, RightPanel, Settings, ThemeMode, TranslationMode, WindowState};
+pub use settings::{
+    CastHiRes, CastOpus, CastRoomSetting, CastSettings, LyricsSettings, RightPanel, Settings,
+    ThemeMode, TranslationMode, WindowState,
+};
 pub use storage::FileStorage;
