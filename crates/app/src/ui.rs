@@ -1,5 +1,6 @@
 //! UI-thread state: models, callbacks, navigation and applying core events.
 
+mod cast;
 mod m032;
 mod shortcuts;
 
@@ -302,6 +303,8 @@ struct Ui {
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
     selected_device: RefCell<Option<String>>,
+    /// Sonos rooms and the output.
+    cast: RefCell<cast::CastView>,
 }
 
 impl Ui {
@@ -1423,6 +1426,7 @@ fn with_ui(f: impl FnOnce(&Ui, &AppWindow)) {
 #[allow(clippy::too_many_lines)]
 pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     shortcuts::install(window, settings);
+    cast::install(window, &commander, settings);
     #[allow(clippy::cast_possible_truncation)]
     window.set_volume(settings.volume as f32);
     let panel = settings.right_panel;
@@ -1506,6 +1510,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         update_url: RefCell::default(),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
+        cast: RefCell::default(),
     });
     window.set_album_rows(ModelRc::from(ui.grids[GRID_ALBUMS].clone()));
     window.set_artist_rows(ModelRc::from(ui.grids[GRID_ARTISTS].clone()));
@@ -2363,6 +2368,20 @@ pub fn apply(event: Event) {
         }
         Event::HistoryAppended { items, total } => ui.history_appended(w, items, total),
         Event::PlayingSources(sources) => ui.playing_sources(w, sources),
+        Event::CastRooms {
+            searching,
+            rooms,
+            error,
+        } => {
+            let mut cast = ui.cast.borrow_mut();
+            cast.rooms(searching, rooms, error);
+            cast.show(w);
+        }
+        Event::CastOutput(output) => {
+            let mut cast = ui.cast.borrow_mut();
+            cast.output(output);
+            cast.show(w);
+        }
     });
 }
 

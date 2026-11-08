@@ -1146,6 +1146,7 @@ fn main() {
         ),
     );
     render(&window, size, &format!("{out}/settings.png"));
+    render(&window, PhysicalSize::new(1280, 1500), &format!("{out}/settings-tall.png"));
     set(
         &inst,
         "info-rows",
@@ -1548,6 +1549,46 @@ fn main() {
     set_g(&inst, "LyricsSearch", "preview", lyrics_strings());
     set(&inst, "dialog", n(5.0));
     render(&window, size, &format!("{out}/lyrics-search.png"));
+
+    // Sonos output: the chip in the player bar, then the 投放 menu.
+    set(&inst, "dialog", n(0.0));
+    set(&inst, "page", n(0.0));
+    let room = |id: &str, name: &str, detail: &str| {
+        st(&[("id", s(id)), ("name", s(name)), ("detail", s(detail))])
+    };
+    set_g(
+        &inst,
+        "CastState",
+        "rooms",
+        Value::Model(slint::ModelRc::new(slint::VecModel::from(vec![
+            room("RINCON_A", "客厅 + 卧室", "Sonos · 2 个房间"),
+            room("RINCON_B", "书房", "Sonos One"),
+        ]))),
+    );
+    set_g(&inst, "CastState", "output-id", s("RINCON_A"));
+    set_g(&inst, "CastState", "output-label", s("客厅 + 卧室"));
+    render(&window, size, &format!("{out}/cast.png"));
+    let (x, y) = std::env::var("CAST_BUTTON")
+        .ok()
+        .and_then(|v| {
+            let (x, y) = v.split_once(',')?;
+            Some((x.parse().ok()?, y.parse().ok()?))
+        })
+        .unwrap_or((0.0f32, 0.0f32));
+    if x > 0.0 {
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        render(&window, size, &format!("{out}/cast-menu.png"));
+        // Close the menu.
+        let position = slint::LogicalPosition::new(600.0, 300.0);
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    }
+    set_g(&inst, "CastState", "output-id", s(""));
+    set_g(&inst, "CastState", "output-label", s(""));
 
     // 032 Light.
     set(&inst, "dialog", n(0.0));

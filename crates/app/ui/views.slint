@@ -1,6 +1,6 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Fonts, Theme } from "theme.slint";
-import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField } from "controls.slint";
+import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField, CastState } from "controls.slint";
 import { Shell } from "theme.slint";
 
 // `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
@@ -1761,6 +1761,55 @@ component BarButton inherits Rectangle {
     }
 }
 
+// A row of the 投放 menu: this computer or a Sonos room.
+component CastMenuRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> active;
+    in property <IconKind> icon: IconKind.speaker;
+    callback clicked();
+    height: 44px;
+    border-radius: 6px;
+    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Icon {
+            kind: root.active ? IconKind.check : root.icon;
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            color: root.active ? Theme.accent-text : Theme.text-dim;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.name;
+                font-family: Fonts.family(self.text);
+                color: root.active ? Theme.accent-text : Theme.text;
+                font-size: 13.5px;
+                font-weight: root.active ? 600 : 400;
+                overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+    }
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 component BarSep inherits Rectangle {
     width: 17px;
     Rectangle {
@@ -1773,7 +1822,7 @@ component BarSep inherits Rectangle {
 
 // Bottom player bar across the window: now playing (left), transport and
 // progress (center, 820 / 600 / 480 wide by `tier`), then [exclusive,
-// sleep] | [lyrics, queue, full screen] | [volume].
+// cast, sleep] | [lyrics, queue, full screen] | [volume].
 export component PlayerBar inherits Rectangle {
     in property <bool> has-track;
     in property <string> title;
@@ -2094,7 +2143,7 @@ export component PlayerBar inherits Rectangle {
         }
     }
 
-    // [Exclusive, sleep] | [lyrics, queue, full screen] | [volume].
+    // [Exclusive, cast, sleep] | [lyrics, queue, full screen] | [volume].
     HorizontalLayout {
         horizontal-stretch: 0;
         min-width: root.side-w;
@@ -2108,6 +2157,17 @@ export component PlayerBar inherits Rectangle {
             enabled: !root.exclusive-busy;
             clicked => {
                 root.toggle-exclusive(!root.exclusive);
+            }
+        }
+        // Sonos output: the room's name while playing there.
+        cast-button := BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.cast;
+            text: root.compact ? "" : CastState.output-label;
+            chip: CastState.output-id != "";
+            clicked => {
+                CastState.refresh();
+                cast-menu.show();
             }
         }
         sleep-button := BarButton {
@@ -2172,6 +2232,80 @@ export component PlayerBar inherits Rectangle {
     }
 
     } // bar layout
+
+    cast-menu := PopupWindow {
+        x: min(cast-button.absolute-position.x - root.absolute-position.x, root.width - 280px);
+        y: -self.height - 10px;
+        width: 270px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                HorizontalLayout {
+                    height: 28px;
+                    padding-left: 10px;
+                    padding-right: 8px;
+                    Text {
+                        text: "播放到";
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: CastState.searching ? "搜索中…" : "重新搜索";
+                        font-family: Fonts.family(self.text);
+                        color: CastState.searching ? Theme.text-faint : refresh-area.has-hover ? Theme.text : Theme.accent-text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        refresh-area := TouchArea {
+                            enabled: !CastState.searching;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                CastState.refresh();
+                            }
+                        }
+                    }
+                }
+                CastMenuRow {
+                    name: "本机";
+                    detail: "mpv 输出（独占 / 输出设备）";
+                    icon: IconKind.volume;
+                    active: CastState.output-id == "";
+                    clicked => {
+                        CastState.select("");
+                        cast-menu.close();
+                    }
+                }
+                for room in CastState.rooms: CastMenuRow {
+                    name: room.name;
+                    detail: room.detail;
+                    icon: IconKind.cast;
+                    active: room.id == CastState.output-id;
+                    clicked => {
+                        CastState.select(room.id);
+                        cast-menu.close();
+                    }
+                }
+                if CastState.hint != "": Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    text: CastState.hint;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if CastState.hint != "": Rectangle {
+                    height: 6px;
+                }
+            }
+        }
+    }
 
     sleep-menu := PopupWindow {
         x: min(sleep-button.absolute-position.x - root.absolute-position.x, root.width - 190px);

@@ -13,14 +13,14 @@ import { SettingsView, ShortcutRow } from "settings.slint";
 import { FullScreenPlayer } from "fullscreen.slint";
 import { NowPlayingPanel } from "nowplaying.slint";
 export { ShortcutRow } from "settings.slint";
-import { Playback, GhostButton, Icon, IconButton, IconKind, PrimaryButton, SearchField, Tab } from "controls.slint";
+import { Playback, CastState, CastRoomRow, GhostButton, Icon, IconButton, IconKind, PrimaryButton, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
     HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog, LinkText,
 } from "m032.slint";
 
-export { Fonts, Playback }
+export { Fonts, Playback, CastState, CastRoomRow }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -1759,7 +1759,8 @@ export component AppWindow inherits Window {
             quality: root.np-quality;
             cover: root.np-cover-large;
             favorite: root.np-favorite;
-            exclusive: root.exclusive;
+            // Not while a Sonos room plays.
+            exclusive: root.exclusive && CastState.output-id == "";
             bit-perfect: root.transcode-index == 0;
             art: root.np-art-side;
             tab: root.panel-queue-tab ? 1 : 0;
@@ -1884,7 +1885,7 @@ export component AppWindow inherits Window {
         artist: root.np-artist;
         album: root.np-album;
         quality: root.np-quality;
-        exclusive: root.exclusive;
+        exclusive: root.exclusive && CastState.output-id == "";
         bit-perfect: root.transcode-index == 0;
         lyrics-source: root.lyrics-source;
         tab: root.full-tab;

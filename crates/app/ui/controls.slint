@@ -91,7 +91,35 @@ export component PlayingBars inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check, cast }
+
+export struct CastRoomRow {
+    id: string,
+    name: string,
+    // "Sonos One", "Sonos · 2 个房间".
+    detail: string,
+}
+
+// Sonos output (MusicBridge): the player bar's 投放 menu and its settings.
+export global CastState {
+    // The room playback goes to; empty: this computer.
+    in property <string> output-id;
+    // Shortened name for the player bar chip.
+    in property <string> output-label;
+    in property <[CastRoomRow]> rooms;
+    in property <bool> searching;
+    // Under the list: searching, nothing found, errors.
+    in property <string> hint;
+    // Hi-res lossless (0 MP3 320k, 1 FLAC 48 kHz, 2 original), Opus
+    // (0 MP3 320k, 1 FLAC), speaker addresses to probe.
+    in-out property <int> hires;
+    in-out property <int> opus;
+    in-out property <string> hosts;
+    callback refresh();
+    // A room id; empty: this computer.
+    callback select(string);
+    callback options-changed();
+}
 
 // Vector icons (Lucide style, 24 grid; `tools/icons/svg2slint.py` converts
 // the redesign set). Transport icons and the full heart are filled, the
@@ -156,6 +184,7 @@ export component Icon inherits Path {
         : root.kind == IconKind.list-plus ? "M 11 12 L 3 12 M 16 6 L 3 6 M 16 18 L 3 18 M 18 9 L 18 15 M 21 12 L 15 12"
         : root.kind == IconKind.sort-desc ? "M 3 16 L 7 20 L 11 16 M 7 20 L 7 4 M 11 4 L 21 4 M 11 8 L 18 8 M 11 12 L 15 12"
         : root.kind == IconKind.check ? "M 20 6 L 9 17 L 4 12"
+        : root.kind == IconKind.cast ? "M 2 8 L 2 6 A 2 2 0 0 1 4 4 L 20 4 A 2 2 0 0 1 22 6 L 22 18 A 2 2 0 0 1 20 20 L 14 20 M 2 12 A 9 9 0 0 1 10 20 M 2 16 A 5 5 0 0 1 6 20 M 2 20 L 2.01 20"
         : "";
 }
 

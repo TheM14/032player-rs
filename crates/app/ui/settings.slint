@@ -1,6 +1,6 @@
-import { ComboBox, Switch } from "std-widgets.slint";
+import { ComboBox, LineEdit, Switch } from "std-widgets.slint";
 import { Fonts, Theme, Shell } from "theme.slint";
-import { GhostButton } from "controls.slint";
+import { CastState, GhostButton } from "controls.slint";
 
 component SettingRow inherits Rectangle {
     in property <string> title;
@@ -222,6 +222,55 @@ export component SettingsView inherits Rectangle {
                     current-index <=> root.transcode-index;
                     selected => {
                         root.transcode-selected(self.current-index);
+                    }
+                }
+            }
+
+            Text {
+                text: "Sonos 投放";
+                color: Theme.text-dim;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            SettingRow {
+                title: "Hi-Res 音轨";
+                description: "Sonos 最高播放 48 kHz。只处理采样率高于 48 kHz 的无损音轨，44.1 / 48 kHz 始终原样推送。";
+                ComboBox {
+                    width: 260px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["转 MP3 320k（推荐）", "转 FLAC 48 kHz", "保持原样"];
+                    current-index <=> CastState.hires;
+                    selected => {
+                        CastState.options-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "Opus 音轨";
+                description: "Sonos 不能播放 Opus，由服务器转码。FLAC 首次播放要等服务器生成缓存，失败时改用 MP3。";
+                ComboBox {
+                    width: 260px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["转 MP3 320k（推荐）", "转 FLAC"];
+                    current-index <=> CastState.opus;
+                    selected => {
+                        CastState.options-changed();
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "音箱地址";
+                description: "自动搜索找不到音箱时（防火墙、多网卡、VPN），填写任意一台音箱的 IP，多个用逗号分隔。";
+                LineEdit {
+                    width: 260px;
+                    y: (parent.height - self.height) / 2;
+                    placeholder-text: "例如 192.168.1.30";
+                    text <=> CastState.hosts;
+                    edited => {
+                        CastState.options-changed();
                     }
                 }
             }
