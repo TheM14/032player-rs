@@ -598,6 +598,12 @@ impl Client {
         Ok((status, json))
     }
 
+    /// One track (`GET /tracks/{id}`).
+    pub async fn track(&self, track_id: i64) -> Result<Track, ApiError> {
+        self.get(&format!("/tracks/{track_id}"), &Query::new())
+            .await
+    }
+
     /// Lyrics of a track; `None` when the server has none (404).
     pub async fn lyrics(&self, track_id: i64) -> Result<Option<Lyrics>, ApiError> {
         match self
@@ -675,6 +681,33 @@ impl Client {
     /// Fetches a media URL with the shared HTTP client (images, probes).
     pub async fn fetch_media(&self, url: Url) -> Result<reqwest::Response, ApiError> {
         Ok(self.http.get(url).send().await?)
+    }
+
+    /// A server-side transcode cache entry (FLAC) is ready: `HEAD` answers
+    /// 200 with its length. `HEAD` never starts an encoder.
+    pub async fn media_cached(&self, url: Url) -> Result<bool, ApiError> {
+        let res = self.http.head(url).send().await?;
+        Ok(res.status() == StatusCode::OK && res.headers().contains_key(header::CONTENT_LENGTH))
+    }
+
+    /// Requests the first byte of a media URL (builds a FLAC cache entry and
+    /// waits for it). Returns the status and `Retry-After` seconds (503 while
+    /// the server's encoders are busy).
+    pub async fn warm_media(&self, url: Url) -> Result<(u16, Option<u64>), ApiError> {
+        let res = self
+            .http
+            .get(url)
+            .header(header::RANGE, "bytes=0-0")
+            .send()
+            .await?;
+        let status = res.status().as_u16();
+        let retry = res
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok());
+        let _ = res.bytes().await;
+        Ok((status, retry))
     }
 
     // ------------------------------------------------------------ auth
