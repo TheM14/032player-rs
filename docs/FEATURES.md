@@ -64,10 +64,10 @@
 | 艺人列表：`/browse/artists` / `/artists` | `ctrl` `getArtistList` | M2 | [x] |
 | random seed：按查询（不含分页）记忆，offset 0 换新 seed，最多记 50 个 | `ctrl` | M2 | [x] |
 | 各列表支持的排序项 | `features/shared/components/list-sort-by-dropdown.tsx` `MUSIC032` | M2 | [x] |
-| 筛选：收藏、艺人、年份区间 | `features/shared/components/list-filters.tsx` | M2 | [x] 收藏走收藏页；艺人筛选从艺人页进入 |
+| 筛选：收藏、艺人、年份区间 | `features/shared/components/list-filters.tsx` | M2 | [x] 收藏走收藏页；艺人筛选原从艺人页「更多」进入，v0.2.3 去掉该按钮后暂无入口 |
 | 专辑详情（`trackCount` 超出嵌入曲目时用 `/tracks?album=` 分页补齐）、专辑音质汇总 | `ctrl` `getAlbumDetail` | M2 | [x] |
-| 艺人详情、作品集、热门歌曲 | `ctrl` `getAlbumArtistDetail` / `artistDiscography` / `getTopSongs` | M2 | [x] |
-| 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [x] |
+| 艺人详情、作品集、热门歌曲 | `ctrl` `getAlbumArtistDetail` / `artistDiscography` / `getTopSongs` | M2 | [x] 热门歌曲按用户要求不显示（v0.2.3） |
+| 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [x] 曲目页签可播放 / 随机播放整个列表 |
 | 搜索 | `ctrl` `search` | M2 | [x] |
 | 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [x] |
 | 封面 / 艺人图 / 作品海报（2:3）URL，按尺寸请求 | `ctrl` `getImageUrl` | M0 | [x] |
