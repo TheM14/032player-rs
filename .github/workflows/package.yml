@@ -58,6 +58,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.NAME }}
+          # The preview release keeps the latest build available beyond this window.
+          retention-days: 3
           path: ${{ env.ZIP }}
 
       - name: Publish pre-release

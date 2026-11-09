@@ -47,9 +47,19 @@
   等用户按下方"M1 验证清单"在 Windows 上一次性验证。
 - M0：用户实测播放正常、封面清晰、没有阻断性问题；测量数据（内存、冷启动、滚动）还没收到，可以和 M1 一起测。
 - 测试包：Actions 里手动运行 **Package** 工作流，产物在 Release `preview`（便携 zip：exe + `libmpv-2.dll`，静态 CRT）。
-  当前 preview 是 `main` 的 `af55df5`（M4 第四轮反馈）。注意 `preview` 只有一个：从任何分支运行 Package 都会覆盖它（每次运行的 Actions 构件仍保留 90 天）。
+  当前 preview 是 `main` 的 `af55df5`（M4 第四轮反馈）。注意 `preview` 只有一个：从任何分支运行 Package 都会覆盖它（Workflow 已调整为保留 3 天，待推送生效；此前默认保留 90 天）。
 - M1 有意没做的（记在各小节）：最小化到托盘、Linux 托盘。
 - 已知缺口（按里程碑排期）：歌词翻译、歌词面板手动滚动 / 点击跳转（M3）；主页、作品、系列、播放记录（M3）。
+
+## GitHub Actions 存储维护（2026-11-09）
+
+- [x] 遍历 29 个可访问仓库，区分 Artifact、Cache、Release 与累计计费用量
+- [x] 经用户授权清理 194 个 Artifact，按 API 字节数释放约 3.292 GiB；保留所有 Release、最新 Rust 预览、近期测试产物与全部 Android 混淆映射
+- [x] 发布前复核发现 MusicBridge 的 APK 合集 #3、#4 没有对应 Release 备份，排除清理并保留
+- [x] 本地 `release.yml` / `package.yml` 的 Artifact 保留期设为 3 天；正式版与最新预览仍由 Release 提供下载
+- [ ] 推送 Workflow 保留期调整后才会在 GitHub 生效（本次仅本地提交，不推送）
+- [ ] 其他仓库的保留期优化尚未落地；MusicBridge 正式版 mapping 需先建立长期归档
+- [ ] 在 Billing 页面复核当前周期累计用量；删除不冲销已经累计的存储用量，现有凭据缺少计费查询权限
 
 ## UI 改版（v3 Editorial）
 

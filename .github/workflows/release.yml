@@ -70,6 +70,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: 032player-${{ env.VERSION }}
+          # Releases keep the permanent downloads; artifacts are a short-lived fallback.
+          retention-days: 3
           path: |
             dist/*.exe
             dist/*.zip
