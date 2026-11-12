@@ -5,6 +5,9 @@
 
 ## 当前状态（2026-10-28）
 
+- **v0.2.5 正式版构建已安排**：圆形艺人卡片（艺人列表、收藏、搜索）去掉悬停时右下角被裁掉的播放按钮，点击任意位置打开艺人页。
+  正式安装包由 `v0.2.5` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.5 。
+
 - **v0.2.4 正式版构建已安排**：Sonos 投放（照搬 MusicBridge 的 032 队列模式，入口在播放条独占旁边，设置页"Sonos 投放"）。
   正式安装包由 `v0.2.4` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.4 。
   Windows 验证项见"M4 后续 / F. Sonos 投放"。
