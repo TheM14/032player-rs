@@ -229,6 +229,20 @@ impl Harness {
         self.engine.take()
     }
 
+    /// Waits for the expected call count without relying on runner speed.
+    async fn expect_calls(&self, expected: &[&str]) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut calls = Vec::new();
+        loop {
+            calls.extend(self.engine.take());
+            if calls.len() >= expected.len() || Instant::now() >= deadline {
+                assert_eq!(calls, expected);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     async fn shutdown(mut self) {
         let core = self.core.take().unwrap();
         tokio::task::spawn_blocking(move || core.shutdown())
@@ -424,7 +438,7 @@ async fn sleep_timer_stops_at_the_end_of_the_track_or_album() {
     h.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
     h.wait_playing(1);
     h.loaded(1);
-    assert_eq!(h.calls().await, ["load 1", "clear", "append 2"]);
+    h.expect_calls(&["load 1", "clear", "append 2"]).await;
 
     // End of track: the preload goes, so the engine stops after this file.
     h.send(Command::SetSleepTimer(Some(SleepTimer::EndOfTrack)));
@@ -440,7 +454,7 @@ async fn sleep_timer_stops_at_the_end_of_the_track_or_album() {
     h.send(Command::TogglePause);
     h.wait("playing", |e| *e == Event::Paused(false));
     h.loaded(2);
-    assert_eq!(h.calls().await, ["load 2", "clear", "append 3"]);
+    h.expect_calls(&["load 2", "clear", "append 3"]).await;
     h.send(Command::SetSleepTimer(Some(SleepTimer::EndOfAlbum)));
     h.wait("timer", |e| matches!(e, Event::SleepTimer(Some(_))));
     assert_eq!(h.calls().await, ["clear"]);
