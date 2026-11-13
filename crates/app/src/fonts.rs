@@ -15,11 +15,16 @@ use slint::fontique_011::fontique;
 static INTER: &[u8] = include_bytes!("../assets/fonts/Inter.ttf");
 static NOTO_SANS_JP: &[u8] = include_bytes!("../assets/fonts/NotoSansJP.ttf");
 static NOTO_SANS_SC: &[u8] = include_bytes!("../assets/fonts/NotoSansSC.ttf");
+static SOURCE_SERIF: &[u8] = include_bytes!("../assets/fonts/SourceSerif4.ttf");
 
 pub const JP: &str = "Noto Sans JP";
 pub const SC: &str = "Noto Sans SC";
+/// Latin display face for the artist-page title (Source Serif 4).
+pub const SERIF: &str = "Source Serif 4";
 
 /// Uses Inter, Noto Sans JP, then Noto Sans SC as the generic font stack.
+/// Source Serif 4 is registered for [`display_family`] only; it is not part
+/// of the generic stack, so a missing glyph still falls back to Inter / Noto.
 /// Call once the platform is set up, before the first window is created.
 pub fn register() {
     let mut collection = slint::fontique_011::shared_collection();
@@ -32,6 +37,9 @@ pub fn register() {
             }
         }
     }
+    // Addressed by name from `display_family`. Left out of the generic stack
+    // so a missing glyph still falls back to Inter, then Noto.
+    collection.register_fonts(fontique::Blob::new(std::sync::Arc::new(SOURCE_SERIF)), None);
     for generic in [
         fontique::GenericFamily::SansSerif,
         fontique::GenericFamily::SystemUi,
@@ -39,6 +47,33 @@ pub fn register() {
     ] {
         collection.set_generic_families(generic, families.iter().copied());
     }
+}
+
+/// Artist-page display face: Source Serif 4 for a Latin name, otherwise the
+/// same Noto family as [`family_for`]. A CJK name must not use the serif
+/// family, because missing glyphs fall through the generic stack's JP face
+/// before SC.
+pub fn display_family(text: &str) -> &'static str {
+    if has_cjk(text) {
+        family_for(text)
+    } else {
+        SERIF
+    }
+}
+
+/// Han or kana (the katakana middle dot `・` also appears in Chinese names).
+fn has_cjk(text: &str) -> bool {
+    text.chars().any(|c| {
+        c != '\u{30FB}'
+            && matches!(
+                c,
+                '\u{3040}'..='\u{30FF}'
+                    | '\u{31F0}'..='\u{31FF}'
+                    | '\u{3400}'..='\u{9FFF}'
+                    | '\u{F900}'..='\u{FAFF}'
+                    | '\u{FF66}'..='\u{FF9D}'
+            )
+    })
 }
 
 /// Family for a piece of content text, as Electron `detectCjkLang`: kana
@@ -70,5 +105,15 @@ mod tests {
         assert_eq!(family_for("Bad Apple!!"), SC);
         assert_eq!(family_for("列奥纳多・达・芬奇"), SC);
         assert_eq!(family_for(""), SC);
+    }
+
+    #[test]
+    fn display_face_is_serif_only_for_latin() {
+        assert_eq!(display_family("Keina Suda"), SERIF);
+        assert_eq!(display_family("YOASOBI"), SERIF);
+        assert_eq!(display_family(""), SERIF);
+        assert_eq!(display_family("須田景凪"), SC);
+        assert_eq!(display_family("ヨアソビ"), JP);
+        assert_eq!(display_family("将一切抚平的圣者行进"), SC);
     }
 }

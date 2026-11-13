@@ -5,7 +5,7 @@ import {
     LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
 } from "views.slint";
 import {
-    ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, PromptDialog,
+    ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, ArtistHeader, PromptDialog,
     ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
     InfoDialog,
 } from "library.slint";
@@ -17,7 +17,7 @@ import { Playback, CastState, CastRoomRow, GhostButton, Icon, IconButton, IconKi
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
-    HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog, LinkText,
+    HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog,
 } from "m032.slint";
 
 export { Fonts, Playback, CastState, CastRoomRow }
@@ -95,6 +95,119 @@ component SideHeader inherits HorizontalLayout {
         }
     }
     @children
+}
+
+// Centered artist-page tab with an accent underline on the active one.
+component ArtistTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    height: 44px;
+    width: tab-label.preferred-width + 4px;
+    tab-label := Text {
+        y: 6px;
+        width: parent.width;
+        text: root.text;
+        font-family: Fonts.family(self.text);
+        horizontal-alignment: center;
+        font-size: 16px;
+        font-weight: root.selected ? 650 : 500;
+        color: root.selected ? Theme.text : tab-area.has-hover ? Theme.text : Theme.text-dim;
+    }
+    Rectangle {
+        x: 0;
+        y: parent.height - 3px;
+        width: parent.width;
+        height: 2px;
+        border-radius: 1px;
+        background: root.selected ? Theme.accent : transparent;
+    }
+    tab-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Biography under 概览: three lines, then a chevron that expands the rest.
+component ArtistBio inherits VerticalLayout {
+    in property <string> text;
+    in property <int> artist-id;
+    property <bool> expanded: false;
+    changed artist-id => {
+        root.expanded = false;
+    }
+    spacing: 2px;
+
+    Rectangle {
+        clip: true;
+        height: root.expanded ? measure.preferred-height : min(measure.preferred-height, line.preferred-height * 3);
+        measure := Text {
+            y: 0;
+            width: parent.width;
+            height: self.preferred-height;
+            text: root.text;
+            font-family: Fonts.family(self.text);
+            font-size: 15px;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+    }
+    line := Text {
+        visible: false;
+        text: "字";
+        font-family: Fonts.family(self.text);
+        font-size: 15px;
+    }
+    if measure.preferred-height > line.preferred-height * 3 + 2px: Rectangle {
+        height: 32px;
+        Icon {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 18px;
+            height: 18px;
+            kind: IconKind.chevron-down;
+            color: chev.has-hover ? Theme.text : Theme.text-faint;
+            transform-rotation: root.expanded ? 180deg : 0deg;
+        }
+        chev := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.expanded = !root.expanded;
+            }
+        }
+    }
+}
+
+// Right-hand facts on 概览 (type, country, counts). Empty rows are omitted
+// by the caller; there is no birth-date field on the artist API.
+component ArtistFacts inherits VerticalLayout {
+    in property <[FactRow]> facts;
+    spacing: 12px;
+    alignment: start;
+    for f in root.facts: HorizontalLayout {
+        height: 22px;
+        spacing: 20px;
+        Text {
+            text: f.label;
+            font-family: Fonts.family(self.text);
+            font-size: 14px;
+            font-weight: 700;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+        Text {
+            text: f.value;
+            font-family: Fonts.family(self.text);
+            font-size: 14px;
+            color: Theme.text;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
 }
 
 export component AppWindow inherits Window {
@@ -252,6 +365,10 @@ export component AppWindow inherits Window {
     // "收藏的歌曲" of the artist (track list 12).
     in property <[TrackRow]> artist-favs;
     in property <string> artist-about;
+    // 概览 info column. Only rows the server actually filled.
+    in property <[FactRow]> artist-facts;
+    // 0 概览, 1 作品.
+    in-out property <int> artist-tab: 0;
     in property <bool> playlist-artwork;
     callback detail-action(string, int);
 
@@ -1259,15 +1376,19 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Artist: one scrolling page with top tracks and releases.
+                // Artist: header, 概览 (bio / facts / favorites) and 作品 (releases).
                 if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
                     property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 40px - 64px - 80px);
+                    property <int> shown-tab: root.artist-tab;
+                    changed shown-tab => {
+                        self.content-y = 0;
+                    }
                     content-height: artist-page.preferred-height;
                     artist-page := VerticalLayout {
                         width: artist-flick.width;
                         alignment: start;
                         padding-bottom: 24px;
-                        DetailHeader {
+                        ArtistHeader {
                             info: root.detail;
                             cover: root.detail-cover;
                             loading: root.detail-loading;
@@ -1277,46 +1398,144 @@ export component AppWindow inherits Window {
                                 root.detail-action(what, arg);
                             }
                         }
-                        // 关于, the release groups, 收藏的歌曲 (no 热门歌曲).
-                        if root.artist-about != "": about := VerticalLayout {
-                            padding-left: Shell.pad;
-                            padding-right: Shell.pad;
-                            padding-bottom: 8px;
-                            spacing: 6px;
-                            property <bool> expanded;
-                            Text {
-                                height: 40px;
-                                text: "关于 " + root.detail.title;
-                                color: Theme.text;
-                                font-size: Shell.tier == 2 ? 26px : 22px;
-                                font-weight: 780;
-                                vertical-alignment: center;
-                            }
-                            // Three lines unless expanded.
-                            Rectangle {
-                                height: about.expanded ? about-measure.preferred-height : min(about-measure.preferred-height, 54px);
-                                clip: true;
-                                about-measure := Text {
-                                    y: 0;
-                                    width: parent.width;
-                                    height: self.preferred-height;
-                                    text: root.artist-about;
-                                    font-family: Fonts.family(self.text);
-                                    color: Theme.text-dim;
-                                    font-size: 13px;
-                                    wrap: word-wrap;
+                        HorizontalLayout {
+                            height: 52px;
+                            alignment: center;
+                            spacing: 40px;
+                            ArtistTab {
+                                text: "概览";
+                                selected: root.artist-tab == 0;
+                                clicked => {
+                                    root.artist-tab = 0;
                                 }
                             }
-                            if about-measure.preferred-height > 56px: HorizontalLayout {
-                                alignment: start;
-                                LinkText {
-                                    text: about.expanded ? "收起" : "展开";
-                                    clicked => {
-                                        about.expanded = !about.expanded;
-                                    }
+                            ArtistTab {
+                                text: "作品";
+                                selected: root.artist-tab == 1;
+                                clicked => {
+                                    root.artist-tab = 1;
                                 }
                             }
                         }
+                        // 概览: biography and facts when the server has them,
+                        // then 收藏的歌曲. No genre chip, no birth date.
+                        if root.artist-tab == 0: VerticalLayout {
+                            alignment: start;
+                            padding-top: 8px;
+                            if !root.detail-loading && root.artist-about == "" && root.artist-facts.length == 0 && root.artist-favs.length == 0: Text {
+                                height: 64px;
+                                text: "暂无简介";
+                                font-family: Fonts.family(self.text);
+                                color: Theme.text-faint;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            if root.artist-about != "" || root.artist-facts.length > 0: overview := VerticalLayout {
+                                property <bool> side: artist-flick.width >= 920px && root.artist-about != "" && root.artist-facts.length > 0;
+                                if overview.side: HorizontalLayout {
+                                    padding-left: Shell.pad;
+                                    padding-right: Shell.pad;
+                                    padding-top: 16px;
+                                    spacing: 48px;
+                                    ArtistBio {
+                                        horizontal-stretch: 0;
+                                        width: min(720px, max(240px, parent.width - 2 * Shell.pad - 280px - 48px));
+                                        text: root.artist-about;
+                                        artist-id: root.detail.id;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        min-width: 16px;
+                                    }
+                                    ArtistFacts {
+                                        width: 280px;
+                                        vertical-stretch: 0;
+                                        facts: root.artist-facts;
+                                    }
+                                }
+                                if !overview.side: VerticalLayout {
+                                    padding-left: Shell.pad;
+                                    padding-right: Shell.pad;
+                                    padding-top: 16px;
+                                    spacing: 28px;
+                                    if root.artist-about != "": ArtistBio {
+                                        text: root.artist-about;
+                                        artist-id: root.detail.id;
+                                    }
+                                    if root.artist-facts.length > 0: ArtistFacts {
+                                        width: min(320px, parent.width - 2 * Shell.pad);
+                                        facts: root.artist-facts;
+                                    }
+                                }
+                            }
+                            if root.artist-favs.length > 0: Rectangle {
+                                height: 12px;
+                            }
+                            if root.artist-favs.length > 0: HorizontalLayout {
+                                padding-left: Shell.pad;
+                                padding-right: Shell.pad;
+                                height: 52px;
+                                spacing: 10px;
+                                Text {
+                                    text: "收藏的歌曲";
+                                    color: Theme.text;
+                                    font-size: Shell.tier == 2 ? 26px : 22px;
+                                    font-weight: 780;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.artist-favs.length;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-faint;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                IconButton {
+                                    kind: IconKind.play;
+                                    size: 30px;
+                                    icon-size: 14px;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.play-list(12, false);
+                                    }
+                                }
+                                GhostButton {
+                                    text: "随机播放";
+                                    has-icon: true;
+                                    icon: IconKind.shuffle;
+                                    y: (parent.height - self.height) / 2;
+                                    clicked => {
+                                        root.play-list(12, true);
+                                    }
+                                }
+                            }
+                            for track in root.artist-favs: TrackRowView {
+                                track: track;
+                                mode: 0;
+                                playing: track.id == root.playing-id;
+                                playlists: root.playlist-choices;
+                                title-w: artist-flick.flex * 0.42;
+                                artist-w: artist-flick.flex * 0.24;
+                                album-w: artist-flick.flex * 0.34;
+                                action(what, arg) => {
+                                    root.track-action(12, what, track.index, arg);
+                                }
+                            }
+                        }
+                        if root.artist-tab == 1: works := VerticalLayout {
+                            alignment: start;
+                            padding-top: 8px;
+                            if !root.detail-loading && root.artist-groups.length == 0: Text {
+                                height: 64px;
+                                text: "没有作品";
+                                font-family: Fonts.family(self.text);
+                                color: Theme.text-faint;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         for g[gi] in root.artist-groups: group := VerticalLayout {
                             HorizontalLayout {
                                 padding-left: Shell.pad;
@@ -1372,7 +1591,7 @@ export component AppWindow inherits Window {
                                 // Covers of the rows on screen, plus half a
                                 // screen above and below.
                                 lazy: true;
-                                view-top: -artist-flick.content-y - group.y - self.y - artist-flick.height / 2;
+                                view-top: -artist-flick.content-y - works.y - group.y - self.y - artist-flick.height / 2;
                                 view-bottom: self.view-top + artist-flick.height * 2;
                                 row-shown(row) => {
                                     root.card-row-shown(g.grid, row);
@@ -1385,64 +1604,6 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        // Electron `FAVORITE_SONGS`. The gap above sits
-                        // outside the header so the actions centre on the
-                        // title (same header as the release groups).
-                        if root.artist-favs.length > 0: Rectangle {
-                            height: 12px;
-                        }
-                        if root.artist-favs.length > 0: HorizontalLayout {
-                            padding-left: Shell.pad;
-                            padding-right: Shell.pad;
-                            height: 52px;
-                            spacing: 10px;
-                            Text {
-                                text: "收藏的歌曲";
-                                color: Theme.text;
-                                font-size: Shell.tier == 2 ? 26px : 22px;
-                                font-weight: 780;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.artist-favs.length;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            // Like the release groups: play / shuffle just
-                            // these favorites (track list 12).
-                            IconButton {
-                                kind: IconKind.play;
-                                size: 30px;
-                                icon-size: 14px;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.play-list(12, false);
-                                }
-                            }
-                            GhostButton {
-                                text: "随机播放";
-                                has-icon: true;
-                                icon: IconKind.shuffle;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.play-list(12, true);
-                                }
-                            }
-                        }
-                        for track in root.artist-favs: TrackRowView {
-                            track: track;
-                            mode: 0;
-                            playing: track.id == root.playing-id;
-                            playlists: root.playlist-choices;
-                            title-w: artist-flick.flex * 0.42;
-                            artist-w: artist-flick.flex * 0.24;
-                            album-w: artist-flick.flex * 0.34;
-                            action(what, arg) => {
-                                root.track-action(12, what, track.index, arg);
-                            }
                         }
                     }
                 }

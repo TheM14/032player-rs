@@ -22,8 +22,8 @@ use slint::{
 
 use crate::cards::{Card, CardGridModel, image_key, key_path, physical_box};
 use crate::{
-    AppWindow, CreditPart, DetailInfo, Home, HomeRow, Lib032, ListQuery, LyricLine, LyricsResult,
-    LyricsSearch, PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
+    AppWindow, CreditPart, DetailInfo, FactRow, Home, HomeRow, Lib032, ListQuery, LyricLine,
+    LyricsResult, LyricsSearch, PlaylistChoice, QueueRow, ReleaseGroupRow, TrackRow,
 };
 use m032::{
     Bind, GRID_CHRONICLE, GRID_HOME_ALBUMS, GRID_HOME_PLAYLISTS, GRID_HOME_WORKS, GRID_MEMBERS,
@@ -441,6 +441,8 @@ impl Ui {
         }
         w.set_artist_groups(ModelRc::default());
         w.set_artist_about(SharedString::new());
+        w.set_artist_facts(ModelRc::default());
+        w.set_artist_tab(0);
         self.reset_m032_detail(w);
         w.set_page(PAGE_DETAIL);
         self.send(match route {
@@ -1024,6 +1026,7 @@ impl Ui {
                     about.push_str(&format!("\n\n来源：{}", a.biography_source));
                 }
                 w.set_artist_about(about.into());
+                w.set_artist_facts(ModelRc::new(VecModel::from(artist_fact_rows(a))));
                 let mut meta = Vec::new();
                 if !a.artist_type.is_empty() {
                     meta.push(a.artist_type.clone());
@@ -1037,18 +1040,13 @@ impl Ui {
                 if a.track_count > 0 {
                     meta.push(format!("{} 首", a.track_count));
                 }
-                let aliases = if a.aliases.is_empty() {
-                    String::new()
-                } else {
-                    format!("别名：{}", a.aliases.join(" / "))
-                };
                 (
                     DetailInfo {
                         kind: 1,
                         id: int(a.id),
                         title: a.name.as_str().into(),
+                        subtitle: artist_alias(a).into(),
                         meta: meta.join(" · ").into(),
-                        description: aliases.into(),
                         favorite: a.favorite,
                         ..DetailInfo::default()
                     },
@@ -1977,6 +1975,48 @@ fn login_message(failure: &LoginFailure) -> String {
 
 fn int(value: i64) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+}
+
+/// Alias line under the artist name. Skips blanks and a repeat of the name.
+fn artist_alias(artist: &client_core::ArtistView) -> String {
+    let name = artist.name.trim();
+    artist
+        .aliases
+        .iter()
+        .map(|alias| alias.trim())
+        .filter(|alias| !alias.is_empty() && *alias != name)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Overview column. Only fields the artist API actually returns; there is
+/// no birth date, so that row is never invented.
+fn artist_fact_rows(artist: &client_core::ArtistView) -> Vec<FactRow> {
+    let mut rows = Vec::new();
+    for (label, value) in [
+        ("类型", artist.artist_type.trim()),
+        ("国家/地区", artist.country.trim()),
+    ] {
+        if !value.is_empty() {
+            rows.push(FactRow {
+                label: label.into(),
+                value: value.into(),
+            });
+        }
+    }
+    if artist.album_count > 0 {
+        rows.push(FactRow {
+            label: "专辑".into(),
+            value: format!("{} 张", artist.album_count).into(),
+        });
+    }
+    if artist.track_count > 0 {
+        rows.push(FactRow {
+            label: "曲目".into(),
+            value: format!("{} 首", artist.track_count).into(),
+        });
+    }
+    rows
 }
 
 /// A list row; `multi_disc` numbers album tracks "disc-track".

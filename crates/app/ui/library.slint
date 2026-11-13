@@ -742,6 +742,301 @@ export component DetailHeader inherits Rectangle {
     }
 }
 
+// Round outline icon (artist header: favorite, queue, more).
+component OutlineIconButton inherits Rectangle {
+    in property <IconKind> kind;
+    in property <bool> active;
+    callback clicked();
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    border-width: 1.5px;
+    // Light theme matches the reference's pale ring; dark needs a lighter
+    // edge than `Theme.border`, which sits almost on the page background.
+    border-color: area.has-hover ? Theme.text-dim : Theme.dark ? #4a4a58 : #d5d5de;
+    background: area.has-hover ? Theme.surface-hover : transparent;
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        kind: root.kind;
+        width: 18px;
+        height: 18px;
+        color: root.active ? Theme.accent : area.has-hover ? Theme.text : Theme.text-dim;
+    }
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Artist page header: circular photo, serif display name, native-name line
+// (an alias, when the server has one), then 现在播放 / favorite / queue / more.
+// No genre chip. Birth date is not an API field, so it is not shown here;
+// type, country and counts live in the overview column.
+export component ArtistHeader inherits Rectangle {
+    in property <DetailInfo> info;
+    in property <image> cover;
+    in property <bool> loading;
+    in property <[PlaylistChoice]> playlists;
+    in property <int> favorite-count;
+    // play, shuffle, next, last, favorite, add, new-playlist, play-favorites.
+    callback action(string, int);
+    property <length> art: round((Shell.tier == 2 ? 220px : Shell.tier == 1 ? 184px : 148px) / 1phx) * 1phx;
+    property <string> heading: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
+    property <string> heading-family: Fonts.display(root.heading);
+    property <length> heading-size: Shell.tier == 2 ? 56px : Shell.tier == 1 ? 48px : 40px;
+
+    VerticalLayout {
+        padding-left: Shell.pad;
+        padding-right: Shell.pad;
+        // Clears the floating back button (y 14, height 36).
+        padding-top: 56px;
+        padding-bottom: 8px;
+        HorizontalLayout {
+            spacing: Shell.tier == 2 ? 36px : 24px;
+            alignment: start;
+
+            Rectangle {
+                width: root.art;
+                height: root.art;
+                y: (parent.height - self.height) / 2;
+                border-radius: root.art / 2;
+                background: Theme.raised;
+                border-width: 1px;
+                border-color: Theme.dark ? #3a3a46 : #e4e4ea;
+                clip: true;
+                Image {
+                    source: root.cover;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 0px;
+
+                Rectangle {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    height: heading-text.preferred-height;
+                    clip: true;
+                    heading-text := Text {
+                        width: parent.width;
+                        text: root.heading;
+                        font-family: root.heading-family;
+                        font-size: root.heading-size;
+                        font-weight: 600;
+                        letter-spacing: root.heading-family == "Source Serif 4" ? -0.9px : 0px;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                }
+                if root.info.subtitle != "": Rectangle {
+                    height: 8px;
+                }
+                if root.info.subtitle != "": Rectangle {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    height: sub-text.preferred-height;
+                    clip: true;
+                    sub-text := Text {
+                        width: parent.width;
+                        text: root.info.subtitle;
+                        font-family: Fonts.family(self.text);
+                        font-size: Shell.tier == 2 ? 20px : 17px;
+                        font-weight: 500;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                }
+                Rectangle {
+                    height: 18px;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 12px;
+                    height: 40px;
+
+                    play-split := Rectangle {
+                        property <length> main-w: play-row.preferred-width;
+                        width: self.main-w + 37px;
+                        height: 40px;
+                        border-radius: 20px;
+                        background: Theme.accent;
+                        HorizontalLayout {
+                            spacing: 0px;
+                            Rectangle {
+                                width: play-split.main-w;
+                                height: 40px;
+                                background: play-area.has-hover ? #ffffff22 : transparent;
+                                play-row := HorizontalLayout {
+                                    padding-left: 16px;
+                                    padding-right: 14px;
+                                    spacing: 8px;
+                                    Icon {
+                                        kind: IconKind.play;
+                                        width: 14px;
+                                        height: 14px;
+                                        y: (parent.height - self.height) / 2;
+                                        color: #ffffff;
+                                    }
+                                    Text {
+                                        text: "现在播放";
+                                        font-family: Fonts.family(self.text);
+                                        color: #ffffff;
+                                        font-size: 14.5px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                play-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.action("play", 0);
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 1px;
+                                height: 40px;
+                                background: #ffffff55;
+                            }
+                            Rectangle {
+                                width: 36px;
+                                height: 40px;
+                                background: menu-area.has-hover ? #ffffff22 : transparent;
+                                Icon {
+                                    kind: IconKind.chevron-down;
+                                    width: 16px;
+                                    height: 16px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    color: #ffffff;
+                                }
+                                menu-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        play-menu.show();
+                                    }
+                                }
+                            }
+                        }
+                        play-menu := PopupWindow {
+                            x: 0px;
+                            y: play-split.height + 6px;
+                            width: 200px;
+                            close-policy: PopupClosePolicy.close-on-click-outside;
+                            Rectangle {
+                                background: Theme.raised;
+                                border-radius: 10px;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                VerticalLayout {
+                                    padding: 6px;
+                                    MenuRow {
+                                        text: "随机播放";
+                                        clicked => {
+                                            play-menu.close();
+                                            root.action("shuffle", 0);
+                                        }
+                                    }
+                                    MenuRow {
+                                        text: "下一首播放";
+                                        clicked => {
+                                            play-menu.close();
+                                            root.action("next", 0);
+                                        }
+                                    }
+                                    MenuRow {
+                                        text: "添加到队列末尾";
+                                        clicked => {
+                                            play-menu.close();
+                                            root.action("last", 0);
+                                        }
+                                    }
+                                    if root.favorite-count > 0: MenuRow {
+                                        text: "播放收藏";
+                                        clicked => {
+                                            play-menu.close();
+                                            root.action("play-favorites", 0);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    OutlineIconButton {
+                        kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
+                        active: root.info.favorite;
+                        clicked => {
+                            root.action("favorite", root.info.favorite ? 0 : 1);
+                        }
+                    }
+                    OutlineIconButton {
+                        kind: IconKind.list-plus;
+                        clicked => {
+                            root.action("last", 0);
+                        }
+                    }
+                    more-btn := Rectangle {
+                        width: 40px;
+                        height: 40px;
+                        OutlineIconButton {
+                            kind: IconKind.more;
+                            clicked => {
+                                more-menu.show();
+                            }
+                        }
+                        more-menu := PopupWindow {
+                            x: -180px;
+                            y: parent.height + 6px;
+                            width: 220px;
+                            close-policy: PopupClosePolicy.close-on-click-outside;
+                            Rectangle {
+                                background: Theme.raised;
+                                border-radius: 10px;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                VerticalLayout {
+                                    padding: 6px;
+                                    MenuRow {
+                                        text: "新建歌单…";
+                                        clicked => {
+                                            more-menu.close();
+                                            root.action("new-playlist", 0);
+                                        }
+                                    }
+                                    Flickable {
+                                        height: min(240px, root.playlists.length * 30px);
+                                        VerticalLayout {
+                                            alignment: start;
+                                            for p in root.playlists: MenuRow {
+                                                text: p.name;
+                                                clicked => {
+                                                    more-menu.close();
+                                                    root.action("add", p.id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Modal dialog asking for a name and a description.
 export component PromptDialog inherits Rectangle {
     in property <string> title;

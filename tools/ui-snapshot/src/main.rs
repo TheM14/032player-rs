@@ -500,6 +500,14 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
         Value::String(fonts::family_for(&text).into())
     })
     .unwrap();
+    inst.set_global_callback("Fonts", "display", |args| {
+        let text = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            _ => String::new(),
+        };
+        Value::String(fonts::display_family(&text).into())
+    })
+    .unwrap();
     inst
 }
 
@@ -1059,27 +1067,48 @@ fn main() {
         &inst,
         "artist-about",
         s(
-            "YOASOBI 是日本的音乐组合，由作曲家 Ayase 与歌手 ikura 组成，以\u{201c}将小说化为音乐\u{201d}为概念，2019 年以《夜に駆ける》出道。\n\n来源：Last.fm",
+            "须田景凪，1993 年生于日本，是创作歌手、作词家、作曲家与编曲家，也以 VOCALOID 创作者的名义活动。作品常介于流行与摇滚之间，经纪公司为 A-Sketch，唱片由日本华纳音乐旗下厂牌发行。\n\n来源：Last.fm",
         ),
     );
     set(
         &inst,
-        "detail",
-        detail(
-            1.0,
-            "YOASOBI",
-            "",
-            "组合 · 日本 · 12 张专辑 · 140 首",
-            "",
-            "别名：ヨアソビ",
-        ),
+        "artist-facts",
+        facts(&[
+            ("类型", "个人"),
+            ("国家/地区", "日本"),
+            ("专辑", "12 张"),
+            ("曲目", "140 首"),
+        ]),
     );
+    set(
+        &inst,
+        "detail",
+        detail(1.0, "Keina Suda", "須田景凪", "", "", ""),
+    );
+    set(&inst, "artist-tab", Value::Number(0.0));
     set(&inst, "artist-favs", tracks());
     render(
         &window,
         PhysicalSize::new(1280, 2200),
         &format!("{out}/artist.png"),
     );
+    // Wide light page, the reference layout: header, tabs, bio, facts.
+    set(&inst, "panel-open", Value::Bool(false));
+    set(&inst, "theme-mode", Value::Number(2.0));
+    render(
+        &window,
+        PhysicalSize::new(1800, 1100),
+        &format!("{out}/artist-light.png"),
+    );
+    set(&inst, "artist-tab", Value::Number(1.0));
+    render(
+        &window,
+        PhysicalSize::new(1800, 1400),
+        &format!("{out}/artist-works.png"),
+    );
+    set(&inst, "artist-tab", Value::Number(0.0));
+    set(&inst, "theme-mode", Value::Number(1.0));
+    set(&inst, "artist-facts", model(Vec::new()));
     set(&inst, "artist-favs", Value::Model(ModelRc::default()));
     set(
         &inst,

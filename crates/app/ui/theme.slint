@@ -5,6 +5,9 @@ import { Palette } from "std-widgets.slint";
 // the Chinese UI labels.
 export global Fonts {
     pure callback family(string) -> string;
+    // Artist-page title: Source Serif 4 for Latin, Noto for Han / kana
+    // (`fonts.rs` `display_family`).
+    pure callback display(string) -> string;
 }
 
 // 032 Dark / 032 Light, v3 Editorial (`docs/UI-REDESIGN.md`).
