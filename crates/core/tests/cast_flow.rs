@@ -457,7 +457,12 @@ async fn adopts_the_queue_a_speaker_plays() {
     core.send(Command::Previous);
     until("restart", || {
         let s = fake.state();
-        s.track == 2 && !s.queue[1].0.contains("offsetMs")
+        // Replacement removes the old URI before adding the new one.
+        // The polling task may observe that intermediate one-entry queue.
+        s.track == 2
+            && s.queue
+                .get(1)
+                .is_some_and(|(uri, _)| !uri.contains("offsetMs"))
     })
     .await;
     events.wait(
