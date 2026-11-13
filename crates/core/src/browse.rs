@@ -728,7 +728,12 @@ pub fn album_view(album: &Album, tracks: &[Track]) -> AlbumView {
         label: album.label.clone(),
         release_date: album.release_date.clone(),
         favorite: album.is_favorite,
-        multi_disc: album.disc_count > 1 || tracks.iter().any(|t| t.disc_number > 1),
+        multi_disc: if tracks.is_empty() {
+            album.disc_count > 1
+        } else {
+            let first = tracks[0].disc_number.max(1);
+            tracks.iter().any(|t| t.disc_number.max(1) != first)
+        },
         release_facts: release_facts(album),
         media_facts: {
             let mut facts = Vec::new();
