@@ -79,6 +79,7 @@ fn card(i: usize, added: &str) -> Value {
         ("note", s("")),
         ("added", s(added)),
         ("playing", Value::Bool(i == 1)),
+        ("disc-count", n(if i % 4 == 0 { 2.0 } else { 1.0 })),
         ("cover", Value::Image(art(c))),
     ])
 }
@@ -1006,6 +1007,152 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
     shell(&inst);
     home(&inst, "PURE");
     album(&inst);
+
+    // Side-by-side fake playback states for corner badge regression checks.
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("badges") {
+        set(&inst, "page", n(0.0));
+        for (w, h, light) in [(1280, 800, false), (1600, 900, false), (1280, 800, true)] {
+            set(&inst, "theme-mode", n(if light { 2.0 } else { 1.0 }));
+            let size = PhysicalSize::new(w, h);
+            for _ in 0..3 {
+                settle(window, size);
+                fill_grids(&inst, &layouts);
+            }
+            let cols = layouts.borrow().get(&0).copied().unwrap_or((4, 0)).0;
+            let mut cards = album_cards(24);
+            for (i, card) in cards.iter_mut().take(3).enumerate() {
+                if let Value::Struct(card) = card {
+                    card.set_field("playing".into(), Value::Bool(true));
+                    if i == 2 {
+                        card.set_field("badge".into(), s("合作"));
+                    }
+                }
+            }
+            set(&inst, "album-rows", rows(&cards, cols, 0));
+            let prefix = if light { "light-" } else { "" };
+            render(
+                window,
+                size,
+                &format!("{out}/{prefix}album-playing-badges-{w}.png"),
+            );
+        }
+        inst.hide().unwrap();
+        return;
+    }
+
+    // Exercise both split-button hover regions with actual pointer events.
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("play-hover") {
+        let size = PhysicalSize::new(1280, 800);
+        for (kind, name) in [(1.0, "artist"), (7.0, "versions")] {
+            set(&inst, "page", n(10.0));
+            let mut info = match detail("須田景凪") {
+                Value::Struct(info) => info,
+                _ => unreachable!(),
+            };
+            info.set_field("kind".into(), n(kind));
+            set(&inst, "detail", Value::Struct(info));
+            let base = format!("{out}/{name}-play-idle.png");
+            shot(&inst, window, &layouts, size, &base);
+            let pixels = image::open(&base).unwrap().to_rgba8();
+            let mut longest = (0, 0, 0);
+            for y in 50..360 {
+                let mut start = 0;
+                for x in 64..1200 {
+                    let [r, g, b, _] = pixels.get_pixel(x, y).0;
+                    if (141..=210).contains(&r) && (125..=210).contains(&g) && b == 255 {
+                        if start == 0 {
+                            start = x;
+                        }
+                        if x - start > longest.2 {
+                            longest = (start, y, x - start);
+                        }
+                    } else {
+                        start = 0;
+                    }
+                }
+            }
+            let (x, y, width) = longest;
+            assert!(width > 120, "Split play button must be visible");
+            for (state, px) in [("main-hover", x + 30), ("arrow-hover", x + width - 15)] {
+                let position = slint::LogicalPosition::new(px as f32, y as f32 + 2.0);
+                window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+                let path = format!("{out}/{name}-play-{state}.png");
+                render(window, size, &path);
+                let frame = image::open(&path).unwrap();
+                frame
+                    .crop_imm(x.saturating_sub(16), y.saturating_sub(20), width + 32, 72)
+                    .save(format!("{out}/{name}-play-{state}-detail.png"))
+                    .unwrap();
+            }
+            if kind == 1.0 {
+                let position = slint::LogicalPosition::new((x + width - 15) as f32, y as f32 + 2.0);
+                let button = slint::platform::PointerEventButton::Left;
+                window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                    position,
+                    button,
+                });
+                window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                    position,
+                    button,
+                });
+                render(window, size, &format!("{out}/artist-play-menu.png"));
+                window.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                    text: slint::platform::Key::Escape.into(),
+                });
+                window.dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                    text: slint::platform::Key::Escape.into(),
+                });
+            }
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(0.0, 0.0),
+            });
+        }
+        inst.hide().unwrap();
+        return;
+    }
+
+    // Header typography: short CJK, long Japanese, and long Latin titles.
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("typography") {
+        for (w, h) in SIZES {
+            let size = PhysicalSize::new(w, h);
+            for (name, title) in [
+                ("short", "純粋心"),
+                ("japanese", "風の中は走るっきゃないっ！"),
+                ("latin", LONG_ALBUM),
+            ] {
+                set(&inst, "detail", detail(title));
+                set(&inst, "page", n(10.0));
+                shot(
+                    &inst,
+                    window,
+                    &layouts,
+                    size,
+                    &format!("{out}/album-type-{name}-{w}.png"),
+                );
+                set_g(&inst, "Home", "pane", pane(title));
+                set(&inst, "page", n(20.0));
+                shot(
+                    &inst,
+                    window,
+                    &layouts,
+                    size,
+                    &format!("{out}/home-type-{name}-{w}.png"),
+                );
+            }
+        }
+        set(&inst, "theme-mode", n(2.0));
+        set(&inst, "detail", detail("風の中は走るっきゃないっ！"));
+        set(&inst, "page", n(10.0));
+        shot(
+            &inst,
+            window,
+            &layouts,
+            PhysicalSize::new(2300, 1190),
+            &format!("{out}/light-album-type-2300.png"),
+        );
+        inst.hide().unwrap();
+        return;
+    }
 
     let only = std::env::var("UI_SNAPSHOT_WIDTHS").ok();
     for (w, h) in SIZES {

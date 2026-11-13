@@ -554,23 +554,23 @@ export component Tab inherits Rectangle {
     }
 }
 
-// Oversized title (home spotlight 112, album 132): at most two lines,
-// elided after that. The size steps down (start, 96, 72, 56) until the
-// text fits in two lines at the given width (`docs/UI-REDESIGN.md`
-// 大标题的长度规则). Fill the width; the height follows the text.
+// Detail and spotlight title: at most two lines, then elided. Relative
+// size steps always stay below the requested maximum, even on narrow
+// windows. Fill the width; the height follows the text.
 export component BigTitle inherits Rectangle {
     in property <string> text;
-    in property <length> max-size: 112px;
-    in property <int> weight: 850;
-    // Letter spacing as a share of the size (-4%).
-    in property <float> tracking: -0.04;
+    in property <length> max-size: 64px;
+    in property <int> weight: 600;
+    // Natural spacing keeps CJK titles open and readable.
+    in property <float> tracking: 0;
     in property <color> text-color: Theme.text;
     property <string> family: Fonts.family(root.text);
-    property <length> s1: root.max-size > 96px ? 96px : root.max-size > 72px ? 72px : 56px;
-    property <length> s2: root.s1 > 72px ? 72px : 56px;
+    property <length> s1: min(root.max-size, max(32px, round(root.max-size * 0.85 / 1px) * 1px));
+    property <length> s2: min(root.s1, max(32px, round(root.max-size * 0.7 / 1px) * 1px));
+    property <length> s3: min(root.s2, max(32px, round(root.max-size * 0.6 / 1px) * 1px));
     out property <length> size: wrap0.preferred-height <= line0.preferred-height * 2.5 ? root.max-size
         : wrap1.preferred-height <= line1.preferred-height * 2.5 ? root.s1
-        : wrap2.preferred-height <= line2.preferred-height * 2.5 ? root.s2 : 56px;
+        : wrap2.preferred-height <= line2.preferred-height * 2.5 ? root.s2 : root.s3;
     property <length> line-h: root.size == root.max-size ? line0.preferred-height : root.size == root.s1 ? line1.preferred-height
         : root.size == root.s2 ? line2.preferred-height : line3.preferred-height;
     property <length> wrap-h: root.size == root.max-size ? wrap0.preferred-height : root.size == root.s1 ? wrap1.preferred-height
@@ -591,11 +591,11 @@ export component BigTitle inherits Rectangle {
     line1 := Text { visible: false; text: root.text; font-family: root.family; font-size: root.s1; font-weight: root.weight; }
     wrap2 := Text { visible: false; width: root.width; text: root.text; font-family: root.family; font-size: root.s2; font-weight: root.weight; letter-spacing: root.s2 * root.tracking; wrap: word-wrap; }
     line2 := Text { visible: false; text: root.text; font-family: root.family; font-size: root.s2; font-weight: root.weight; }
-    wrap3 := Text { visible: false; width: root.width; text: root.text; font-family: root.family; font-size: 56px; font-weight: root.weight; letter-spacing: 56px * root.tracking; wrap: word-wrap; }
-    line3 := Text { visible: false; text: root.text; font-family: root.family; font-size: 56px; font-weight: root.weight; }
+    wrap3 := Text { visible: false; width: root.width; text: root.text; font-family: root.family; font-size: root.s3; font-weight: root.weight; letter-spacing: root.s3 * root.tracking; wrap: word-wrap; }
+    line3 := Text { visible: false; text: root.text; font-family: root.family; font-size: root.s3; font-weight: root.weight; }
     shown := Text {
         x: 0;
-        y: -root.size * 0.1;
+        y: round(-root.size * 0.1 / 1phx) * 1phx;
         width: root.width;
         height: root.natural-h;
         text: root.text;

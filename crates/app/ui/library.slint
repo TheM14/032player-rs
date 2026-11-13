@@ -416,9 +416,7 @@ export component DetailHeader inherits Rectangle {
 
             BigTitle {
                 text: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
-                max-size: Shell.tier == 2 ? Theme.font-album : Shell.tier == 1 ? 80px : 64px;
-                weight: 880;
-                tracking: -0.045;
+                max-size: Shell.tier == 2 ? Theme.font-album : Shell.tier == 1 ? 56px : 44px;
             }
             if root.info.subtitle != "": HorizontalLayout {
                 alignment: start;
@@ -903,6 +901,8 @@ export component ArtistHeader inherits Rectangle {
                             Rectangle {
                                 width: play-split.main-w;
                                 height: 40px;
+                                border-top-left-radius: 20px;
+                                border-bottom-left-radius: 20px;
                                 background: play-area.has-hover ? #ffffff22 : transparent;
                                 play-row := HorizontalLayout {
                                     padding-left: 16px;
@@ -939,6 +939,8 @@ export component ArtistHeader inherits Rectangle {
                             Rectangle {
                                 width: 36px;
                                 height: 40px;
+                                border-top-right-radius: 20px;
+                                border-bottom-right-radius: 20px;
                                 background: menu-area.has-hover ? #ffffff22 : transparent;
                                 Icon {
                                     kind: IconKind.chevron-down;

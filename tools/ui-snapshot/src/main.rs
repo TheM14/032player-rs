@@ -538,8 +538,11 @@ fn main() {
     }
     let def = result.component("AppWindow").expect("AppWindow");
     let size = PhysicalSize::new(1280, 800);
-    // UI_SNAPSHOT_ONLY=wide: only the redesign canvases (faster).
-    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("wide") {
+    // Render only the requested regression canvases (faster).
+    if matches!(
+        std::env::var("UI_SNAPSHOT_ONLY").as_deref(),
+        Ok("wide" | "badges" | "typography" | "play-hover")
+    ) {
         wide::run(&def, &window, &out);
         return;
     }

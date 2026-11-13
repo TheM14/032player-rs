@@ -374,9 +374,9 @@ export component CardView inherits Rectangle {
             }
 
             if root.card.playing: Rectangle {
-                // Electron `.card-badge`: dark pill, accent bars.
-                x: parent.width - (root.kind == 0 && root.card.disc-count > 1 ? 66px : 30px);
-                y: 8px;
+                // Bottom-left playback state, independent of top metadata badges.
+                x: 8px;
+                y: parent.height - self.height - 8px;
                 width: 22px;
                 height: 22px;
                 border-radius: 11px;

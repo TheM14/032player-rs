@@ -1002,7 +1002,7 @@ component PreviewRow inherits Rectangle {
 }
 
 // Home spotlight (v3 Editorial): a full-bleed neutral band (D3) with the
-// cover, segmented tabs over an oversized title, and on wide windows the
+// cover, segmented tabs over the title, and on wide windows the
 // preview list on the right.
 component Spotlight inherits Rectangle {
     in property <int> playing-id;
@@ -1012,7 +1012,7 @@ component Spotlight inherits Rectangle {
     in property <length> pad-x: 40px;
     in property <length> pad-y: 44px;
     in property <length> gap: 44px;
-    in property <length> title-size: 112px;
+    in property <length> title-size: 64px;
     in property <length> side-w: 520px;
     callback track-action(int, string, int, int);
     callback navigate(int, int);
@@ -1569,7 +1569,7 @@ export component HomePage inherits Flickable {
                 pad-x: root.pad;
                 pad-y: root.tier == 2 ? 44px : 36px;
                 gap: root.tier == 2 ? 44px : root.tier == 1 ? 32px : 28px;
-                title-size: root.tier == 2 ? Theme.font-hero : root.tier == 1 ? 76px : 72px;
+                title-size: root.tier == 2 ? Theme.font-hero : root.tier == 1 ? 52px : 44px;
                 track-action(list, what, i, arg) => {
                     root.track-action(list, what, i, arg);
                 }

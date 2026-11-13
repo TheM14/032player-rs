@@ -1576,6 +1576,8 @@ export component AppWindow inherits Window {
                                         Rectangle {
                                             width: play-split.main-w;
                                             height: 38px;
+                                            border-top-left-radius: 19px;
+                                            border-bottom-left-radius: 19px;
                                             background: v-play-area.has-hover ? #ffffff22 : transparent;
                                             v-play-row := HorizontalLayout {
                                                 padding-left: 16px;
@@ -1606,6 +1608,8 @@ export component AppWindow inherits Window {
                                         Rectangle {
                                             width: 36px;
                                             height: 38px;
+                                            border-top-right-radius: 19px;
+                                            border-bottom-right-radius: 19px;
                                             background: v-shuf-area.has-hover ? #ffffff22 : transparent;
                                             Icon {
                                                 x: 9px;
