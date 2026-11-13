@@ -53,6 +53,11 @@ jobs:
         shell: pwsh
         run: |
           $out = (Resolve-Path "target/x86_64-pc-windows-msvc/release").Path
+          if (-not (Test-Path "$out/libmpv-2.dll")) {
+            $dll = Get-ChildItem -Path target/libmpv -Filter libmpv-2.dll -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $dll) { throw "libmpv-2.dll not found in $out or target/libmpv" }
+            Copy-Item $dll.FullName "$out/libmpv-2.dll"
+          }
           New-Item -ItemType Directory -Force dist | Out-Null
           $dist = (Resolve-Path dist).Path
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DSourceDir=$out" "/DOutputDir=$dist" packaging/windows/032player.iss

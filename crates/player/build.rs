@@ -13,7 +13,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -175,11 +175,12 @@ fn copy_dll(lib_dir: &Path) {
         if dst.metadata().map(|m| m.len()).ok() == src.metadata().map(|m| m.len()).ok() {
             continue;
         }
-        if fs::create_dir_all(&dir).is_ok() && fs::copy(&src, &dst).is_err() {
+        if fs::create_dir_all(&dir).is_ok()
+            && let Err(e) = fs::copy(&src, &dst)
+        {
             // A running binary keeps the DLL locked; the old copy still works.
-            let _ = writeln!(
-                std::io::stderr(),
-                "could not copy {DLL} to {}",
+            println!(
+                "cargo:warning=could not copy {DLL} to {}: {e}",
                 dir.display()
             );
         }
