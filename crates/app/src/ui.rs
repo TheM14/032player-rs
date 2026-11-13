@@ -84,6 +84,7 @@ enum Route {
     Artist(i64),
     Playlist(i64),
     Similar(TrackList, usize),
+    Versions(TrackList, usize),
     Work(i64),
     Series(i64),
     DailyMix(i64),
@@ -420,6 +421,7 @@ impl Ui {
             Route::Artist(id) => (1, id),
             Route::Playlist(id) => (2, id),
             Route::Similar(..) => (3, 0),
+            Route::Versions(..) => (7, 0),
             Route::Work(id) => (4, id),
             Route::Series(id) => (5, id),
             Route::DailyMix(id) => (6, id),
@@ -434,6 +436,7 @@ impl Ui {
         });
         w.set_detail_cover(Image::default());
         w.set_detail_loading(true);
+        w.set_album_multi_disc(false);
         self.detail_tracks.set_vec(Vec::new());
         self.artist_favs.set_vec(Vec::new());
         for grid in RELEASE_GRIDS {
@@ -442,7 +445,6 @@ impl Ui {
         w.set_artist_groups(ModelRc::default());
         w.set_artist_about(SharedString::new());
         w.set_artist_facts(ModelRc::default());
-        w.set_artist_tab(0);
         self.reset_m032_detail(w);
         w.set_page(PAGE_DETAIL);
         self.send(match route {
@@ -450,6 +452,7 @@ impl Ui {
             Route::Artist(id) => Command::OpenArtist(id),
             Route::Playlist(id) => Command::OpenPlaylist(id),
             Route::Similar(list, index) => Command::OpenSimilar(list, index),
+            Route::Versions(list, index) => Command::OpenVersions(list, index),
             Route::Work(id) => Command::OpenWork(id),
             Route::Series(id) => Command::OpenSeries(id),
             Route::DailyMix(id) => Command::OpenDailyMix(id),
@@ -679,6 +682,8 @@ impl Ui {
                 }
             }
             "similar" => self.navigate(w, Route::Similar(list, index)),
+            "versions" => self.navigate(w, Route::Versions(list, index)),
+            "play-disc" => self.send(Command::PlayAlbumDisc(i32::try_from(arg).unwrap_or(1))),
             "info" => self.send(Command::TrackInfo(list, index)),
             "tieup" => {
                 if let Some((id, _, _)) = row
@@ -737,7 +742,7 @@ impl Ui {
                 TrackSource::Album(a.id),
             ),
             DetailView::Artist(a) => (TrackSource::Artist(a.id), TrackSource::Artist(a.id)),
-            DetailView::Playlist(_) | DetailView::Similar { .. } => (
+            DetailView::Playlist(_) | DetailView::Similar { .. } | DetailView::Versions { .. } => (
                 TrackSource::List(TrackList::Detail),
                 TrackSource::List(TrackList::Detail),
             ),
@@ -763,6 +768,7 @@ impl Ui {
                     DetailView::Artist(a) => a.name.clone(),
                     DetailView::Playlist(p) => p.name.clone(),
                     DetailView::Similar { title, .. } => format!("与「{title}」相似"),
+                    DetailView::Versions { title, .. } => title.clone(),
                     _ => String::new(),
                 };
                 self.open_dialog(w, Dialog::New(Some(add_source)), &name, "");
@@ -940,6 +946,7 @@ impl Ui {
             (DetailView::Artist(a), Route::Artist(id)) => a.id == id,
             (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
             (DetailView::Similar { .. }, Route::Similar(..)) => true,
+            (DetailView::Versions { .. }, Route::Versions(..)) => true,
             (DetailView::Work(v), Route::Work(id)) => v.id == id,
             (DetailView::Series(v), Route::Series(id)) => v.id == id,
             (DetailView::DailyMix(v), Route::DailyMix(id)) => v.id == id,
@@ -950,6 +957,17 @@ impl Ui {
         }
         let rows = tracks.len();
         let multi_disc = matches!(&view, DetailView::Album(a) if a.multi_disc);
+        w.set_album_multi_disc(multi_disc);
+        let artworks: Vec<(usize, String)> = if matches!(&view, DetailView::Versions { .. }) {
+            tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| !t.artwork.is_empty())
+                .map(|(i, t)| (i, t.artwork.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.detail_tracks.set_vec(
             tracks
                 .into_iter()
@@ -957,6 +975,15 @@ impl Ui {
                 .map(|(i, t)| track_row(t, i, multi_disc))
                 .collect::<Vec<_>>(),
         );
+        for (i, path) in artworks {
+            let tracks_model = self.detail_tracks.clone();
+            self.bind_image(w, Bind::Detail, &path, (54.0, 54.0), move |image| {
+                if let Some(mut row) = tracks_model.row_data(i) {
+                    row.cover = image.clone();
+                    tracks_model.set_row_data(i, row);
+                }
+            });
+        }
         if self.m032_detail(w, &view, rows) {
             let (kind, id, title) = match &view {
                 DetailView::Work(v) => (4, v.id, v.title.clone()),
@@ -1076,6 +1103,29 @@ impl Ui {
                     kind: 3,
                     title: format!("与「{title}」相似").into(),
                     meta: format!("{} 首 · 按元数据相似度", self.detail_tracks.row_count()).into(),
+                    ..DetailInfo::default()
+                },
+                String::new(),
+            ),
+            DetailView::Versions {
+                title,
+                composer,
+                duration,
+                ..
+            } => (
+                DetailInfo {
+                    kind: 7,
+                    title: title.as_str().into(),
+                    subtitle: if composer.is_empty() {
+                        SharedString::new()
+                    } else {
+                        format!("作曲 {composer}").into()
+                    },
+                    meta: if duration.is_empty() {
+                        format!("{} 条记录", self.detail_tracks.row_count()).into()
+                    } else {
+                        format!("{} 条记录 · {duration}", self.detail_tracks.row_count()).into()
+                    },
                     ..DetailInfo::default()
                 },
                 String::new(),
@@ -2045,8 +2095,15 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
         album_id: int(t.album_id),
         artist_id: int(t.artist_id),
         favorite: t.favorite,
+        version_count: t.version_count,
         number: number.into(),
         tag: t.tag.into(),
+        disc: t.disc_number.max(1),
+        year: if t.year > 0 {
+            t.year.to_string().into()
+        } else {
+            SharedString::new()
+        },
         ..TrackRow::default()
     }
 }

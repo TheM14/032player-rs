@@ -66,6 +66,7 @@ pub struct Card {
     pub added: String,
     /// The current track belongs to it.
     pub playing: bool,
+    pub disc_count: i32,
 }
 
 impl From<AlbumItem> for Card {
@@ -82,6 +83,7 @@ impl From<AlbumItem> for Card {
             artist_id: a.artist_id,
             favorite: a.favorite,
             badge: badge.into(),
+            disc_count: a.disc_count,
             ..Self::default()
         }
     }
@@ -487,6 +489,7 @@ impl Model for CardGridModel {
                     note: SharedString::from(entry.item.note.as_str()),
                     added: SharedString::from(entry.item.added.as_str()),
                     playing: entry.item.playing,
+                    disc_count: entry.item.disc_count,
                 }
             })
             .collect();

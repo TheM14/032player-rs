@@ -90,12 +90,21 @@ pub struct Track {
     pub position_millis: i64,
     pub play_count: i64,
     pub is_favorite: bool,
+    pub version_count: i32,
     pub missing: bool,
     pub codec: Option<String>,
     pub sample_rate: Option<i32>,
     pub bit_depth: Option<i32>,
     pub bitrate_kbps: Option<i32>,
     pub channels: Option<i32>,
+}
+
+/// Answer of `GET /tracks/{id}/versions`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TrackVersionsResponse {
+    pub track: Track,
+    pub items: Vec<Track>,
 }
 
 /// List entry of `/artists`, `/browse/artists`, `/favorites/artists`.

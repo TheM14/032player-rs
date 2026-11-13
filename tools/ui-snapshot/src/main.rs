@@ -199,6 +199,10 @@ fn album_rows_n(columns: usize, count: usize) -> Value {
             );
             card.set_field("playing".into(), Value::Bool(i == 1));
             card.set_field(
+                "disc-count".into(),
+                Value::Number(if i % 4 == 0 { 2.0 } else if i % 6 == 3 { 3.0 } else { 1.0 }),
+            );
+            card.set_field(
                 "cover".into(),
                 Value::Image(if i % 5 == 4 {
                     Image::default()
@@ -258,6 +262,13 @@ fn tracks() -> Value {
                 row.set_field("note".into(), s(""));
                 row.set_field("disabled".into(), Value::Bool(false));
                 row.set_field("blocked".into(), Value::Bool(false));
+                row.set_field("disc".into(), Value::Number(if i < 5 { 1.0 } else { 2.0 }));
+                row.set_field("year".into(), s(if i % 2 == 0 { "2016" } else { "2017" }));
+                row.set_field("cover".into(), Value::Image(cover(i as u32)));
+                row.set_field(
+                    "version-count".into(),
+                    Value::Number(if i == 0 || i == 2 { 2.0 } else if i == 1 { 3.0 } else { 0.0 }),
+                );
                 Value::Struct(row)
             })
             .collect(),
@@ -944,6 +955,7 @@ fn main() {
             "",
         ),
     );
+    set(&inst, "album-multi-disc", Value::Bool(true));
     render(
         &window,
         PhysicalSize::new(1600, 900),
@@ -1085,28 +1097,44 @@ fn main() {
         "detail",
         detail(1.0, "Keina Suda", "須田景凪", "", "", ""),
     );
-    set(&inst, "artist-tab", Value::Number(0.0));
     set(&inst, "artist-favs", tracks());
     render(
         &window,
         PhysicalSize::new(1280, 2200),
         &format!("{out}/artist.png"),
     );
-    // Wide light page, the reference layout: header, tabs, bio, facts.
+    // Wide light page: header, bio, facts, releases and favorites.
     set(&inst, "panel-open", Value::Bool(false));
     set(&inst, "theme-mode", Value::Number(2.0));
     render(
         &window,
-        PhysicalSize::new(1800, 1100),
+        PhysicalSize::new(1800, 1400),
         &format!("{out}/artist-light.png"),
     );
-    set(&inst, "artist-tab", Value::Number(1.0));
+    set(&inst, "theme-mode", Value::Number(1.0));
+    set(
+        &inst,
+        "detail",
+        detail(
+            7.0,
+            "Crimson Stain",
+            "作曲 Masaki Iehara, Lauren Kaori",
+            "2 条记录 · 6 分钟",
+            "",
+            "",
+        ),
+    );
     render(
         &window,
-        PhysicalSize::new(1800, 1400),
-        &format!("{out}/artist-works.png"),
+        PhysicalSize::new(1600, 900),
+        &format!("{out}/versions.png"),
     );
-    set(&inst, "artist-tab", Value::Number(0.0));
+    set(&inst, "theme-mode", Value::Number(2.0));
+    render(
+        &window,
+        PhysicalSize::new(1600, 900),
+        &format!("{out}/versions-light.png"),
+    );
     set(&inst, "theme-mode", Value::Number(1.0));
     set(&inst, "artist-facts", model(Vec::new()));
     set(&inst, "artist-favs", Value::Model(ModelRc::default()));

@@ -133,6 +133,10 @@ pub enum Command {
     OpenPlaylist(i64),
     /// Tracks similar to a list row.
     OpenSimilar(TrackList, usize),
+    /// Other versions / recordings with the same title.
+    OpenVersions(TrackList, usize),
+    /// Play one disc of the open album.
+    PlayAlbumDisc(i32),
     /// Answered with [`Event::SearchResults`].
     Search(String),
     /// Answered with [`Event::Favorite`].
@@ -1004,6 +1008,7 @@ enum DetailKey {
     Artist(i64),
     Playlist(i64),
     Similar(i64),
+    Versions(i64),
     Work(i64),
     Series(i64),
     DailyMix(i64),
@@ -1445,6 +1450,32 @@ impl Core {
                     .map(|t| t.id);
                 if let Some(id) = id {
                     self.open_detail(DetailKey::Similar(id));
+                }
+            }
+            Command::OpenVersions(list, index) => {
+                let id = self
+                    .library
+                    .as_ref()
+                    .and_then(|l| l.list(list).get(index))
+                    .map(|t| t.id);
+                if let Some(id) = id {
+                    self.open_detail(DetailKey::Versions(id));
+                }
+            }
+            Command::PlayAlbumDisc(disc) => {
+                let tracks: Vec<api::Track> = self
+                    .library
+                    .as_ref()
+                    .map(|l| {
+                        l.list(TrackList::Detail)
+                            .iter()
+                            .filter(|t| t.disc_number.max(1) == disc)
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !tracks.is_empty() {
+                    self.fetched(tracks, Intent::play_at(0));
                 }
             }
             Command::Search(query) => self.search(query),

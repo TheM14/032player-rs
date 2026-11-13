@@ -153,6 +153,7 @@ pub struct AlbumItem {
     pub kind: String,
     /// When it entered the library (ISO time, may be empty).
     pub added_at: String,
+    pub disc_count: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -165,9 +166,12 @@ pub struct TrackItem {
     pub album: String,
     pub album_id: i64,
     pub duration: String,
+    pub year: i32,
+    pub artwork: String,
     pub disc_number: i32,
     pub track_number: i32,
     pub favorite: bool,
+    pub version_count: i32,
     /// Extra label of the row (the use on a work page, e.g. "OP1").
     pub tag: String,
     /// "作词 A · 作曲 B · 编曲 C · 制作 D" in pieces (album pages show it
@@ -274,6 +278,13 @@ pub enum DetailView {
         track_id: i64,
         title: String,
     },
+    /// Other recordings / versions with the same title.
+    Versions {
+        track_id: i64,
+        title: String,
+        composer: String,
+        duration: String,
+    },
     /// Tracks: those collected on other albums, tagged with their use.
     Work(crate::m032::WorkView),
     /// No tracks.
@@ -302,6 +313,7 @@ pub fn album_item(album: &Album) -> AlbumItem {
         .trim()
         .to_lowercase(),
         added_at: album.added_at.clone(),
+        disc_count: album.disc_count,
     }
 }
 
@@ -363,9 +375,12 @@ pub fn track_item(track: &Track) -> TrackItem {
         album: track.album.clone(),
         album_id: track.album_id,
         duration: format::duration(track.duration_millis),
+        year: track.year,
+        artwork: track.artwork_url.clone(),
         disc_number: track.disc_number,
         track_number: track.track_number,
         favorite: track.is_favorite,
+        version_count: track.version_count,
         tag: String::new(),
         credits: credit_parts(track),
     }

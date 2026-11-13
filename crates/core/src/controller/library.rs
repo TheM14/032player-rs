@@ -393,7 +393,7 @@ impl Core {
         self.open_detail = Some(key);
         let seq = self.next_seq(Target::Detail);
         let similar_title = match key {
-            DetailKey::Similar(id) => self
+            DetailKey::Similar(id) | DetailKey::Versions(id) => self
                 .library
                 .as_ref()
                 .and_then(|l| l.lists.values().flatten().find(|t| t.id == id))
@@ -407,6 +407,10 @@ impl Core {
                 .unwrap_or_default(),
             _ => String::new(),
         };
+        let browse_cap = self
+            .library
+            .as_ref()
+            .is_some_and(|l| l.capabilities.has(api::Feature::Browse));
         let mixes_known = self.home.as_ref().and_then(|h| h.mixes()).cloned();
         tokio::spawn(async move {
             let result: Result<(DetailView, Vec<Track>, Vec<String>), ApiError> = async {
@@ -468,6 +472,65 @@ impl Core {
                             DetailView::Similar {
                                 track_id: id,
                                 title: similar_title,
+                            },
+                            tracks,
+                            Vec::new(),
+                        )
+                    }
+                    DetailKey::Versions(id) => {
+                        let (seed, mut tracks) = match client.track_versions(id).await {
+                            Ok(resp) => (Some(resp.track), resp.items),
+                            Err(e) if e.status() == Some(404) => {
+                                let seed = client.track(id).await.ok();
+                                let title = seed
+                                    .as_ref()
+                                    .map(|t| t.title.clone())
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or_else(|| similar_title.clone());
+                                let page = client
+                                    .tracks(
+                                        browse_cap,
+                                        &TrackListQuery {
+                                            search: Some(title.clone()),
+                                            ..TrackListQuery::default()
+                                        },
+                                        0,
+                                        200,
+                                    )
+                                    .await?;
+                                let wanted = title.trim();
+                                let list = page
+                                    .items
+                                    .into_iter()
+                                    .filter(|t| t.title.trim().eq_ignore_ascii_case(wanted))
+                                    .collect();
+                                (seed, list)
+                            }
+                            Err(e) => return Err(e),
+                        };
+                        let title = seed
+                            .as_ref()
+                            .map(|t| t.title.clone())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(similar_title);
+                        let composer = seed
+                            .as_ref()
+                            .map(|t| t.composer.clone())
+                            .unwrap_or_default();
+                        if let Some(seed) = seed
+                            && !tracks.iter().any(|t| t.id == seed.id)
+                        {
+                            tracks.insert(0, seed);
+                        }
+                        tracks
+                            .sort_by(|a, b| a.year.cmp(&b.year).then(a.album_id.cmp(&b.album_id)));
+                        let total_ms: i64 = tracks.iter().map(|t| t.duration_millis).sum();
+                        (
+                            DetailView::Versions {
+                                track_id: id,
+                                title,
+                                composer,
+                                duration: crate::format::duration(total_ms),
                             },
                             tracks,
                             Vec::new(),

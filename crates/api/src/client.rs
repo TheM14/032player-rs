@@ -8,6 +8,7 @@ use crate::query::{AlbumListQuery, ArtistListQuery, Query, TrackListQuery};
 use crate::types::{
     Album, AlbumDetail, Artist, ArtistDetail, Capabilities, ErrorBody, Items, Lyrics, Page,
     Playlist, PlaylistArtwork, PlaylistDetail, PlaylistItemResult, SimilarTrack, Track,
+    TrackVersionsResponse,
 };
 
 /// What can be marked as favorite.
@@ -601,6 +602,12 @@ impl Client {
     /// One track (`GET /tracks/{id}`).
     pub async fn track(&self, track_id: i64) -> Result<Track, ApiError> {
         self.get(&format!("/tracks/{track_id}"), &Query::new())
+            .await
+    }
+
+    /// Other versions / recordings with the same title (`GET /tracks/{id}/versions`).
+    pub async fn track_versions(&self, track_id: i64) -> Result<TrackVersionsResponse, ApiError> {
+        self.get(&format!("/tracks/{track_id}/versions"), &Query::new())
             .await
     }
 
