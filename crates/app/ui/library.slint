@@ -787,6 +787,29 @@ export component ArtistHeader inherits Rectangle {
     property <string> heading: root.loading && root.info.title == "" ? "加载中…" : root.info.title;
     property <string> heading-family: Fonts.display(root.heading);
     property <length> heading-size: Shell.tier == 2 ? 56px : Shell.tier == 1 ? 48px : 40px;
+    property <length> gap: Shell.tier == 2 ? 36px : 24px;
+    // The name column stays with the photo. Long names elide instead of
+    // stretching the group out to the page edges.
+    property <length> text-max: Shell.tier == 2 ? 480px : Shell.tier == 1 ? 400px : 300px;
+    property <length> room: max(140px, root.width - 2 * Shell.pad - root.art - root.gap);
+    property <length> text-w: min(root.text-max, root.room, max(name-measure.preferred-width, sub-measure.preferred-width, action-row.preferred-width));
+
+    // Natural widths, so `text-w` does not depend on the column it sizes.
+    name-measure := Text {
+        visible: false;
+        text: root.heading;
+        font-family: root.heading-family;
+        font-size: root.heading-size;
+        font-weight: 600;
+        letter-spacing: root.heading-family == "Source Serif 4" ? -0.9px : 0px;
+    }
+    sub-measure := Text {
+        visible: false;
+        text: root.info.subtitle;
+        font-family: Fonts.family(self.text);
+        font-size: Shell.tier == 2 ? 20px : 17px;
+        font-weight: 500;
+    }
 
     VerticalLayout {
         padding-left: Shell.pad;
@@ -794,13 +817,15 @@ export component ArtistHeader inherits Rectangle {
         // Clears the floating back button (y 14, height 36).
         padding-top: 56px;
         padding-bottom: 8px;
+        // Photo + name as one group, centered in the content area.
         HorizontalLayout {
-            spacing: Shell.tier == 2 ? 36px : 24px;
-            alignment: start;
+            spacing: root.gap;
+            alignment: center;
 
             Rectangle {
                 width: root.art;
                 height: root.art;
+                horizontal-stretch: 0;
                 y: (parent.height - self.height) / 2;
                 border-radius: root.art / 2;
                 background: Theme.raised;
@@ -817,9 +842,8 @@ export component ArtistHeader inherits Rectangle {
 
             VerticalLayout {
                 alignment: center;
-                vertical-stretch: 1;
-                horizontal-stretch: 1;
-                min-width: 0px;
+                width: root.text-w;
+                horizontal-stretch: 0;
                 spacing: 0px;
 
                 Rectangle {
@@ -859,7 +883,11 @@ export component ArtistHeader inherits Rectangle {
                 Rectangle {
                     height: 18px;
                 }
-                HorizontalLayout {
+                Rectangle {
+                    width: parent.width;
+                    height: 40px;
+                    clip: true;
+                    action-row := HorizontalLayout {
                     alignment: start;
                     spacing: 12px;
                     height: 40px;
@@ -1031,10 +1059,11 @@ export component ArtistHeader inherits Rectangle {
                             }
                         }
                     }
+                    }
+                }
                 }
             }
         }
-    }
 }
 
 // Modal dialog asking for a name and a description.

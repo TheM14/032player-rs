@@ -1378,7 +1378,10 @@ export component AppWindow inherits Window {
 
                 // Artist: header, 概览 (bio / facts / favorites) and 作品 (releases).
                 if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
-                    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 40px - 64px - 80px);
+                    // Biography, facts, favorites and releases share one
+                    // centered column. Narrow pages use the padded width.
+                    property <length> column: min(1040px, max(0px, self.width - 2 * Shell.pad));
+                    property <length> flex: max(0px, self.column - 44px - 40px - 64px - 80px);
                     property <int> shown-tab: root.artist-tab;
                     changed shown-tab => {
                         self.content-y = 0;
@@ -1419,7 +1422,11 @@ export component AppWindow inherits Window {
                         }
                         // 概览: biography and facts when the server has them,
                         // then 收藏的歌曲. No genre chip, no birth date.
-                        if root.artist-tab == 0: VerticalLayout {
+                        if root.artist-tab == 0: HorizontalLayout {
+                            alignment: center;
+                            overview-col := VerticalLayout {
+                            width: artist-flick.column;
+                            horizontal-stretch: 0;
                             alignment: start;
                             padding-top: 8px;
                             if !root.detail-loading && root.artist-about == "" && root.artist-facts.length == 0 && root.artist-favs.length == 0: Text {
@@ -1432,39 +1439,36 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             if root.artist-about != "" || root.artist-facts.length > 0: overview := VerticalLayout {
-                                property <bool> side: artist-flick.width >= 920px && root.artist-about != "" && root.artist-facts.length > 0;
+                                property <bool> side: artist-flick.column >= 720px && root.artist-about != "" && root.artist-facts.length > 0;
                                 if overview.side: HorizontalLayout {
-                                    padding-left: Shell.pad;
-                                    padding-right: Shell.pad;
                                     padding-top: 16px;
                                     spacing: 48px;
                                     ArtistBio {
+                                        // Fixed width: a wrapping biography must not
+                                        // feed its height back into the row width.
+                                        width: max(200px, overview-col.width - 288px);
                                         horizontal-stretch: 0;
-                                        width: min(720px, max(240px, parent.width - 2 * Shell.pad - 280px - 48px));
                                         text: root.artist-about;
                                         artist-id: root.detail.id;
                                     }
-                                    Rectangle {
-                                        horizontal-stretch: 1;
-                                        min-width: 16px;
-                                    }
                                     ArtistFacts {
-                                        width: 280px;
+                                        width: 240px;
+                                        horizontal-stretch: 0;
                                         vertical-stretch: 0;
                                         facts: root.artist-facts;
                                     }
                                 }
                                 if !overview.side: VerticalLayout {
-                                    padding-left: Shell.pad;
-                                    padding-right: Shell.pad;
                                     padding-top: 16px;
                                     spacing: 28px;
                                     if root.artist-about != "": ArtistBio {
+                                        width: overview-col.width;
+                                        horizontal-stretch: 0;
                                         text: root.artist-about;
                                         artist-id: root.detail.id;
                                     }
                                     if root.artist-facts.length > 0: ArtistFacts {
-                                        width: min(320px, parent.width - 2 * Shell.pad);
+                                        width: min(320px, parent.width);
                                         facts: root.artist-facts;
                                     }
                                 }
@@ -1473,8 +1477,6 @@ export component AppWindow inherits Window {
                                 height: 12px;
                             }
                             if root.artist-favs.length > 0: HorizontalLayout {
-                                padding-left: Shell.pad;
-                                padding-right: Shell.pad;
                                 height: 52px;
                                 spacing: 10px;
                                 Text {
@@ -1516,6 +1518,7 @@ export component AppWindow inherits Window {
                                 mode: 0;
                                 playing: track.id == root.playing-id;
                                 playlists: root.playlist-choices;
+                                pad: 0px;
                                 title-w: artist-flick.flex * 0.42;
                                 artist-w: artist-flick.flex * 0.24;
                                 album-w: artist-flick.flex * 0.34;
@@ -1523,8 +1526,13 @@ export component AppWindow inherits Window {
                                     root.track-action(12, what, track.index, arg);
                                 }
                             }
+                            }
                         }
-                        if root.artist-tab == 1: works := VerticalLayout {
+                        if root.artist-tab == 1: HorizontalLayout {
+                            alignment: center;
+                            works := VerticalLayout {
+                            width: artist-flick.column;
+                            horizontal-stretch: 0;
                             alignment: start;
                             padding-top: 8px;
                             if !root.detail-loading && root.artist-groups.length == 0: Text {
@@ -1538,8 +1546,6 @@ export component AppWindow inherits Window {
                             }
                         for g[gi] in root.artist-groups: group := VerticalLayout {
                             HorizontalLayout {
-                                padding-left: Shell.pad;
-                                padding-right: Shell.pad;
                                 height: 52px;
                                 spacing: 10px;
                                 Text {
@@ -1584,7 +1590,8 @@ export component AppWindow inherits Window {
                                 }
                             }
                             CardRows {
-                                width: artist-flick.width;
+                                width: works.width;
+                                side: 0px;
                                 rows: g.rows;
                                 kind: 0;
                                 playlists: root.playlist-choices;
@@ -1603,6 +1610,7 @@ export component AppWindow inherits Window {
                                     root.card-action(g.grid, what, id, arg);
                                 }
                             }
+                        }
                         }
                         }
                     }
