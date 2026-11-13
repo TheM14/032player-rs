@@ -1345,7 +1345,7 @@ export component AppWindow inherits Window {
 
                 // Artist: one scrolling page with header, bio/facts, releases and favorites.
                 if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
-                    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 42px - 40px - 64px - 96px);
+                    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
                     content-height: artist-page.preferred-height;
                     artist-page := VerticalLayout {
                         width: artist-flick.width;

@@ -139,7 +139,7 @@ export component Icon inherits Path {
     stroke-width: root.filled ? 0 : max(1px, self.width * 1.7 / 24);
     stroke-line-cap: round;
     stroke-line-join: round;
-    commands: root.kind == IconKind.versions ? "M 4.5 4 L 7 4 L 7 20 L 4.5 20 Z M 9.5 4 L 12 4 L 12 20 L 9.5 20 Z M 14 4.5 L 16.4 3.8 L 20.5 19.3 L 18.1 20 Z"
+    commands: root.kind == IconKind.versions ? "M 3.2 4.2 L 6.2 4.2 L 6.2 19.8 L 3.2 19.8 Z M 8.8 4.2 L 11.8 4.2 L 11.8 19.8 L 8.8 19.8 Z M 14.2 4.6 L 17.1 3.8 L 20.8 19.4 L 17.9 20.2 Z"
         : root.kind == IconKind.play ? "M 7 4.6 L 7 19.4 A 1.1 1.1 0 0 0 8.66 20.34 L 20.76 12.94 A 1.1 1.1 0 0 0 20.76 11.06 L 8.66 3.66 A 1.1 1.1 0 0 0 7 4.6 Z"
         : root.kind == IconKind.pause ? "M 7.3 4 L 8.7 4 A 1.3 1.3 0 0 1 10 5.3 L 10 18.7 A 1.3 1.3 0 0 1 8.7 20 L 7.3 20 A 1.3 1.3 0 0 1 6 18.7 L 6 5.3 A 1.3 1.3 0 0 1 7.3 4 Z M 15.3 4 L 16.7 4 A 1.3 1.3 0 0 1 18 5.3 L 18 18.7 A 1.3 1.3 0 0 1 16.7 20 L 15.3 20 A 1.3 1.3 0 0 1 14 18.7 L 14 5.3 A 1.3 1.3 0 0 1 15.3 4 Z"
         : root.kind == IconKind.next ? "M 5.5 5.3 L 5.5 18.7 A 1 1 0 0 0 7.05 19.53 L 16.7 13.1 A 1.3 1.3 0 0 0 16.7 10.9 L 7.05 4.47 A 1 1 0 0 0 5.5 5.3 Z M 18.2 4.5 L 18.2 4.5 A 1.3 1.3 0 0 1 19.5 5.8 L 19.5 18.2 A 1.3 1.3 0 0 1 18.2 19.5 L 18.2 19.5 A 1.3 1.3 0 0 1 16.9 18.2 L 16.9 5.8 A 1.3 1.3 0 0 1 18.2 4.5 Z"
