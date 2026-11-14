@@ -5,6 +5,11 @@
 
 ## 当前状态（2026-11-13）
 
+- [x] 初步排查偶发短暂断音：未发现应用定时 seek / 重载；`cache=auto` 与 URL 无扩展名不是根因。保留 `paused-for-cache`
+  诊断并新增 `logs/mpv.log` 原生警告（分享前须脱敏 `mediaToken`），未把 3 秒重缓冲实验当作修复；另修复淡入未完成时丢失任务句柄的问题。
+- [ ] **[Win]** 记录断音的曲目位置、系统时间、是否临近切歌 / 暂停、输出设备、独占 / 转码 / 代理状态；提供对应时段的
+  `032player.log` 和脱敏后的 `mpv.log`，先区分缓存耗尽与输出 underrun，再针对根因修复。
+
 - **v0.2.14 已发布**（2026-11-14）：包含页面返回滚动位置记忆。Windows exe 在本机用 `cargo-xwin` 交叉编译，正式安装包改用 Linux 原生 NSIS 脚本 `packaging/windows/032player.nsi` 构建，便携 zip 与 setup.exe 直接上传 Release，未经 Actions Artifact。发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.14 。
 
 - [x] 补齐页面返回时的滚动位置记忆：导航历史逐项保存主内容区和专辑信息栏偏移，前进打开新页面仍从顶部开始；专辑、曲目、艺人、歌单、收藏、搜索、主页、作品、系列、播放记录、设置及各类详情页均已接入，异步详情加载后再次恢复，筛选和页签切换回到顶部。`UI_SNAPSHOT_ONLY=scroll` 回归检查通过。

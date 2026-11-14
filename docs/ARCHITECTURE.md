@@ -161,6 +161,8 @@
 ### player
 
 - 一个 mpv 实例，事件循环在专用线程，向 `core` 发 `PlayerEvent`（时间、暂停、缓冲、结束 + 原因、错误）。
+- `paused-for-cache` 变化写入应用日志；mpv 原生警告写入 `logs/mpv.log`（每次启动截断），用于区分网络缓存与音频输出 underrun。
+  原生日志可能含带 `mediaToken` 的 URL，分享前必须脱敏。断音根因未确认前不叠加全局缓存参数。
 - 无缝播放用 mpv playlist 预追加下一首（`loadfile ... append`）或 `--prefetch-playlist`，M1 实测决定。
 - 独占：Windows `audio-exclusive=yes` + WASAPI；设备列表来自 `audio-device-list`。
 - libmpv 来源：Windows 由 `crates/player/build.rs` 下载固定版本的 shinchiro mpv-dev 包

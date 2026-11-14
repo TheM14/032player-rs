@@ -1,8 +1,8 @@
 //! 032player: native desktop client for 032 Music Server.
 //!
-//! Release builds on Windows have no console window; the log goes to
-//! `<data dir>/logs/032player.log` (settings page: "打开日志文件夹") and,
-//! in debug builds, to the console as well.
+//! Release builds on Windows have no console window; application logs go to
+//! `<data dir>/logs/032player.log` and native mpv warnings to `mpv.log`
+//! (settings page: "打开日志文件夹"). Debug builds also log to the console.
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -127,7 +127,16 @@ fn main() -> Result<(), slint::PlatformError> {
         audio_device: settings.audio_device.clone(),
         exclusive: settings.exclusive,
         volume: settings.volume,
-        ..player::PlayerOptions::default()
+        // Keep native AO / network warnings: `paused-for-cache` alone cannot
+        // distinguish a stream underrun from a Windows audio device underrun.
+        // mpv truncates this diagnostic log on every launch.
+        extra: vec![
+            (
+                "log-file".into(),
+                log_dir().join("mpv.log").to_string_lossy().into_owned(),
+            ),
+            ("msg-level".into(), "all=warn".into()),
+        ],
     };
 
     // The player callback runs on mpv's event thread; it forwards into the

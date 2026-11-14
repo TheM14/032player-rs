@@ -364,6 +364,9 @@ fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEven
             Ok(_) => None,
         };
         if let Some(out) = out {
+            if let PlayerEvent::Buffering(buffering) = &out {
+                tracing::info!(buffering, "network cache buffering changed");
+            }
             on_event(out);
         }
     }

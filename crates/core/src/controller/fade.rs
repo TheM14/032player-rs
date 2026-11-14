@@ -3,6 +3,7 @@
 //! engine's separate fade gain, so the user volume (and `settings.json`)
 //! never changes. Track changes while playing do not fade.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +19,9 @@ const FADE_STEP_MS: u64 = 10;
 pub(super) struct Fader {
     /// Fade progress, 0 (silent) to 1 (full); shared with the running fade.
     level: Arc<Mutex<f64>>,
+    /// Invalidates a cancelled ramp. Checked while holding `level`, so no
+    /// stale task can issue another engine command after `cancel` returns.
+    generation: Arc<AtomicU64>,
     /// The running fade and whether it ends paused.
     running: Option<(JoinHandle<()>, bool)>,
 }
@@ -26,6 +30,7 @@ impl Default for Fader {
     fn default() -> Self {
         Self {
             level: Arc::new(Mutex::new(1.0)),
+            generation: Arc::new(AtomicU64::new(0)),
             running: None,
         }
     }
@@ -40,11 +45,17 @@ impl Fader {
         *self.level.lock().unwrap_or_else(|e| e.into_inner()) = level;
     }
 
-    /// Stops the running fade where it is.
-    fn cancel(&mut self) {
+    /// Stops the running fade where it is and returns the new generation.
+    fn cancel(&mut self) -> u64 {
+        // A ramp holds the same lock around its generation check and engine
+        // call. Taking it here bounds the wait to an already-running call.
+        let _level = self.level.lock().unwrap_or_else(|e| e.into_inner());
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        drop(_level);
         if let Some((task, _)) = self.running.take() {
             task.abort();
         }
+        generation
     }
 
     /// Pause state the last fade heads to. A fade-out counts until the
@@ -55,8 +66,22 @@ impl Fader {
 
     /// The engine reported its pause state: a fade that ended there is done.
     pub(super) fn engine_paused(&mut self, paused: bool) {
-        if self.target() == Some(paused) {
-            self.running = None;
+        let state = self
+            .running
+            .as_ref()
+            .map(|(task, target)| (task.is_finished(), *target));
+        match (paused, state) {
+            // Unpausing starts, rather than finishes, a fade-in. Keep its
+            // handle so an immediate pause can still cancel that ramp.
+            (false, Some((false, false))) => {}
+            // An external pause during fade-in must invalidate that ramp.
+            (true, Some((false, false))) => {
+                self.cancel();
+            }
+            // A fade-out is complete once its pause arrives. Completed tasks
+            // never need to remain as the effective transport target.
+            (true, Some((_, true))) | (_, Some((true, _))) => self.running = None,
+            _ => {}
         }
     }
 }
@@ -77,6 +102,8 @@ fn gain(level: f64) -> f64 {
 fn spawn_ramp(
     engine: Arc<dyn Engine>,
     level: Arc<Mutex<f64>>,
+    generation: Arc<AtomicU64>,
+    expected_generation: u64,
     to: f64,
     pause: bool,
 ) -> JoinHandle<()> {
@@ -88,6 +115,9 @@ fn spawn_ramp(
             tick.tick().await;
             let now = {
                 let mut level = level.lock().unwrap_or_else(|e| e.into_inner());
+                if generation.load(Ordering::Relaxed) != expected_generation {
+                    return;
+                }
                 // Snap the last step so rounding never leaves it just short.
                 *level = if (*level - to).abs() <= step * 1.5 {
                     to
@@ -96,19 +126,28 @@ fn spawn_ramp(
                 } else {
                     *level - step
                 };
-                *level
+                let now = *level;
+                // Keep the lock through the engine call: `cancel` takes the
+                // same lock before invalidating this generation.
+                if let Err(e) = engine.set_fade_gain(gain(now)) {
+                    tracing::debug!("fade gain: {e}");
+                    return;
+                }
+                now
             };
-            if let Err(e) = engine.set_fade_gain(gain(now)) {
-                tracing::debug!("fade gain: {e}");
-                break;
-            }
             #[allow(clippy::float_cmp)]
             if now == to {
                 break;
             }
         }
-        if pause && let Err(e) = engine.set_paused(true) {
-            tracing::warn!("pause after fade: {e}");
+        if pause {
+            let _level = level.lock().unwrap_or_else(|e| e.into_inner());
+            if generation.load(Ordering::Relaxed) != expected_generation {
+                return;
+            }
+            if let Err(e) = engine.set_paused(true) {
+                tracing::warn!("pause after fade: {e}");
+            }
         }
     })
 }
@@ -125,13 +164,20 @@ impl Core {
         if self.casting() {
             return self.cast_pause(true);
         }
-        self.fade.cancel();
+        let generation = self.fade.cancel();
         if !self.settings.fade_on_pause
             || self.engine.set_fade_gain(gain(self.fade.level())).is_err()
         {
             return self.engine.set_paused(true);
         }
-        let task = spawn_ramp(self.engine.clone(), self.fade.level.clone(), 0.0, true);
+        let task = spawn_ramp(
+            self.engine.clone(),
+            self.fade.level.clone(),
+            self.fade.generation.clone(),
+            generation,
+            0.0,
+            true,
+        );
         self.fade.running = Some((task, true));
         // The icon flips now; the engine's `Paused` follows after the fade.
         self.emit(Event::Paused(true));
@@ -144,7 +190,7 @@ impl Core {
         if self.casting() {
             return self.cast_pause(false);
         }
-        self.fade.cancel();
+        let generation = self.fade.cancel();
         if !self.settings.fade_on_pause {
             self.restore_gain();
             return self.engine.set_paused(false);
@@ -158,7 +204,14 @@ impl Core {
         }
         self.engine.set_paused(false)?;
         if level < 1.0 {
-            let task = spawn_ramp(self.engine.clone(), self.fade.level.clone(), 1.0, false);
+            let task = spawn_ramp(
+                self.engine.clone(),
+                self.fade.level.clone(),
+                self.fade.generation.clone(),
+                generation,
+                1.0,
+                false,
+            );
             self.fade.running = Some((task, false));
         }
         if !self.paused {
@@ -175,5 +228,27 @@ impl Core {
             self.fade.set_level(1.0);
             let _ = self.engine.set_fade_gain(1.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn early_unpause_event_keeps_fade_in_cancellable() {
+        let mut fader = Fader::default();
+        let task = tokio::spawn(std::future::pending::<()>());
+        fader.running = Some((task, false));
+
+        // mpv reports the unpause at the start of the 300 ms ramp, not when
+        // it reaches full volume. This must not detach the running task.
+        fader.engine_paused(false);
+        assert_eq!(fader.target(), Some(false));
+
+        // A following pause cancels the old ramp instead of letting two
+        // tasks race to set gain in opposite directions.
+        fader.engine_paused(true);
+        assert_eq!(fader.target(), None);
     }
 }
