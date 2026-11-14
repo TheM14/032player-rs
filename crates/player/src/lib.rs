@@ -153,14 +153,9 @@ impl Player {
                 "audio-exclusive",
                 if options.exclusive { "yes" } else { "no" },
             )?;
+            // Allow for scheduling delays without starving the WASAPI output buffer.
             #[cfg(target_os = "windows")]
-            if let Some(buffer_us) = std::env::var("M032_WASAPI_EXCLUSIVE_BUFFER_US")
-                .ok()
-                .and_then(|value| value.trim().parse::<u32>().ok())
-                .filter(|value| (1..=2_000_000).contains(value))
-            {
-                init.set_option("wasapi-exclusive-buffer", buffer_us.to_string().as_str())?;
-            }
+            init.set_option("wasapi-exclusive-buffer", "100000")?;
             init.set_option("volume", options.volume.clamp(0.0, 100.0))?;
             for (name, value) in &options.extra {
                 init.set_option(name, value.as_str())?;
