@@ -3,7 +3,11 @@
 当前里程碑的细粒度任务。完成打勾；需要用户在 Windows 上验证的标 **[Win]**。
 里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
 
-## 当前状态（2026-11-13）
+## 当前状态（2026-11-14）
+
+- **v0.2.15 已发布**（2026-11-14）：修复快速播放 / 暂停时的淡化任务竞态，增加网络缓冲与 mpv 原生警告日志，供后续定位偶发断音。
+  Windows exe 在本机用 `cargo-xwin` 交叉编译，NSIS 生成安装包；setup.exe 与便携 zip 直接上传 Release，未使用 Actions Artifact，下载回传的 SHA-256 与本地一致。
+  发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.15 。
 
 - [x] 初步排查偶发短暂断音：未发现应用定时 seek / 重载；`cache=auto` 与 URL 无扩展名不是根因。保留 `paused-for-cache`
   诊断并新增 `logs/mpv.log` 原生警告（分享前须脱敏 `mediaToken`），未把 3 秒重缓冲实验当作修复；另修复淡入未完成时丢失任务句柄的问题。
