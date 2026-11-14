@@ -16,7 +16,8 @@ pub mod shortcuts;
 mod storage;
 
 pub use api::{
-    AlbumSort, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode, WorkListQuery, WorkSort,
+    AlbumSort, ArtistRef, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode, WorkListQuery,
+    WorkSort,
 };
 pub use browse::{
     AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, CreditPart,

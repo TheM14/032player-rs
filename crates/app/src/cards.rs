@@ -58,6 +58,7 @@ pub struct Card {
     /// Server-relative artwork / image path.
     pub artwork: String,
     pub artist_id: i64,
+    pub artists: Vec<client_core::ArtistRef>,
     pub favorite: bool,
     pub badge: String,
     /// Third line (track uses on a work page, roles of a work).
@@ -81,6 +82,7 @@ impl From<AlbumItem> for Card {
             year: a.year,
             artwork: a.artwork,
             artist_id: a.artist_id,
+            artists: a.artists,
             favorite: a.favorite,
             badge: badge.into(),
             disc_count: a.disc_count,
@@ -484,6 +486,7 @@ impl Model for CardGridModel {
                         .map(|(image, _)| image.clone())
                         .unwrap_or_default(),
                     artist_id: i32::try_from(entry.item.artist_id).unwrap_or(0),
+                    artists: crate::ui::artist_refs(&entry.item.artists),
                     favorite: entry.item.favorite,
                     badge: SharedString::from(entry.item.badge.as_str()),
                     note: SharedString::from(entry.item.note.as_str()),

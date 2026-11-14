@@ -570,6 +570,22 @@ impl Ui {
 
     // ------------------------------------------------------------ actions
 
+    fn choose_artist(&self, w: &AppWindow, refs: ModelRc<CreditPart>, fallback: i64) {
+        match refs.row_count() {
+            0 if fallback > 0 => self.navigate(w, Route::Artist(fallback)),
+            1 => {
+                if let Some(a) = refs.row_data(0) {
+                    self.navigate(w, Route::Artist(a.id.into()));
+                }
+            }
+            n if n > 1 => {
+                w.set_artist_choices(refs);
+                w.set_dialog(7);
+            }
+            _ => {}
+        }
+    }
+
     fn open_dialog(&self, w: &AppWindow, dialog: Dialog, name: &str, description: &str) {
         self.dialog.set(Some(dialog));
         w.set_dialog_name(name.into());
@@ -611,7 +627,14 @@ impl Ui {
                     });
                 }
             }
-            "artist" => self.navigate(w, Route::Artist(arg)),
+            "artist" if arg > 0 => self.navigate(w, Route::Artist(arg)),
+            "artists" => {
+                let refs = card
+                    .as_ref()
+                    .map(|c| artist_refs(&c.artists))
+                    .unwrap_or_default();
+                self.choose_artist(w, refs, arg);
+            }
             "new-playlist" => {
                 let name = card.map(|c| c.title).unwrap_or_default();
                 self.open_dialog(w, Dialog::New(Some(source)), &name, "");
@@ -695,6 +718,23 @@ impl Ui {
             "work" => self.navigate(w, Route::Work(arg)),
             "album" => self.navigate(w, Route::Album(arg)),
             "artist" => self.navigate(w, Route::Artist(arg)),
+            "artists" => {
+                let refs = self
+                    .track_model(list)
+                    .and_then(|m| m.row_data(index))
+                    .map(|r| r.artists)
+                    .or_else(|| {
+                        match list {
+                            TrackList::HomeResume => self.home_resume.row_data(index),
+                            TrackList::HomeRecent => self.home_recent.row_data(index),
+                            TrackList::HomeSongs => self.home_songs.row_data(index),
+                            _ => None,
+                        }
+                        .map(|r| r.artists)
+                    })
+                    .unwrap_or_default();
+                self.choose_artist(w, refs, arg);
+            }
             "new-playlist" => {
                 let name = row.map(|r| r.1).unwrap_or_default();
                 let source = TrackSource::Track(list, index);
@@ -760,6 +800,13 @@ impl Ui {
                 favorite: arg != 0,
             }),
             ("artist", _) => self.navigate(w, Route::Artist(arg)),
+            ("artists", _) => {
+                let refs = match &view {
+                    DetailView::Album(a) => artist_refs(&a.artists),
+                    _ => ModelRc::default(),
+                };
+                self.choose_artist(w, refs, arg);
+            }
             ("work", _) => self.navigate(w, Route::Work(arg)),
             ("add", _) => self.source_action("add", add_source, arg),
             ("new-playlist", view) => {
@@ -1024,6 +1071,7 @@ impl Ui {
                         title: a.title.as_str().into(),
                         subtitle: a.artist.as_str().into(),
                         subtitle_id: int(a.artist_id),
+                        artists: artist_refs(&a.artists),
                         meta: meta.join(" · ").into(),
                         quality: a.quality.clone().unwrap_or_default().into(),
                         favorite: a.favorite,
@@ -1664,6 +1712,14 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         });
     });
     window.on_go_back(|| with_ui(|ui, w| ui.go_back(w)));
+    window.on_artist_chosen(|id| {
+        with_ui(|ui, w| {
+            w.set_dialog(0);
+            if id > 0 {
+                ui.navigate(w, Route::Artist(id.into()));
+            }
+        })
+    });
     window.on_query_changed(|target, q| with_ui(|ui, w| ui.query(w, target, q)));
     window.on_clear_filter(|target| with_ui(|ui, w| ui.filter_by_artist(w, target == 0, None)));
     window.on_card_layout_changed(|grid, columns, card_size| {
@@ -1754,11 +1810,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             }
         });
     });
-    window.on_open_now_artist(|| {
+    window.on_open_now_artist(|id| {
         with_ui(|ui, w| {
-            let artist = ui.now.borrow().as_ref().map(|n| n.artist_id);
-            if let Some(id) = artist.filter(|id| *id > 0) {
-                ui.navigate(w, Route::Artist(id));
+            if id > 0 {
+                ui.navigate(w, Route::Artist(id.into()));
             }
         });
     });
@@ -2069,6 +2124,19 @@ fn artist_fact_rows(artist: &client_core::ArtistView) -> Vec<FactRow> {
     rows
 }
 
+pub(crate) fn artist_refs(artists: &[client_core::ArtistRef]) -> ModelRc<CreditPart> {
+    ModelRc::new(VecModel::from(
+        artists
+            .iter()
+            .filter(|a| a.id > 0)
+            .map(|a| CreditPart {
+                id: int(a.id),
+                text: a.name.as_str().into(),
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
 /// A list row; `multi_disc` numbers album tracks "disc-track".
 fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
     let number = match (t.track_number, multi_disc) {
@@ -2094,6 +2162,7 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
         )),
         album_id: int(t.album_id),
         artist_id: int(t.artist_id),
+        artists: artist_refs(&t.artists),
         favorite: t.favorite,
         version_count: t.version_count,
         number: number.into(),
@@ -2304,6 +2373,7 @@ pub fn apply(event: Event) {
             w.set_playing_id(int(now.track_id));
             w.set_np_title(now.title.as_str().into());
             w.set_np_artist(now.artist.as_str().into());
+            w.set_np_artists(artist_refs(&now.artists));
             w.set_np_album(now.album.as_str().into());
             w.set_np_quality(now.quality.clone().unwrap_or_default().into());
             w.set_np_favorite(now.favorite);

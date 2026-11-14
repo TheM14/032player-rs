@@ -638,11 +638,35 @@ impl Core {
         });
     }
 
+    fn refresh_queue_artists(&mut self, tracks: &[Track]) {
+        if self.queue.refresh_artists(tracks) {
+            let now = self.queue.current().map(|i| self.now_playing(&i.track));
+            self.emit(Event::NowPlaying(now));
+            self.emit(Event::Queue {
+                items: self
+                    .queue
+                    .in_play_order()
+                    .map(|i| super::QueueEntry {
+                        uid: i.uid,
+                        title: i.track.title.clone(),
+                        artist: i.track.artist.clone(),
+                        duration: crate::format::duration(i.track.duration_millis),
+                        artwork: i.track.artwork_url.clone(),
+                    })
+                    .collect(),
+                current: self.queue.position(),
+            });
+            // Do not call queue_changed: it touches the engine preload and Sonos.
+            self.schedule_queue_save();
+        }
+    }
+
     /// Applies the newest result of a target.
     pub(super) fn loaded(&mut self, loaded: Loaded) {
         match loaded {
             Loaded::AlbumsPage(items, total) => self.emit(Event::AlbumsAppended { items, total }),
             Loaded::TracksPage(tracks, total) => {
+                self.refresh_queue_artists(&tracks);
                 let Some(library) = self.library.as_mut() else {
                     return;
                 };
@@ -804,6 +828,7 @@ impl Core {
     }
 
     pub(super) fn set_list(&mut self, list: TrackList, tracks: Vec<Track>) {
+        self.refresh_queue_artists(&tracks);
         if let Some(library) = self.library.as_mut() {
             library.lists.insert(list, tracks);
         }

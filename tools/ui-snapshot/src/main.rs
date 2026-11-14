@@ -547,6 +547,47 @@ fn main() {
         return;
     }
 
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("artists") {
+        let inst = create(&def);
+        inst.show().unwrap();
+        set(&inst, "logged-in", Value::Bool(true));
+        let artists = model(vec![
+            st(&[("id", n(10.0)), ("text", s("Mori Calliope"))]),
+            st(&[("id", n(20.0)), ("text", s("常闇トワ"))]),
+        ]);
+        set(&inst, "has-track", Value::Bool(true));
+        set(&inst, "np-title", s("Duet"));
+        set(&inst, "np-artist", s("Mori Calliope, 常闇トワ"));
+        set(&inst, "np-artists", artists.clone());
+        set(&inst, "np-album", s("VA compilation"));
+        set(&inst, "page", n(1.0));
+        if let Value::Model(rows) = tracks() {
+            if let Some(Value::Struct(mut row)) = rows.row_data(0) {
+                row.set_field("artist".into(), s("Mori Calliope, 常闇トワ"));
+                row.set_field("artists".into(), artists);
+                set(&inst, "tracks", model(vec![Value::Struct(row)]));
+            }
+        }
+        render(&window, size, &format!("{out}/multi-artists.png"));
+        let clicks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = clicks.clone();
+        inst.set_callback("track-action", move |args| {
+            if let [_, Value::String(action), _, Value::Number(id)] = args {
+                if action == "artist" { recorded.borrow_mut().push(*id as i32); }
+            }
+            Value::Void
+        }).unwrap();
+        for x in [570.0, 655.0] {
+            let position = slint::LogicalPosition::new(x, 267.0);
+            let button = slint::platform::PointerEventButton::Left;
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+            window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        }
+        assert_eq!(*clicks.borrow(), vec![10, 20], "Each name must dispatch its own artist ID");
+        return;
+    }
+
     // Login.
     let inst = create(&def);
     inst.show().unwrap();

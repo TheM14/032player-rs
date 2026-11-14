@@ -1,3 +1,4 @@
+import { ArtistLinks, CreditPart } from "views.slint";
 import { Fonts, Theme } from "theme.slint";
 import { Icon, IconKind } from "controls.slint";
 import { PillTab, SourceBadge, QualityTag } from "nowplaying.slint";
@@ -19,6 +20,7 @@ export component FullScreenPlayer inherits Rectangle {
     in property <bool> has-track;
     in property <string> title;
     in property <string> artist;
+    in property <[CreditPart]> artists;
     in property <string> album;
     in property <string> quality;
     in property <bool> exclusive;
@@ -30,7 +32,7 @@ export component FullScreenPlayer inherits Rectangle {
     callback tab-selected(int);
     callback close();
     callback open-album();
-    callback open-artist();
+    callback open-artist(int);
     // The track info dialog of the current track.
     callback show-info();
     // The cover side settled (after resizing): decode the artwork for it.
@@ -142,18 +144,12 @@ export component FullScreenPlayer inherits Rectangle {
             if root.has-track: HorizontalLayout {
                 alignment: root.wide ? start : center;
                 spacing: 0px;
-                Text {
-                    text: root.artist;
-                    font-family: Fonts.family(self.text);
-                    color: artist-area.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
+                ArtistLinks {
+                    fallback: root.artist;
+                    artists: root.artists;
+                    text-color: Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
-                    overflow: elide;
-                    artist-area := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.open-artist();
-                        }
-                    }
+                    open(id) => { root.open-artist(id); }
                 }
                 if root.album != "": Text {
                     text: " · ";

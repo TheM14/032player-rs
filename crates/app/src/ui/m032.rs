@@ -178,6 +178,7 @@ fn home_row(t: &TrackItem, index: usize) -> HomeRow {
         subtitle: s(&subtitle),
         album_id: int(t.album_id),
         artist_id: int(t.artist_id),
+        artists: super::artist_refs(&t.artists),
         favorite: t.favorite,
         duration: s(&t.duration),
         percent: -1,
@@ -510,6 +511,7 @@ impl Ui {
             title: s(&pane.album.title),
             artist: s(&pane.album.artist),
             artist_id: int(pane.album.artist_id),
+            artists: super::artist_refs(&pane.album.artists),
             facts: s(&pane.facts.join(" · ")),
             spec: s(&pane.spec),
             note: s(&pane.note),
@@ -682,6 +684,10 @@ impl Ui {
     }
 
     pub(super) fn home_action(&self, w: &AppWindow, action: &str, arg: i64) {
+        if action == "pane-artist" {
+            self.choose_artist(w, w.global::<Home>().get_pane().artists, arg);
+            return;
+        }
         let pane = || {
             let state = self.m032.borrow();
             let tab = state.tab;

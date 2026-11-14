@@ -9,7 +9,7 @@ import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
     RoundIconButton,
 } from "controls.slint";
-import { AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
+import { ArtistLinks, CreditPart, AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
 import { CardRows, PageHeader } from "library.slint";
 
 // A small row with a cover on the home page (接着听, 最近播放, 主题曲,
@@ -23,6 +23,7 @@ export struct HomeRow {
     cover: image,
     album-id: int,
     artist-id: int,
+    artists: [CreditPart],
     favorite: bool,
     tag: string,
     tag-accent: bool,
@@ -44,6 +45,7 @@ export struct AlbumPane {
     title: string,
     artist: string,
     artist-id: int,
+    artists: [CreditPart],
     facts: string,
     spec: string,
     note: string,
@@ -912,7 +914,7 @@ export component HomeRowView inherits Rectangle {
             if root.item.artist-id > 0: MenuItem {
                 title: "转到艺人";
                 activated => {
-                    root.action("artist", root.item.artist-id);
+                    root.action("artists", root.item.artist-id);
                 }
             }
         }
@@ -1128,21 +1130,13 @@ component Spotlight inherits Rectangle {
                 HorizontalLayout {
                     alignment: start;
                     padding-top: Shell.tier == 2 ? 14px : 8px;
-                    Text {
-                        text: Home.pane.artist;
-                        font-family: Fonts.family(self.text);
-                        color: artist-area.has-hover && Home.pane.artist-id > 0 ? Theme.accent-text : Theme.text;
+                    ArtistLinks {
+                        fallback: Home.pane.artist;
+                        artists: Home.pane.artists;
+                        text-color: Theme.text;
                         font-size: Shell.tier == 2 ? 24px : Shell.tier == 1 ? 20px : 18px;
                         font-weight: 600;
-                        overflow: elide;
-                        artist-area := TouchArea {
-                            mouse-cursor: Home.pane.artist-id > 0 ? pointer : default;
-                            clicked => {
-                                if Home.pane.artist-id > 0 {
-                                    root.navigate(11, Home.pane.artist-id);
-                                }
-                            }
-                        }
+                        open(id) => { root.navigate(11, id); }
                     }
                 }
                 HorizontalLayout {

@@ -3,6 +3,66 @@ import { Fonts, Theme } from "theme.slint";
 import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon, SearchField, CastState } from "controls.slint";
 import { Shell } from "theme.slint";
 
+// A name with its server-side identity (also used in credits).
+export struct CreditPart {
+    text: string,
+    id: int,
+}
+
+// Every identity has its own hit target; separators never navigate.
+export component ArtistLinks inherits Rectangle {
+    in property <[CreditPart]> artists;
+    in property <string> fallback;
+    in property <length> font-size: 14px;
+    in property <int> font-weight: 400;
+    in property <color> text-color: Theme.text-dim;
+    callback open(int);
+    min-width: 0px;
+    preferred-width: measure.preferred-width;
+    preferred-height: root.font-size * 1.5;
+    clip: true;
+    measure := Text { visible: false; text: root.fallback; font-size: root.font-size; font-weight: root.font-weight; font-family: Fonts.family(self.text); }
+    if root.artists.length == 0: Text {
+        text: root.fallback;
+        font-family: Fonts.family(self.text);
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        color: root.text-color;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    if root.artists.length > 0: HorizontalLayout {
+        alignment: start;
+        spacing: 0px;
+        for artist[i] in root.artists: HorizontalLayout {
+            spacing: 0px;
+            if i > 0: Text {
+                text: " | ";
+                font-size: root.font-size;
+                color: Theme.text-faint;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+            Text {
+                text: artist.text;
+                font-family: Fonts.family(self.text);
+                font-size: root.font-size;
+                font-weight: root.font-weight;
+                color: artist.id > 0 && link.has-hover ? Theme.accent-text : root.text-color;
+                overflow: elide;
+                vertical-alignment: center;
+                max-width: max(0px, (root.width - (root.artists.length - 1) * root.font-size) / root.artists.length);
+                horizontal-stretch: 0;
+                link := TouchArea {
+                    enabled: artist.id > 0;
+                    mouse-cursor: artist.id > 0 ? pointer : default;
+                    clicked => { root.open(artist.id); }
+                }
+            }
+        }
+    }
+}
+
 // `badge`: relation on an artist page; `artist-id` 0 = none. `note`: an
 // extra line (track uses on a work page); `playing`: the current track
 // belongs to it (works, series).
@@ -13,6 +73,7 @@ export struct AlbumCard {
     year: string,
     cover: image,
     artist-id: int,
+    artists: [CreditPart],
     favorite: bool,
     badge: string,
     note: string,
@@ -24,12 +85,6 @@ export struct AlbumCard {
 
 export struct AlbumRow {
     items: [AlbumCard],
-}
-
-// A piece of a credits line: label / separator (id 0) or an artist link.
-export struct CreditPart {
-    text: string,
-    id: int,
 }
 
 // `index`: row in its list; `number`: album track number ("1-03").
@@ -142,6 +197,7 @@ export struct TrackRow {
     duration: string,
     album-id: int,
     artist-id: int,
+    artists: [CreditPart],
     favorite: bool,
     number: string,
     tag: string,
@@ -422,14 +478,13 @@ export component CardView inherits Rectangle {
             width: root.size;
             padding-top: 4px;
             alignment: root.kind == 1 ? center : start;
-            artist-text := Text {
-                text: root.card.artist;
-                font-family: Fonts.family(self.text);
+            ArtistLinks {
+                fallback: root.card.artist;
+                artists: root.kind == 0 ? root.card.artists : [];
                 visible: root.card.artist != "";
-                color: artist-area.has-hover ? Theme.text : Theme.text-dim;
                 font-size: 13px;
-                overflow: elide;
                 max-width: root.size;
+                open(id) => { root.action("artist", id); }
             }
         }
 
@@ -520,7 +575,7 @@ export component CardView inherits Rectangle {
             if root.kind == 0 && root.card.artist-id > 0: MenuItem {
                 title: "转到艺人";
                 activated => {
-                    root.action("artist", root.card.artist-id);
+                    root.action("artists", root.card.artist-id);
                 }
             }
             if root.kind == 2: MenuItem {
@@ -539,16 +594,6 @@ export component CardView inherits Rectangle {
         }
     }
 
-    artist-area := TouchArea {
-        x: sub.x + artist-text.x;
-        y: sub.y + artist-text.y;
-        width: root.artist-link ? artist-text.width : 0px;
-        height: artist-text.height;
-        mouse-cursor: pointer;
-        clicked => {
-            root.action("artist", root.card.artist-id);
-        }
-    }
 }
 
 // Virtualized grid of cards; the rows come from a Rust model that chunks
@@ -698,7 +743,7 @@ export component TrackRowView inherits Rectangle {
                     TrackMenuItem { text: "相似歌曲"; triggered => { root.menu-action("similar", 0); } }
                     TrackMenuItem { text: "查看信息"; triggered => { root.menu-action("info", 0); } }
                     TrackMenuItem { text: "转到专辑"; triggered => { root.menu-action("album", root.track.album-id); } }
-                    TrackMenuItem { text: "转到艺人"; triggered => { root.menu-action("artist", root.track.artist-id); } }
+                    TrackMenuItem { text: "转到艺人"; triggered => { root.menu-action("artists", root.track.artist-id); } }
                     if root.mode == 2: TrackMenuItem { text: "从歌单移除"; triggered => { root.menu-action("remove", 0); } }
                 }
             }
@@ -797,7 +842,7 @@ export component TrackRowView inherits Rectangle {
             if root.track.artist-id > 0: MenuItem {
                 title: "转到艺人";
                 activated => {
-                    root.action("artist", root.track.artist-id);
+                    root.action("artists", root.track.artist-id);
                 }
             }
             if root.mode == 2: MenuItem {
@@ -1017,26 +1062,11 @@ export component TrackRowView inherits Rectangle {
         }
         // Artist and album link to their pages (the text only, not the
         // empty part of the column).
-        Rectangle {
+        ArtistLinks {
             width: root.artist-w;
-            Text {
-                x: 0;
-                width: min(self.preferred-width, root.artist-w);
-                text: root.track.artist;
-                font-family: Fonts.family(self.text);
-                color: root.track.artist-id > 0 && artist-area.has-hover ? Theme.accent-text : Theme.text-dim;
-                font-size: 14px;
-                overflow: elide;
-                vertical-alignment: center;
-                artist-area := TouchArea {
-                    pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
-                    enabled: root.track.artist-id > 0;
-                    mouse-cursor: root.track.artist-id > 0 ? pointer : default;
-                    clicked => {
-                        root.action("artist", root.track.artist-id);
-                    }
-                }
-            }
+            artists: root.track.artists;
+            fallback: root.track.artist;
+            open(id) => { root.action("artist", id); }
         }
         if root.mode != 1: album-col := Rectangle {
             width: root.album-w;
@@ -1992,6 +2022,7 @@ export component PlayerBar inherits Rectangle {
     in property <bool> has-track;
     in property <string> title;
     in property <string> artist;
+    in property <[CreditPart]> artists;
     in property <string> album;
     in property <string> quality;
     in property <image> cover;
@@ -2014,7 +2045,7 @@ export component PlayerBar inherits Rectangle {
     in property <bool> favorite;
     callback toggle-favorite();
     callback open-album();
-    callback open-artist();
+    callback open-artist(int);
     // WASAPI exclusive output, switchable while playing; `exclusive-busy`
     // while a change is applied.
     in property <bool> exclusive;
@@ -2148,19 +2179,11 @@ export component PlayerBar inherits Rectangle {
                 }
                 HorizontalLayout {
                     min-width: 0px;
-                    Text {
-                        text: root.artist;
-                        font-family: Fonts.family(self.text);
-                        color: artist-area.has-hover ? Theme.text : Theme.text-dim;
+                    ArtistLinks {
+                        fallback: root.artist;
+                        artists: root.artists;
                         font-size: 13.5px;
-                        overflow: elide;
-                        vertical-alignment: center;
-                        artist-area := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.open-artist();
-                            }
-                        }
+                        open(id) => { root.open-artist(id); }
                     }
                     if root.album != "": Text {
                         text: " · ";

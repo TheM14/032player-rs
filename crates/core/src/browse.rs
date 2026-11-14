@@ -141,8 +141,9 @@ pub struct AlbumItem {
     pub id: i64,
     pub title: String,
     pub artist: String,
-    /// First credited album artist (0: none).
+    /// First credited album artist (0: none); use `artists` for navigation.
     pub artist_id: i64,
+    pub artists: Vec<api::ArtistRef>,
     pub year: i32,
     pub artwork: String,
     pub favorite: bool,
@@ -163,6 +164,7 @@ pub struct TrackItem {
     pub artist: String,
     /// First track artist, else album artist (0: none).
     pub artist_id: i64,
+    pub artists: Vec<api::ArtistRef>,
     pub album: String,
     pub album_id: i64,
     pub duration: String,
@@ -215,6 +217,7 @@ pub struct AlbumView {
     pub title: String,
     pub artist: String,
     pub artist_id: i64,
+    pub artists: Vec<api::ArtistRef>,
     pub year: i32,
     pub artwork: String,
     pub track_count: i64,
@@ -300,6 +303,7 @@ pub fn album_item(album: &Album) -> AlbumItem {
         id: album.id,
         title: album.title.clone(),
         artist: album.artist.clone(),
+        artists: album.artists.clone(),
         artist_id: album.artists.first().map_or(0, |a| a.id),
         year: album.year,
         artwork: album.artwork_url.clone(),
@@ -335,7 +339,7 @@ pub fn release_groups(releases: &[AlbumItem]) -> Vec<ReleaseGroup> {
         "单曲与 EP",
         "合辑与现场",
         "其他发行",
-        "合作发行",
+        "合作作品",
         "参与作品",
         "幕后参与",
     ];
@@ -362,11 +366,21 @@ pub fn release_groups(releases: &[AlbumItem]) -> Vec<ReleaseGroup> {
         .collect()
 }
 
+/// Performing identities, falling back only when the track has no own credit.
+pub fn track_artists(track: &Track) -> &[api::ArtistRef] {
+    if track.artists.is_empty() {
+        &track.album_artists
+    } else {
+        &track.artists
+    }
+}
+
 pub fn track_item(track: &Track) -> TrackItem {
     TrackItem {
         id: track.id,
         title: track.title.clone(),
         artist: track.artist.clone(),
+        artists: track_artists(track).to_vec(),
         artist_id: track
             .artists
             .first()
@@ -716,6 +730,7 @@ pub fn album_view(album: &Album, tracks: &[Track]) -> AlbumView {
         id: album.id,
         title: album.title.clone(),
         artist: album.artist.clone(),
+        artists: album.artists.clone(),
         artist_id: album.artists.first().map_or(0, |a| a.id),
         year: album.year,
         artwork: album.artwork_url.clone(),
@@ -962,6 +977,37 @@ pub fn sort_playlists(mut items: Vec<Playlist>, filter: &PlaylistFilter) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multiple_artists_survive_views_without_splitting_display_text() {
+        let artists = vec![
+            api::ArtistRef {
+                id: 10,
+                name: "Mori Calliope".into(),
+            },
+            api::ArtistRef {
+                id: 20,
+                name: "常闇トワ".into(),
+            },
+        ];
+        let t = api::Track {
+            artist: "Mori Calliope, 常闇トワ".into(),
+            artists: artists.clone(),
+            ..Default::default()
+        };
+        assert_eq!(track_item(&t).artists, artists);
+        let a = api::Album {
+            artists: artists.clone(),
+            ..Default::default()
+        };
+        assert_eq!(album_item(&a).artists, artists);
+        assert_eq!(album_view(&a, &[]).artists, artists);
+        let legacy = api::Track {
+            artist: "Earth, Wind & Fire".into(),
+            ..Default::default()
+        };
+        assert!(track_item(&legacy).artists.is_empty());
+    }
+
     use api::ArtistRef;
 
     use super::*;
@@ -1182,7 +1228,7 @@ mod tests {
                 ("单曲与 EP", vec![2, 9]),
                 ("合辑与现场", vec![8]),
                 ("其他发行", vec![6]),
-                ("合作发行", vec![5]),
+                ("合作作品", vec![5]),
                 ("参与作品", vec![7]),
                 ("幕后参与", vec![3]),
             ]

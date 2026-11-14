@@ -506,6 +506,7 @@ pub struct NowPlaying {
     pub artist: String,
     /// 0: unknown.
     pub artist_id: i64,
+    pub artists: Vec<api::ArtistRef>,
     pub album: String,
     pub album_id: i64,
     pub favorite: bool,
@@ -1278,6 +1279,7 @@ impl Core {
             title: track.title.clone(),
             artist: track.artist.clone(),
             artist_id: crate::browse::track_item(track).artist_id,
+            artists: crate::browse::track_artists(track).to_vec(),
             album: track.album.clone(),
             album_id: track.album_id,
             favorite: track.is_favorite,

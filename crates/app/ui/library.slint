@@ -4,7 +4,7 @@ import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
     BigTitle, RoundIconButton,
 } from "controls.slint";
-import { AlbumRow, PlaylistChoice, CardView } from "views.slint";
+import { ArtistLinks, CreditPart, AlbumRow, PlaylistChoice, CardView } from "views.slint";
 
 // Sort, direction, search and year range of one list. Years are strings
 // (empty: no bound) as typed.
@@ -69,6 +69,7 @@ export struct DetailInfo {
     title: string,
     subtitle: string,
     subtitle-id: int,
+    artists: [CreditPart],
     meta: string,
     quality: string,
     description: string,
@@ -421,21 +422,13 @@ export component DetailHeader inherits Rectangle {
             if root.info.subtitle != "": HorizontalLayout {
                 alignment: start;
                 padding-top: Shell.tier == 2 ? 18px : 12px;
-                Text {
-                    text: root.info.subtitle;
-                    font-family: Fonts.family(self.text);
-                    color: subtitle-area.has-hover && root.info.subtitle-id > 0 ? Theme.accent-text : Theme.text;
+                ArtistLinks {
+                    fallback: root.info.subtitle;
+                    artists: root.info.artists;
+                    text-color: Theme.text;
                     font-size: Shell.tier == 2 ? 24px : Shell.tier == 1 ? 20px : 18px;
                     font-weight: 650;
-                    overflow: elide;
-                    subtitle-area := TouchArea {
-                        mouse-cursor: root.info.subtitle-id > 0 ? pointer : default;
-                        clicked => {
-                            if root.info.subtitle-id > 0 {
-                                root.action("artist", root.info.subtitle-id);
-                            }
-                        }
-                    }
+                    open(id) => { root.action("artist", id); }
                 }
             }
             HorizontalLayout {

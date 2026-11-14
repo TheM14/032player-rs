@@ -356,6 +356,25 @@ impl Queue {
         true
     }
 
+    /// Refresh identities without changing transport, entry UID or playback context.
+    pub fn refresh_artists(&mut self, tracks: &[Track]) -> bool {
+        let by_id: std::collections::HashMap<_, _> = tracks.iter().map(|t| (t.id, t)).collect();
+        let mut changed = false;
+        for item in &mut self.items {
+            if let Some(fresh) = by_id.get(&item.track.id)
+                && (item.track.artist != fresh.artist
+                    || item.track.artists != fresh.artists
+                    || item.track.album_artists != fresh.album_artists)
+            {
+                item.track.artist.clone_from(&fresh.artist);
+                item.track.artists.clone_from(&fresh.artists);
+                item.track.album_artists.clone_from(&fresh.album_artists);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Updates the favorite flag of every entry of `track_id`.
     pub fn set_favorite(&mut self, track_id: i64, favorite: bool) {
         for item in &mut self.items {
@@ -412,6 +431,36 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn artist_refresh_preserves_queue_identity_and_transport() {
+        let mut q = Queue::with_seed(1);
+        let mut original = track(7);
+        original.stream_url = "original.flac".into();
+        q.replace(vec![original.clone()], 0);
+        let before = q.current().unwrap().clone();
+        let mut fresh = original.clone();
+        fresh.stream_url = "changed".into();
+        fresh.artist = "A, B".into();
+        fresh.artists = vec![
+            api::ArtistRef {
+                id: 1,
+                name: "A".into(),
+            },
+            api::ArtistRef {
+                id: 2,
+                name: "B".into(),
+            },
+        ];
+        assert!(q.refresh_artists(&[fresh.clone()]));
+        let after = q.current().unwrap();
+        assert_eq!(after.uid, before.uid);
+        assert_eq!(after.context, before.context);
+        assert_eq!(after.start_ms, before.start_ms);
+        assert_eq!(after.track.stream_url, original.stream_url);
+        assert_eq!(after.track.artists, fresh.artists);
+        assert!(!q.refresh_artists(&[fresh]));
+    }
+
     use super::*;
 
     fn track(id: i64) -> Track {

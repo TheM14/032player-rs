@@ -1,7 +1,7 @@
 import { Fonts, Theme, Shell } from "theme.slint";
 import { Palette, ScrollView } from "std-widgets.slint";
 import {
-    TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice,
+    TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ArtistLinks,
     LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
 } from "views.slint";
 import {
@@ -238,6 +238,8 @@ export component AppWindow inherits Window {
     // 8 最近播放, 9 主题曲, 10 history. (list, action, row index, argument)
     callback track-action(int, string, int, int);
     in property <[PlaylistChoice]> playlist-choices;
+    in property <[CreditPart]> artist-choices;
+    callback artist-chosen(int);
 
     // List queries (`target`): 0 albums, 1 tracks, 2 artists, 3 playlists,
     // 4 favorite albums, 5 favorite tracks, 6 favorite artists.
@@ -373,6 +375,7 @@ export component AppWindow inherits Window {
     in property <int> playing-id: -1;
     in property <string> np-title;
     in property <string> np-artist;
+    in property <[CreditPart]> np-artists;
     in property <string> np-album;
     in property <string> np-quality;
     in property <image> np-cover;
@@ -393,7 +396,7 @@ export component AppWindow inherits Window {
     callback volume-changed(float);
     callback toggle-now-favorite();
     callback open-now-album();
-    callback open-now-artist();
+    callback open-now-artist(int);
 
     // Full-screen player: tab 0 up next, 1 related, 2 lyrics. Rust loads
     // the original cover (at `full-cover-side`) and the related songs
@@ -575,7 +578,7 @@ export component AppWindow inherits Window {
             return reject;
         }
         key-pressed(e) => {
-            if root.dialog == 6 && e.text == Key.Escape {
+            if (root.dialog == 6 || root.dialog == 7) && e.text == Key.Escape {
                 root.dialog = 0;
                 return accept;
             }
@@ -1771,17 +1774,11 @@ export component AppWindow inherits Window {
                                                 font-size: 12px;
                                                 vertical-alignment: center;
                                             }
-                                            Text {
-                                                text: track.artist;
-                                                font-family: Fonts.family(self.text);
-                                                color: track.artist-id > 0 && v-art-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                                            ArtistLinks {
+                                                fallback: track.artist;
+                                                artists: track.artists;
                                                 font-size: 12.5px;
-                                                vertical-alignment: center;
-                                                v-art-area := TouchArea {
-                                                    enabled: track.artist-id > 0;
-                                                    mouse-cursor: track.artist-id > 0 ? pointer : default;
-                                                    clicked => { root.track-action(2, "artist", track.index, track.artist-id); }
-                                                }
+                                                open(id) => { root.track-action(2, "artist", track.index, id); }
                                             }
                                         }
                                         if track.album != "": HorizontalLayout {
@@ -2073,6 +2070,7 @@ export component AppWindow inherits Window {
             album: root.np-album;
             quality: root.np-quality;
             cover: root.np-cover;
+            artists: root.np-artists;
             favorite: root.np-favorite;
             position-ms: root.position-ms;
             duration-ms: root.duration-ms;
@@ -2096,8 +2094,8 @@ export component AppWindow inherits Window {
             open-album => {
                 root.open-now-album();
             }
-            open-artist => {
-                root.open-now-artist();
+            open-artist(id) => {
+                root.open-now-artist(id);
             }
             toggle-queue => {
                 root.toggle-panel(true);
@@ -2145,6 +2143,7 @@ export component AppWindow inherits Window {
             album: root.np-album;
             quality: root.np-quality;
             cover: root.np-cover-large;
+            artists: root.np-artists;
             favorite: root.np-favorite;
             // Not while a Sonos room plays.
             exclusive: root.exclusive && CastState.output-id == "";
@@ -2164,8 +2163,8 @@ export component AppWindow inherits Window {
             open-album => {
                 root.open-now-album();
             }
-            open-artist => {
-                root.open-now-artist();
+            open-artist(id) => {
+                root.open-now-artist(id);
             }
             open-full => {
                 root.open-full(0);
@@ -2270,6 +2269,7 @@ export component AppWindow inherits Window {
         has-track: root.has-track;
         title: root.np-title;
         artist: root.np-artist;
+        artists: root.np-artists;
         album: root.np-album;
         quality: root.np-quality;
         exclusive: root.exclusive && CastState.output-id == "";
@@ -2286,8 +2286,8 @@ export component AppWindow inherits Window {
         open-album => {
             root.open-now-album();
         }
-        open-artist => {
-            root.open-now-artist();
+        open-artist(id) => {
+            root.open-now-artist(id);
         }
         show-info => {
             root.now-info();
@@ -2437,6 +2437,38 @@ export component AppWindow inherits Window {
         }
         cancel => {
             root.dialog = 0;
+        }
+    }
+
+    if root.dialog == 7: Rectangle {
+        background: #00000099;
+        TouchArea { clicked => { root.dialog = 0; } }
+        Rectangle {
+            width: min(440px, root.width - 64px);
+            height: min(artist-menu.preferred-height, root.height - 64px);
+            border-radius: 12px;
+            background: Theme.surface;
+            TouchArea { }
+            artist-menu := VerticalLayout {
+                padding: 20px;
+                spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "选择艺术家"; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
+                    IconButton { kind: IconKind.close; size: 30px; clicked => { root.dialog = 0; } }
+                }
+                ScrollView {
+                    height: min(root.artist-choices.length * 44px, 360px);
+                    VerticalLayout {
+                        for artist in root.artist-choices: Rectangle {
+                            height: 44px;
+                            border-radius: 6px;
+                            background: artist-choice.has-hover ? Theme.surface-hover : transparent;
+                            Text { x: 12px; width: parent.width - 24px; text: artist.text; font-family: Fonts.family(self.text); color: Theme.text; overflow: elide; vertical-alignment: center; }
+                            artist-choice := TouchArea { mouse-cursor: pointer; clicked => { root.artist-chosen(artist.id); } }
+                        }
+                    }
+                }
+            }
         }
     }
 
