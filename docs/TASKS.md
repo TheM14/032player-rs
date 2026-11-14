@@ -102,6 +102,7 @@
 
 ## GitHub Actions 存储维护（2026-11-09）
 
+- [x] 2026-11-14 存储额度告警：删除 v0.2.5 至 v0.2.13 的 8 个正式构建 Artifact，释放约 1.07 GiB；逐个确认对应 Release 的安装包和便携包完整，未删除任何 Release 或预览产物。正式 Release 工作流改为只上传 Release assets，不再重复保存约 144 MB 的 Artifact；预览仍保留 3 天 Artifact。
 - [x] 遍历 29 个可访问仓库，区分 Artifact、Cache、Release 与累计计费用量
 - [x] 经用户授权清理 194 个 Artifact，按 API 字节数释放约 3.292 GiB；保留所有 Release、最新 Rust 预览、近期测试产物与全部 Android 混淆映射
 - [x] 发布前复核发现 MusicBridge 的 APK 合集 #3、#4 没有对应 Release 备份，排除清理并保留

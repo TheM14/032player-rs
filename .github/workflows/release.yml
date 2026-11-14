@@ -72,15 +72,9 @@ jobs:
           Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name) $($_.Length)" }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 032player-${{ env.VERSION }}
-          # Releases keep the permanent downloads; artifacts are a short-lived fallback.
-          retention-days: 3
-          path: |
-            dist/*.exe
-            dist/*.zip
-
+      # Release assets below are the permanent downloads. Do not also upload
+      # them as Actions artifacts: that duplicates about 144 MB per release
+      # against the account's small shared-storage quota.
       - name: Publish release
         shell: pwsh
         env:
