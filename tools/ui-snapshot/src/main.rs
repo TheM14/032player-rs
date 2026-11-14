@@ -470,14 +470,18 @@ fn set(inst: &ComponentInstance, name: &str, value: Value) {
         .unwrap_or_else(|e| panic!("set {name}: {e:?}"));
 }
 
-fn render(window: &MinimalSoftwareWindow, size: PhysicalSize, path: &str) {
-    window.set_size(size);
+fn settle(window: &MinimalSoftwareWindow) {
     // Let layouts, `init` and animations settle.
     for _ in 0..3 {
         slint::platform::update_timers_and_animations();
         window.request_redraw();
         window.draw_if_needed(|_| {});
     }
+}
+
+fn render(window: &MinimalSoftwareWindow, size: PhysicalSize, path: &str) {
+    window.set_size(size);
+    settle(window);
     std::thread::sleep(std::time::Duration::from_millis(450));
     slint::platform::update_timers_and_animations();
     window.request_redraw();
@@ -522,6 +526,64 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
     inst
 }
 
+/// Verifies the public offset bindings used by Rust's back history. The
+/// second half also covers a virtual list created only when its data arrives.
+fn scroll_regression(def: &slint_interpreter::ComponentDefinition, window: &MinimalSoftwareWindow) {
+    fn offset(inst: &ComponentInstance) -> f64 {
+        match inst.get_property("content-scroll-y").unwrap() {
+            Value::Number(value) => value,
+            other => panic!("content-scroll-y is not a number: {other:?}"),
+        }
+    }
+
+    let inst = create(def);
+    inst.show().unwrap();
+    window.set_size(PhysicalSize::new(1280, 800));
+    set(&inst, "logged-in", Value::Bool(true));
+    set(&inst, "album-rows", album_rows_n(4, 96));
+    set(&inst, "album-total", n(96.0));
+    set(&inst, "page", n(0.0));
+    settle(window);
+
+    set(&inst, "content-scroll-y", n(-360.0));
+    settle(window);
+    let saved = offset(&inst);
+    assert!((saved + 360.0).abs() < 1.0, "album grid must scroll");
+
+    // Emulate Ui::navigate followed by Ui::go_back. Rust stores `saved`
+    // in the history entry and restores it before showing the old page.
+    set(&inst, "content-scroll-y", n(0.0));
+    set(&inst, "detail", detail(0.0, "Album", "Artist", "", "", ""));
+    set(&inst, "detail-tracks", tracks());
+    set(&inst, "page", n(10.0));
+    settle(window);
+    assert_eq!(offset(&inst), 0.0, "a new detail starts at the top");
+    set(&inst, "content-scroll-y", n(saved));
+    set(&inst, "page", n(0.0));
+    settle(window);
+    assert!(
+        (offset(&inst) - saved).abs() < 1.0,
+        "back must restore the album grid offset"
+    );
+
+    // A detail has no ListView while loading. Its saved root offset must
+    // survive and be picked up when the rows create the list.
+    set(&inst, "content-scroll-y", n(0.0));
+    set(&inst, "detail-tracks", model(Vec::new()));
+    set(&inst, "detail-loading", Value::Bool(true));
+    set(&inst, "page", n(10.0));
+    settle(window);
+    set(&inst, "content-scroll-y", n(-240.0));
+    set(&inst, "detail-tracks", tracks());
+    set(&inst, "detail-loading", Value::Bool(false));
+    settle(window);
+    assert!(
+        (offset(&inst) + 240.0).abs() < 1.0,
+        "an asynchronously populated detail must restore its offset"
+    );
+    println!("scroll restoration bindings passed");
+}
+
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/app/ui/app.slint");
@@ -538,6 +600,10 @@ fn main() {
     }
     let def = result.component("AppWindow").expect("AppWindow");
     let size = PhysicalSize::new(1280, 800);
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("scroll") {
+        scroll_regression(&def, &window);
+        return;
+    }
     // Render only the requested regression canvases (faster).
     if matches!(
         std::env::var("UI_SNAPSHOT_ONLY").as_deref(),

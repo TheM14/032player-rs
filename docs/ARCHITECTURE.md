@@ -82,7 +82,8 @@
   专辑、艺人、歌单作为 `TrackSource` 由 `core` 取曲目。
 - 随机排序：`api::RandomSeeds` 按查询（不含分页）记 seed，分页加载时每页取同一个 seed，重新从 offset 0 加载换新 seed。
 - UI：一个通用卡片网格模型（`app/src/cards.rs`，专辑 / 艺人 / 歌单共用，可见行才请求封面），曲目列表共用一个组件；
-  导航历史在 `app/src/ui.rs`，详情页进入时向 `core` 发 `Open*`，返回时重新请求。
+  导航历史在 `app/src/ui.rs`，每项同时保存主内容区和专辑信息栏的滚动偏移；前进从顶部开始，返回时恢复，
+  异步详情到达后重试。详情页进入时向 `core` 发 `Open*`，返回时重新请求。
 - 转码：`settings.json` `transcode`，服务端支持才生效。MP3 / Opus 实时转码不支持 Range，拖动进度时带 `offsetMs` 重新加载，
   `core` 记住偏移，引擎回报的时间加上偏移才是播放位置。
 

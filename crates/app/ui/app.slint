@@ -213,6 +213,10 @@ export component AppWindow inherits Window {
     in property <bool> can-go-back;
     callback navigate(int, int);
     callback go-back();
+    // Current page offsets, saved in Rust's back-history entries. Slint
+    // content-y is zero at the top and negative after scrolling down.
+    in-out property <length> content-scroll-y;
+    in-out property <length> inspector-scroll-y;
     in property <string> server-label;
     // Sidebar footer: "host · 18,930 首".
     in property <string> server-status;
@@ -562,6 +566,7 @@ export component AppWindow inherits Window {
         running: false;
         triggered => {
             self.running = false;
+            root.content-scroll-y = 0px;
             root.search(root.search-text);
         }
     }
@@ -897,16 +902,19 @@ export component AppWindow inherits Window {
                             show-years: true;
                             filter-label: root.album-filter;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-albums = q;
                                 root.query-changed(0, q);
                             }
                             clear-filter => {
+                                root.content-scroll-y = 0px;
                                 root.clear-filter(0);
                             }
                         }
                     }
                     CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.album-rows;
                         kind: 0;
                         loading: root.albums-loading;
@@ -933,10 +941,12 @@ export component AppWindow inherits Window {
                             show-years: true;
                             filter-label: root.track-filter;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-tracks = q;
                                 root.query-changed(1, q);
                             }
                             clear-filter => {
+                                root.content-scroll-y = 0px;
                                 root.clear-filter(1);
                             }
                             GhostButton {
@@ -951,6 +961,7 @@ export component AppWindow inherits Window {
                     }
                     TrackList {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.tracks;
                         mode: 0;
                         loading: root.tracks-loading;
@@ -977,6 +988,7 @@ export component AppWindow inherits Window {
                             query: root.page == 24 ? root.q-all-artists : root.q-artists;
                             show-order: root.browse;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 if root.page == 24 {
                                     root.q-all-artists = q;
                                 } else {
@@ -988,6 +1000,7 @@ export component AppWindow inherits Window {
                     }
                     CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.artist-rows;
                         kind: 1;
                         loading: root.artists-loading;
@@ -1014,6 +1027,7 @@ export component AppWindow inherits Window {
                             sort-desc: root.playlist-sort-desc;
                             query: root.q-playlists;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-playlists = q;
                                 root.query-changed(3, q);
                             }
@@ -1029,6 +1043,7 @@ export component AppWindow inherits Window {
                     }
                     CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.playlist-rows;
                         kind: 2;
                         empty-text: "还没有歌单";
@@ -1051,6 +1066,7 @@ export component AppWindow inherits Window {
                                 text: "曲目";
                                 selected: root.fav-tab == 0;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.fav-tab = 0;
                                 }
                             }
@@ -1058,6 +1074,7 @@ export component AppWindow inherits Window {
                                 text: "专辑";
                                 selected: root.fav-tab == 1;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.fav-tab = 1;
                                 }
                             }
@@ -1065,6 +1082,7 @@ export component AppWindow inherits Window {
                                 text: "艺人";
                                 selected: root.fav-tab == 2;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.fav-tab = 2;
                                 }
                             }
@@ -1102,6 +1120,7 @@ export component AppWindow inherits Window {
                             query: root.q-fav-tracks;
                             show-years: true;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-fav-tracks = q;
                                 root.query-changed(5, q);
                             }
@@ -1112,6 +1131,7 @@ export component AppWindow inherits Window {
                             query: root.q-fav-albums;
                             show-years: true;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-fav-albums = q;
                                 root.query-changed(4, q);
                             }
@@ -1122,6 +1142,7 @@ export component AppWindow inherits Window {
                             query: root.q-fav-artists;
                             show-order: root.browse;
                             changed(q) => {
+                                root.content-scroll-y = 0px;
                                 root.q-fav-artists = q;
                                 root.query-changed(6, q);
                             }
@@ -1129,6 +1150,7 @@ export component AppWindow inherits Window {
                     }
                     if root.fav-tab == 0: TrackList {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.fav-tracks;
                         mode: 0;
                         loading: root.fav-loading;
@@ -1144,6 +1166,7 @@ export component AppWindow inherits Window {
                     }
                     if root.fav-tab == 1: CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.fav-album-rows;
                         kind: 0;
                         loading: root.fav-loading;
@@ -1161,6 +1184,7 @@ export component AppWindow inherits Window {
                     }
                     if root.fav-tab == 2: CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.fav-artist-rows;
                         kind: 1;
                         loading: root.fav-loading;
@@ -1194,6 +1218,7 @@ export component AppWindow inherits Window {
                             }
                             accepted => {
                                 search-debounce.running = false;
+                                root.content-scroll-y = 0px;
                                 root.search(root.search-text);
                             }
                         }
@@ -1204,6 +1229,7 @@ export component AppWindow inherits Window {
                                 text: "曲目" + (root.search-tracks.length > 0 ? " " + root.search-tracks.length : "");
                                 selected: root.search-tab == 0;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.search-tab = 0;
                                 }
                             }
@@ -1211,6 +1237,7 @@ export component AppWindow inherits Window {
                                 text: "专辑" + (root.search-album-count > 0 ? " " + root.search-album-count : "");
                                 selected: root.search-tab == 1;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.search-tab = 1;
                                 }
                             }
@@ -1218,6 +1245,7 @@ export component AppWindow inherits Window {
                                 text: "艺人" + (root.search-artist-count > 0 ? " " + root.search-artist-count : "");
                                 selected: root.search-tab == 2;
                                 clicked => {
+                                    root.content-scroll-y = 0px;
                                     root.search-tab = 2;
                                 }
                             }
@@ -1225,6 +1253,7 @@ export component AppWindow inherits Window {
                     }
                     if root.search-tab == 0: TrackList {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.search-tracks;
                         mode: 0;
                         loading: root.search-loading;
@@ -1237,6 +1266,7 @@ export component AppWindow inherits Window {
                     }
                     if root.search-tab == 1: CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.search-album-rows;
                         kind: 0;
                         loading: root.search-loading;
@@ -1251,6 +1281,7 @@ export component AppWindow inherits Window {
                     }
                     if root.search-tab == 2: CardGrid {
                         vertical-stretch: 1;
+                        scroll-y <=> root.content-scroll-y;
                         rows: root.search-artist-rows;
                         kind: 1;
                         loading: root.search-loading;
@@ -1315,6 +1346,7 @@ export component AppWindow inherits Window {
                         if !(detail-page.has-info && !detail-page.side && detail-page.info-tab): TrackList {
                             x: 0;
                             y: 0;
+                            scroll-y <=> root.content-scroll-y;
                             width: body.width - (body.show-info ? body.info-w : 0px);
                             height: body.height;
                             rows: root.detail-tracks;
@@ -1331,6 +1363,7 @@ export component AppWindow inherits Window {
                         if body.show-info: AlbumInspector {
                             x: body.width - body.info-w + (detail-page.side ? 16px : Shell.pad);
                             y: 0;
+                            scroll-y <=> root.inspector-scroll-y;
                             width: body.info-w - (detail-page.side ? 16px : Shell.pad);
                             height: body.height;
                             works: root.album-works;
@@ -1348,6 +1381,7 @@ export component AppWindow inherits Window {
 
                 // Artist: one scrolling page with header, bio/facts, releases and favorites.
                 if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
+                    content-y <=> root.content-scroll-y;
                     property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
                     content-height: artist-page.preferred-height;
                     artist-page := VerticalLayout {
@@ -1534,6 +1568,7 @@ export component AppWindow inherits Window {
 
                 // Track versions / recordings (same-title tracks across albums).
                 if root.page == 10 && root.detail.kind == 7: versions-scroll := ScrollView {
+                    content-y <=> root.content-scroll-y;
                     VerticalLayout {
                         alignment: start;
                         padding-bottom: 32px;
@@ -1832,6 +1867,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 20: HomePage {
+                    scroll-y <=> root.content-scroll-y;
                     playlists: root.playlist-choices;
                     playing-id: root.playing-id;
                     playing-mix: root.playing-mix;
@@ -1856,6 +1892,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 21: WorksPage {
+                    scroll-y <=> root.content-scroll-y;
                     playlists: root.playlist-choices;
                     card-action(what, id, arg) => {
                         root.card-action(8, what, id, arg);
@@ -1866,6 +1903,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 22: SeriesPage {
+                    scroll-y <=> root.content-scroll-y;
                     card-action(what, id, arg) => {
                         root.card-action(9, what, id, arg);
                     }
@@ -1875,18 +1913,21 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 23: HistoryPage {
+                    scroll-y <=> root.content-scroll-y;
                     playing-id: root.playing-id;
                     playlists: root.playlist-choices;
                     track-action(what, i, arg) => {
                         root.track-action(10, what, i, arg);
                     }
                     clear => {
+                        root.content-scroll-y = 0px;
                         root.dialog-message = "这会永久清除全部播放次数和断点位置，不会删除歌曲或收藏。此操作不可撤销。";
                         root.dialog = 4;
                     }
                 }
 
                 if root.page == 10 && root.detail.kind == 4: WorkPage {
+                    scroll-y <=> root.content-scroll-y;
                     tracks: root.detail-tracks;
                     loading: root.detail-loading;
                     playing-id: root.playing-id;
@@ -1906,6 +1947,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 10 && root.detail.kind == 5: SeriesDetailPage {
+                    scroll-y <=> root.content-scroll-y;
                     loading: root.detail-loading;
                     playlists: root.playlist-choices;
                     card-action(grid, what, id, arg) => {
@@ -1917,6 +1959,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 10 && root.detail.kind == 6: MixPage {
+                    scroll-y <=> root.content-scroll-y;
                     tracks: root.detail-tracks;
                     loading: root.detail-loading;
                     playing-id: root.playing-id;
@@ -1934,6 +1977,7 @@ export component AppWindow inherits Window {
                 }
 
                 if root.page == 2: SettingsView {
+                    scroll-y <=> root.content-scroll-y;
                     shortcuts: root.shortcuts;
                     recording: root.recording-shortcut;
                     record-shortcut(i) => { root.recording-shortcut = i; }

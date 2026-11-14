@@ -1395,6 +1395,8 @@ export global HomeGrids {
 }
 
 export component HomePage inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
     in property <[PlaylistChoice]> playlists;
     in property <int> playing-id: -1;
     in property <int> playing-mix: -1;
@@ -2003,6 +2005,7 @@ export component HomePage inherits Flickable {
 // Virtualized poster / card grid with an empty hint.
 component CardGridPoster inherits Rectangle {
     in property <[AlbumRow]> rows;
+    in-out property <length> scroll-y;
     in property <int> kind;
     in property <[PlaylistChoice]> playlists;
     in property <string> empty-text;
@@ -2042,6 +2045,7 @@ component CardGridPoster inherits Rectangle {
     }
 
     ListView {
+        content-y <=> root.scroll-y;
         for row in root.rows: HorizontalLayout {
             padding-left: root.pad;
             padding-right: root.pad;
@@ -2063,6 +2067,7 @@ component CardGridPoster inherits Rectangle {
 
 // Works page: search, type and sort, a poster grid (grid 8).
 export component WorksPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
     in property <[PlaylistChoice]> playlists;
     callback card-action(string, int, int);
     callback card-layout(int, length);
@@ -2070,6 +2075,7 @@ export component WorksPage inherits VerticalLayout {
     property <int> kind;
     property <int> sort;
     function commit() {
+        root.scroll-y = 0px;
         Lib032.query-works(root.search, root.kind, root.sort);
     }
 
@@ -2126,6 +2132,7 @@ export component WorksPage inherits VerticalLayout {
 
     CardGridPoster {
         vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
         rows: Lib032.works;
         kind: 3;
         loading: Lib032.works-loading;
@@ -2143,6 +2150,7 @@ export component WorksPage inherits VerticalLayout {
 
 // Series page: search and a poster grid (grid 9).
 export component SeriesPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
     callback card-action(string, int, int);
     callback card-layout(int, length);
     property <string> search;
@@ -2152,6 +2160,7 @@ export component SeriesPage inherits VerticalLayout {
         running: false;
         triggered => {
             self.running = false;
+            root.scroll-y = 0px;
             Lib032.query-series(root.search);
         }
     }
@@ -2172,6 +2181,7 @@ export component SeriesPage inherits VerticalLayout {
                 }
                 accepted => {
                     debounce.running = false;
+                    root.scroll-y = 0px;
                     Lib032.query-series(root.search);
                 }
             }
@@ -2205,6 +2215,7 @@ export component SeriesPage inherits VerticalLayout {
 
     if Lib032.series-supported: CardGridPoster {
         vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
         rows: Lib032.series;
         kind: 4;
         loading: Lib032.series-loading;
@@ -2221,6 +2232,7 @@ export component SeriesPage inherits VerticalLayout {
 
 // Playback history (track list 10).
 export component HistoryPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
     in property <int> playing-id;
     in property <[PlaylistChoice]> playlists;
     callback track-action(string, int, int);
@@ -2246,6 +2258,7 @@ export component HistoryPage inherits VerticalLayout {
 
     TrackList {
         vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
         rows: Lib032.history;
         mode: 3;
         loading: Lib032.history-loading;
@@ -2283,6 +2296,8 @@ component DetailHero inherits HorizontalLayout {
 // Work page: hero, series banner, linked albums (grid 14) and tracks
 // collected on other albums (track list 2).
 export component WorkPage inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
     in property <[TrackRow]> tracks;
     in property <bool> loading;
     in property <int> playing-id;
@@ -2478,6 +2493,8 @@ export component WorkPage inherits Flickable {
 
 // Series page: hero, members (grid 15) and albums (grid 16).
 export component SeriesDetailPage inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
     in property <bool> loading;
     in property <[PlaylistChoice]> playlists;
     callback card-action(int, string, int, int);
@@ -2610,6 +2627,7 @@ export component SeriesDetailPage inherits Flickable {
 // Daily mix page: hero, tracks (track list 2, mode 4) and the feedback
 // column (rating, 换一个, 另存为歌单, today's other mixes).
 export component MixPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
     in property <[TrackRow]> tracks;
     in property <bool> loading;
     in property <int> playing-id;
@@ -2725,6 +2743,7 @@ export component MixPage inherits VerticalLayout {
         spacing: 0px;
         TrackList {
             width: root.width - 280px;
+            scroll-y <=> root.scroll-y;
             rows: root.tracks;
             mode: 4;
             loading: root.loading;

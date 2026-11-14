@@ -1341,6 +1341,8 @@ component Facts inherits VerticalLayout {
 // Right-hand column of the 032 album page (`Music032AlbumInspector`):
 // linked works with their track uses, release facts, people, media.
 export component AlbumInspector inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
     in property <[AlbumWorkRow]> works;
     in property <[FactRow]> release;
     in property <[PersonRow]> people;

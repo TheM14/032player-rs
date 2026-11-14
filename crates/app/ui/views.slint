@@ -600,6 +600,7 @@ export component CardView inherits Rectangle {
 // the items by `columns` and loads covers for visible rows only.
 export component CardGrid inherits Rectangle {
     in property <[AlbumRow]> rows;
+    in-out property <length> scroll-y;
     in property <int> kind;
     in property <[PlaylistChoice]> playlists;
     in property <string> empty-text: "没有内容";
@@ -631,6 +632,7 @@ export component CardGrid inherits Rectangle {
     }
 
     ListView {
+        content-y <=> root.scroll-y;
         for row in root.rows: HorizontalLayout {
             padding-left: root.pad;
             padding-right: root.pad;
@@ -1180,6 +1182,7 @@ export component TrackRowView inherits Rectangle {
 // Track list with a column header. `mode` as in `TrackRowView`.
 export component TrackList inherits Rectangle {
     in property <[TrackRow]> rows;
+    in-out property <length> scroll-y;
     in property <int> mode;
     in property <int> playing-id: -1;
     in property <[PlaylistChoice]> playlists;
@@ -1235,6 +1238,7 @@ export component TrackList inherits Rectangle {
 
         if root.rows.length > 0 && !(root.mode == 1 && root.multi-disc): ListView {
             vertical-stretch: 1;
+            content-y <=> root.scroll-y;
             for track[i] in root.rows: TrackRowView {
                 track: track;
                 mode: root.mode;
@@ -1264,6 +1268,7 @@ export component TrackList inherits Rectangle {
 
         if root.rows.length > 0 && root.mode == 1 && root.multi-disc: ScrollView {
             vertical-stretch: 1;
+            content-y <=> root.scroll-y;
             VerticalLayout {
                 alignment: start;
                 padding-bottom: 16px;

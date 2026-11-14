@@ -42,6 +42,7 @@ component SettingRow inherits Rectangle {
 export struct ShortcutRow { title: string, binding: string }
 
 export component SettingsView inherits Rectangle {
+    in-out property <length> scroll-y;
     in property <[ShortcutRow]> shortcuts;
     in property <int> recording: -1;
     callback record-shortcut(int);
@@ -89,6 +90,7 @@ export component SettingsView inherits Rectangle {
     }
 
     Flickable {
+        content-y <=> root.scroll-y;
         content-height: settings-page.preferred-height + 24px;
         settings-page := VerticalLayout {
             width: parent.width;

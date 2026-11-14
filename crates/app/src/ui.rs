@@ -90,6 +90,14 @@ enum Route {
     DailyMix(i64),
 }
 
+/// A back-navigation destination and its independent scrolling areas.
+#[derive(Clone, Copy, Debug)]
+struct HistoryEntry {
+    route: Route,
+    scroll_y: f32,
+    inspector_scroll_y: f32,
+}
+
 /// What the open playlist dialog does on confirm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Dialog {
@@ -273,7 +281,11 @@ struct Ui {
     detail_cover_key: RefCell<Option<String>>,
     detail: RefCell<Option<DetailView>>,
     route: Cell<Route>,
-    history: RefCell<Vec<Route>>,
+    history: RefCell<Vec<HistoryEntry>>,
+    /// Restores asynchronously populated pages after their content grows.
+    scroll_timer: Timer,
+    scroll_restore: Cell<(f32, f32)>,
+    scroll_restore_ticks: Cell<u8>,
     dialog: Cell<Option<Dialog>>,
     /// Artist filters of the albums / tracks pages (id, name).
     album_artist: RefCell<Option<(i64, String)>>,
@@ -388,7 +400,11 @@ impl Ui {
         let current = self.route.get();
         if current != route {
             let mut history = self.history.borrow_mut();
-            history.push(current);
+            history.push(HistoryEntry {
+                route: current,
+                scroll_y: w.get_content_scroll_y(),
+                inspector_scroll_y: w.get_inspector_scroll_y(),
+            });
             if history.len() > MAX_HISTORY {
                 history.remove(0);
             }
@@ -398,17 +414,66 @@ impl Ui {
 
     fn go_back(&self, w: &AppWindow) {
         let previous = self.history.borrow_mut().pop();
-        if let Some(route) = previous {
-            self.show(w, route);
+        if let Some(entry) = previous {
+            self.show_with_scroll(w, entry.route, entry.scroll_y, entry.inspector_scroll_y);
         }
     }
 
     fn show(&self, w: &AppWindow, route: Route) {
+        self.show_with_scroll(w, route, 0.0, 0.0);
+    }
+
+    /// Applies a back-navigation offset for about two seconds while asynchronous
+    /// detail content grows. A short-lived page cannot clamp the saved offset to
+    /// zero before its tracks or cards arrive.
+    fn restore_scroll(&self, w: &AppWindow, scroll_y: f32, inspector_scroll_y: f32) {
+        self.scroll_timer.stop();
+        self.scroll_restore.set((scroll_y, inspector_scroll_y));
+        w.set_content_scroll_y(scroll_y);
+        w.set_inspector_scroll_y(inspector_scroll_y);
+        if scroll_y.abs() < 1.0 && inspector_scroll_y.abs() < 1.0 {
+            return;
+        }
+        self.scroll_restore_ticks.set(125);
+        self.scroll_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(16),
+            || {
+                with_ui(|ui, w| {
+                    let (scroll_y, inspector_scroll_y) = ui.scroll_restore.get();
+                    let scroll_done = (w.get_content_scroll_y() - scroll_y).abs() < 1.0;
+                    let inspector_done =
+                        (w.get_inspector_scroll_y() - inspector_scroll_y).abs() < 1.0;
+                    let ticks = ui.scroll_restore_ticks.get().saturating_sub(1);
+                    ui.scroll_restore_ticks.set(ticks);
+                    if (scroll_done && inspector_done) || ticks == 0 {
+                        ui.scroll_timer.stop();
+                        return;
+                    }
+                    if !scroll_done {
+                        w.set_content_scroll_y(scroll_y);
+                    }
+                    if !inspector_done {
+                        w.set_inspector_scroll_y(inspector_scroll_y);
+                    }
+                });
+            },
+        );
+    }
+
+    fn show_with_scroll(
+        &self,
+        w: &AppWindow,
+        route: Route,
+        scroll_y: f32,
+        inspector_scroll_y: f32,
+    ) {
         // Going to a page (album / artist links, menus) leaves full screen.
         if w.get_full_open() {
             w.set_full_open(false);
             self.full_changed(w);
         }
+        self.restore_scroll(w, scroll_y, inspector_scroll_y);
         self.route.set(route);
         w.set_can_go_back(!self.history.borrow().is_empty());
         let (kind, id) = match route {
@@ -1046,6 +1111,8 @@ impl Ui {
             });
             w.set_detail_loading(false);
             *self.detail.borrow_mut() = Some(view);
+            let (scroll_y, inspector_scroll_y) = self.scroll_restore.get();
+            self.restore_scroll(w, scroll_y, inspector_scroll_y);
             return;
         }
         let (info, artwork) = match &view {
@@ -1184,6 +1251,8 @@ impl Ui {
         w.set_detail_loading(false);
         self.load_detail_cover(w, &artwork);
         *self.detail.borrow_mut() = Some(view);
+        let (scroll_y, inspector_scroll_y) = self.scroll_restore.get();
+        self.restore_scroll(w, scroll_y, inspector_scroll_y);
     }
 
     /// Fills the queue panel: entries matching the search (title or
@@ -1588,6 +1657,9 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         detail: RefCell::default(),
         route: Cell::new(Route::Page(PAGE_ALBUMS)),
         history: RefCell::default(),
+        scroll_timer: Timer::default(),
+        scroll_restore: Cell::new((0.0, 0.0)),
+        scroll_restore_ticks: Cell::new(0),
         dialog: Cell::new(None),
         album_artist: RefCell::default(),
         track_artist: RefCell::default(),
