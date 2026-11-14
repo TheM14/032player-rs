@@ -1024,6 +1024,8 @@ export component TrackRowView inherits Rectangle {
                         }
                     }
                     hover-open := Timer {
+                        // A change callback does not start a new timer from the hover
+                        // property notification. Drive both timers from a mouse move.
                         running: false;
                         interval: 150ms;
                         triggered => {
@@ -1048,16 +1050,20 @@ export component TrackRowView inherits Rectangle {
                     tieup-area := TouchArea {
                         // Avoid the native Tooltip's extra background and padding.
                         property <bool> previewing;
-                        changed has-hover => {
-                            if tieup-area.has-hover {
-                                hover-close.running = false;
-                                if !tieup-area.previewing { hover-open.restart(); }
-                            } else {
-                                hover-open.running = false;
-                                if tieup-area.previewing && !tieup-badge.card-hovered { hover-close.restart(); }
+                        property <bool> last-hover;
+                        pointer-event(e) => {
+                            root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y);
+                            if self.has-hover != self.last-hover {
+                                self.last-hover = self.has-hover;
+                                if self.has-hover {
+                                    hover-close.running = false;
+                                    if !self.previewing { hover-open.restart(); }
+                                } else {
+                                    hover-open.running = false;
+                                    if self.previewing && !tieup-badge.card-hovered { hover-close.restart(); }
+                                }
                             }
                         }
-                        pointer-event(e) => { root.row-menu(e, self.absolute-position.x - root.absolute-position.x + self.mouse-x, self.absolute-position.y - root.absolute-position.y + self.mouse-y); }
                         mouse-cursor: pointer;
                         clicked => {
                             hover-open.running = false;
