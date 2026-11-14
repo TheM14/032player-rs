@@ -431,7 +431,7 @@ fn role_names<'a>(track: &'a Track, role: &str) -> Vec<(&'a str, i64)> {
     }
 }
 
-/// "作词 A · 作曲 B, C · 编曲 D" in pieces; credited artists carry their
+/// "作词 A · 作曲 B | C · 编曲 D" in pieces; credited artists carry their
 /// id, names from the file tags (no artist record) do not.
 pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
     let part = |text: &str, artist_id: i64| CreditPart {
@@ -450,7 +450,7 @@ pub fn credit_parts(track: &Track) -> Vec<CreditPart> {
         parts.push(part(&format!("{label} "), 0));
         for (i, (name, id)) in names.into_iter().enumerate() {
             if i > 0 {
-                parts.push(part(", ", 0));
+                parts.push(part(" | ", 0));
             }
             parts.push(part(name, id));
         }
@@ -1162,7 +1162,7 @@ mod tests {
         };
         // Tag-only names do not link; credited artists do.
         assert_eq!(line(&tracks[0]), "作词 Ayase · 作曲 Ayase#");
-        assert_eq!(line(&tracks[1]), "作曲 Ayase# · 编曲 A#, B#");
+        assert_eq!(line(&tracks[1]), "作曲 Ayase# · 编曲 A# | B#");
         let people = album_people(&tracks);
         let shape: Vec<(&str, &str, usize)> = people
             .iter()
