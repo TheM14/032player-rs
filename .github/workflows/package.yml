@@ -43,6 +43,11 @@ jobs:
           $dir = "dist/$name"
           New-Item -ItemType Directory -Force $dir | Out-Null
           $out = "target/x86_64-pc-windows-msvc/release"
+          if (-not (Test-Path "$out/libmpv-2.dll")) {
+            $dll = Get-ChildItem -Path target/libmpv -Filter libmpv-2.dll -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $dll) { throw "libmpv-2.dll not found in $out or target/libmpv" }
+            Copy-Item $dll.FullName "$out/libmpv-2.dll"
+          }
           Copy-Item "$out/032player.exe" $dir
           Copy-Item "$out/libmpv-2.dll" $dir
           @"
