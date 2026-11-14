@@ -1,8 +1,8 @@
 name: Package
 
 # Portable Windows build for testing (formal releases: release.yml).
-# Run from the Actions tab ("Run workflow"); the zip is attached to the
-# "preview" pre-release and kept as a workflow artifact.
+# Run from the Actions tab ("Run workflow"); the zip is attached directly to
+# the "preview" pre-release without duplicating it as an Actions artifact.
 
 on:
   workflow_dispatch:
@@ -59,13 +59,6 @@ jobs:
           Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
           "ZIP=dist/$name.zip" >> $env:GITHUB_ENV
           "NAME=$name" >> $env:GITHUB_ENV
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.NAME }}
-          # The preview release keeps the latest build available beyond this window.
-          retention-days: 3
-          path: ${{ env.ZIP }}
 
       - name: Publish pre-release
         shell: pwsh
