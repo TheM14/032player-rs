@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use client_core::{
     AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, AudioDevice, Command, Commander, DetailView,
-    Event, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort, QueuePosition,
-    Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason, SleepTimer, SortOrder,
-    ThemeMode, TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode, format,
+    Event, ExclusiveMode, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort,
+    QueuePosition, Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason, SleepTimer,
+    SortOrder, ThemeMode, TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode,
+    format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -1609,6 +1610,9 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         os::browser::open_url(&dir.to_string_lossy());
     });
     window.set_exclusive(settings.exclusive);
+    window.set_exclusive_mode(exclusive_mode_index(settings.exclusive_mode()));
+    window.set_asio_available(false);
+    window.set_asio_fallback(false);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_fade_on_pause(settings.fade_on_pause);
     window.set_theme_mode(match settings.theme {
@@ -2034,7 +2038,25 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         }
     });
     let c = commander.clone();
-    window.on_exclusive_toggled(move |on| c.send(Command::SetExclusive(on)));
+    window.on_exclusive_toggled(move |on| {
+        c.send(Command::SetExclusiveMode(if on {
+            ExclusiveMode::Wasapi
+        } else {
+            ExclusiveMode::Off
+        }));
+    });
+    let c = commander.clone();
+    window.on_exclusive_mode_selected(move |index| {
+        let mode = match index {
+            1 => ExclusiveMode::Wasapi,
+            2 => ExclusiveMode::Asio,
+            _ => ExclusiveMode::Off,
+        };
+        c.send(Command::SetExclusiveMode(mode));
+    });
+    let c = commander.clone();
+    window.on_open_asio_control_panel(move || c.send(Command::OpenAsioControlPanel));
+    commander.send(Command::RefreshAudioDevices);
     window.on_transcode_selected(|index| {
         with_ui(|ui, _| {
             let choice = usize::try_from(index)
@@ -2559,6 +2581,17 @@ pub fn apply(event: Event) {
             w.set_exclusive(enabled);
             w.set_output_busy(false);
         }
+        Event::OutputMode {
+            mode,
+            asio_available,
+            asio_fallback,
+        } => {
+            w.set_exclusive(mode != ExclusiveMode::Off);
+            w.set_exclusive_mode(exclusive_mode_index(mode));
+            w.set_asio_available(asio_available);
+            w.set_asio_fallback(asio_fallback);
+            w.set_output_busy(false);
+        }
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
@@ -2622,6 +2655,14 @@ pub fn apply(event: Event) {
             cast.show(w);
         }
     });
+}
+
+const fn exclusive_mode_index(mode: ExclusiveMode) -> i32 {
+    match mode {
+        ExclusiveMode::Off => 0,
+        ExclusiveMode::Wasapi => 1,
+        ExclusiveMode::Asio => 2,
+    }
 }
 
 /// Host of the server URL for the sidebar status ("music.032").

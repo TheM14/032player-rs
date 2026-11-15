@@ -745,7 +745,7 @@ impl Core {
     /// The output changed under the current entry: nothing renders it now,
     /// and the next play resumes it at `position` without ending the
     /// reported listen (no new play is counted).
-    fn hand_over(&mut self, was_idle: bool, position: i64) {
+    pub(super) fn hand_over(&mut self, was_idle: bool, position: i64) {
         self.idle = true;
         self.loading = false;
         self.paused = true;

@@ -29,6 +29,35 @@ pub trait Engine: Send + Sync + 'static {
     /// Exclusive mode, also while playing; rolls back on failure.
     /// May block while the output reopens.
     fn set_exclusive(&self, enabled: bool) -> Result<(), String>;
+
+    /// Loads `url`, preferring ASIO when `use_asio` is true.
+    fn load_for(&self, url: &str, _use_asio: bool) -> Result<(), String> {
+        self.load(url)
+    }
+
+    /// Appends `url` for gapless playback, preferring ASIO when `use_asio` is true.
+    fn append_for(&self, url: &str, _use_asio: bool) -> Result<(), String> {
+        self.append(url)
+    }
+
+    /// Returns true when ASIO is supported for the given device list and selection.
+    fn supports_asio(&self, _devices: &[AudioDevice], _selected: Option<&str>) -> bool {
+        false
+    }
+
+    /// Applies an [`ExclusiveMode`](crate::settings::ExclusiveMode) change.
+    fn set_exclusive_mode(&self, mode: crate::settings::ExclusiveMode) -> Result<(), String> {
+        match mode {
+            crate::settings::ExclusiveMode::Off => self.set_exclusive(false),
+            crate::settings::ExclusiveMode::Wasapi => self.set_exclusive(true),
+            crate::settings::ExclusiveMode::Asio => Err("ASIO not supported".into()),
+        }
+    }
+
+    /// Opens the ASIO driver control panel if supported by the current engine.
+    fn open_asio_control_panel(&self) -> Result<(), String> {
+        Err("ASIO not supported".into())
+    }
 }
 
 /// An audio output device.

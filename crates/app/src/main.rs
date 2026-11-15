@@ -140,16 +140,32 @@ fn main() -> Result<(), slint::PlatformError> {
     };
 
     // The player callback runs on mpv's event thread; it forwards into the
-    // core once the core exists.
+    // core once the core exists and mpv is the active backend.
     let forward: Arc<OnceLock<Forward>> = Arc::new(OnceLock::new());
+    let active_backend = Arc::new(std::sync::atomic::AtomicU8::new(engine::ACTIVE_NONE));
     let player_forward = forward.clone();
+    let mpv_active = active_backend.clone();
     let (engine, engine_error): (Arc<dyn Engine>, Option<String>) =
         match player::Player::new(&player_options, move |event| {
+            if mpv_active.load(std::sync::atomic::Ordering::Acquire) != engine::ACTIVE_MPV
+                && !matches!(event, player::PlayerEvent::Volume(_))
+            {
+                return;
+            }
             if let (Some(f), Some(e)) = (player_forward.get(), engine::map_event(event)) {
                 f(e);
             }
         }) {
-            Ok(p) => (Arc::new(engine::MpvEngine(p)), None),
+            Ok(p) => (
+                Arc::new(engine::HybridEngine::new(
+                    p,
+                    settings.volume,
+                    settings.exclusive,
+                    forward.clone(),
+                    active_backend,
+                )),
+                None,
+            ),
             Err(e) => {
                 let msg = format!("mpv 初始化失败：{e}");
                 tracing::error!("{msg}");

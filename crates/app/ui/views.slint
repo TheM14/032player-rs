@@ -2104,11 +2104,15 @@ export component PlayerBar inherits Rectangle {
     callback toggle-favorite();
     callback open-album();
     callback open-artist(int);
-    // WASAPI exclusive output, switchable while playing; `exclusive-busy`
+    // Exclusive output (WASAPI / ASIO), switchable while playing; `exclusive-busy`
     // while a change is applied.
     in property <bool> exclusive;
+    in property <int> exclusive-mode;
+    in property <bool> asio-available;
+    in property <bool> asio-fallback;
     in property <bool> exclusive-busy;
     callback toggle-exclusive(bool);
+    callback select-exclusive-mode(int);
     in property <bool> sleep-active;
     // Remaining time or the mode, next to the button.
     in property <string> sleep-label;
@@ -2398,11 +2402,15 @@ export component PlayerBar inherits Rectangle {
         BarButton {
             y: (parent.height - self.height) / 2;
             icon: IconKind.speaker;
-            text: root.tight ? "" : root.exclusive-busy ? "切换中…" : "独占";
-            chip: root.exclusive;
+            text: root.tight ? "" : root.exclusive-busy ? "切换中…" : root.exclusive-mode == 2 ? (root.asio-fallback ? "WASAPI" : "ASIO") : "独占";
+            chip: root.exclusive || root.exclusive-mode != 0;
             enabled: !root.exclusive-busy;
             clicked => {
-                root.toggle-exclusive(!root.exclusive);
+                if root.asio-available {
+                    root.select-exclusive-mode(root.exclusive-mode == 0 ? 1 : root.exclusive-mode == 1 ? 2 : 0);
+                } else {
+                    root.toggle-exclusive(!root.exclusive);
+                }
             }
         }
         // Sonos output: the room's name while playing there.

@@ -528,10 +528,15 @@ export component AppWindow inherits Window {
     in property <[string]> audio-devices: ["系统默认"];
     in-out property <int> audio-device-index;
     in-out property <bool> exclusive;
+    in-out property <int> exclusive-mode;
+    in property <bool> asio-available;
+    in property <bool> asio-fallback;
     in-out property <bool> output-busy;
     callback settings-opened();
     callback audio-device-selected(int);
     callback exclusive-toggled(bool);
+    callback exclusive-mode-selected(int);
+    callback open-asio-control-panel();
     // Windows tray exists: closing can hide to it.
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
@@ -1998,6 +2003,9 @@ export component AppWindow inherits Window {
                     devices: root.audio-devices;
                     device-index <=> root.audio-device-index;
                     exclusive <=> root.exclusive;
+                    exclusive-mode <=> root.exclusive-mode;
+                    asio-available: root.asio-available;
+                    asio-fallback: root.asio-fallback;
                     output-busy: root.output-busy;
                     opened => {
                         root.settings-opened();
@@ -2009,6 +2017,13 @@ export component AppWindow inherits Window {
                     exclusive-toggled(on) => {
                         root.output-busy = true;
                         root.exclusive-toggled(on);
+                    }
+                    exclusive-mode-selected(m) => {
+                        root.output-busy = true;
+                        root.exclusive-mode-selected(m);
+                    }
+                    open-asio-control-panel => {
+                        root.open-asio-control-panel();
                     }
                     tray-available: root.tray-available;
                     close-to-tray <=> root.close-to-tray;
@@ -2094,10 +2109,17 @@ export component AppWindow inherits Window {
         PlayerBar {
             tier: root.tier;
             exclusive: root.exclusive;
+            exclusive-mode: root.exclusive-mode;
+            asio-available: root.asio-available;
+            asio-fallback: root.asio-fallback;
             exclusive-busy: root.output-busy;
             toggle-exclusive(on) => {
                 root.output-busy = true;
                 root.exclusive-toggled(on);
+            }
+            select-exclusive-mode(m) => {
+                root.output-busy = true;
+                root.exclusive-mode-selected(m);
             }
             has-track: root.has-track;
             show-cover: !root.panel-shown || root.full-open;
@@ -2191,6 +2213,8 @@ export component AppWindow inherits Window {
             favorite: root.np-favorite;
             // Not while a Sonos room plays.
             exclusive: root.exclusive && CastState.output-id == "";
+            exclusive-mode: root.exclusive-mode;
+            asio-fallback: root.asio-fallback;
             bit-perfect: root.transcode-index == 0;
             art: root.np-art-side;
             tab: root.panel-queue-tab ? 1 : 0;
@@ -2317,6 +2341,8 @@ export component AppWindow inherits Window {
         album: root.np-album;
         quality: root.np-quality;
         exclusive: root.exclusive && CastState.output-id == "";
+        exclusive-mode: root.exclusive-mode;
+        asio-fallback: root.asio-fallback;
         bit-perfect: root.transcode-index == 0;
         lyrics-source: root.lyrics-source;
         tab: root.full-tab;

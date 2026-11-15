@@ -52,11 +52,17 @@ export component SettingsView inherits Rectangle {
     in property <[string]> devices;
     in-out property <int> device-index;
     in-out property <bool> exclusive;
+    // 0 off, 1 WASAPI exclusive, 2 ASIO.
+    in-out property <int> exclusive-mode;
+    in property <bool> asio-available;
+    in property <bool> asio-fallback;
     // A device / exclusive change is being applied.
     in property <bool> output-busy;
     callback opened();
     callback device-selected(int);
     callback exclusive-toggled(bool);
+    callback exclusive-mode-selected(int);
+    callback open-asio-control-panel();
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
@@ -189,7 +195,7 @@ export component SettingsView inherits Rectangle {
                 }
             }
 
-            SettingRow {
+            if !root.asio-available: SettingRow {
                 title: "独占模式";
                 description: "WASAPI 独占输出，绕过系统混音。播放中可切换；部分设备不支持。";
                 Switch {
@@ -198,6 +204,35 @@ export component SettingsView inherits Rectangle {
                     enabled: !root.output-busy;
                     toggled => {
                         root.exclusive-toggled(self.checked);
+                    }
+                }
+            }
+
+            if root.asio-available: SettingRow {
+                title: "独占模式";
+                description: root.asio-fallback
+                    ? "当前设备支持 FiiO ASIO（Opus 音轨已自动回落到 WASAPI 独占）。"
+                    : "选择独占输出模式：WASAPI 独占或 FiiO ASIO（自动切换原声采样率，播放中可热切换）。";
+                HorizontalLayout {
+                    y: (parent.height - self.height) / 2;
+                    spacing: 8px;
+                    ComboBox {
+                        width: 170px;
+                        y: (parent.height - self.height) / 2;
+                        model: ["关闭", "WASAPI 独占", "ASIO"];
+                        current-index <=> root.exclusive-mode;
+                        enabled: !root.output-busy;
+                        selected => {
+                            root.exclusive-mode-selected(self.current-index);
+                        }
+                    }
+                    GhostButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "ASIO 控制面板";
+                        enabled: !root.output-busy;
+                        clicked => {
+                            root.open-asio-control-panel();
+                        }
                     }
                 }
             }

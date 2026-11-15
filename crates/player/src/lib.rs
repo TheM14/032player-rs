@@ -1,9 +1,12 @@
-//! libmpv wrapper. The only crate that links libmpv.
-//!
-//! One mpv instance, audio only, driven in-process (no IPC socket). Events
-//! are read on a dedicated thread and handed to a callback as
-//! [`PlayerEvent`]s. Options follow the Electron client
-//! (`src/main/features/core/player/index.ts`, `DEFAULT_MPV_PARAMETERS`).
+//! Audio players: `Player` (libmpv) and `AsioPlayer` (clean-room Windows ASIO).
+
+mod asio_player;
+mod decoder;
+mod http_source;
+
+#[cfg(windows)]
+pub use asio_player::WindowsAsioSink;
+pub use asio_player::{AsioPlayer, AudioSink};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -300,6 +303,53 @@ impl Player {
         }
         result
     }
+}
+
+/// Returns `true` when the FiiO ASIO driver is registered and the currently
+/// selected output device (or Windows default render endpoint when `None`/`auto`)
+/// is the FiiO K9 Pro (`FiiO Q series`).
+#[must_use]
+pub fn fiio_asio_available(devices: &[AudioDevice], selected_device: Option<&str>) -> bool {
+    if asio::find_fiio_driver().is_none() {
+        return false;
+    }
+    let needle = asio::FIIO_ENDPOINT_MATCH.to_ascii_lowercase();
+    let is_fiio_desc = |d: &AudioDevice| d.description.to_ascii_lowercase().contains(&needle);
+    match selected_device.filter(|s| !s.is_empty() && *s != "auto") {
+        Some(name) => devices.iter().any(|d| d.name == name && is_fiio_desc(d)),
+        None => {
+            let Some(guid) = asio::default_audio_endpoint_guid() else {
+                return false;
+            };
+            let target = format!("wasapi/{guid}");
+            devices
+                .iter()
+                .any(|d| d.name.eq_ignore_ascii_case(&target) && is_fiio_desc(d))
+        }
+    }
+}
+
+/// Returns the CLSID of the registered FiiO ASIO driver, if present.
+#[must_use]
+pub fn fiio_asio_clsid() -> Option<String> {
+    asio::find_fiio_driver().map(|d| d.clsid)
+}
+
+/// Probes the FiiO ASIO driver to verify the hardware is reachable and ready.
+pub fn probe_fiio_asio() -> Result<()> {
+    let driver = asio::find_fiio_driver()
+        .ok_or_else(|| PlayerError::Mpv("未检测到 FiiO ASIO Driver".into()))?;
+    asio::probe_driver(&driver.clsid, 44_100.0)
+        .map(|_| ())
+        .map_err(|e| PlayerError::Mpv(e.to_string()))
+}
+
+/// Opens the FiiO ASIO driver control panel standalone (when no ASIO stream
+/// is currently active).
+pub fn open_fiio_control_panel_standalone() -> Result<()> {
+    let driver = asio::find_fiio_driver()
+        .ok_or_else(|| PlayerError::Mpv("未检测到 FiiO ASIO Driver".into()))?;
+    asio::open_control_panel_standalone(&driver.clsid).map_err(|e| PlayerError::Mpv(e.to_string()))
 }
 
 impl Drop for Player {

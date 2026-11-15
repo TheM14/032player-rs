@@ -36,7 +36,7 @@ use crate::m032::{
 use crate::queue::{Queue, QueueSnapshot, Repeat, Step};
 use crate::reporter::{Reporter, ReporterMsg};
 use crate::secrets::{SecretStore, TokenKind, token_key};
-use crate::settings::{LyricsSettings, Settings};
+use crate::settings::{ExclusiveMode, LyricsSettings, Settings};
 use crate::storage::FileStorage;
 use session::KeyValueStorage;
 
@@ -198,6 +198,10 @@ pub enum Command {
     SetAudioDevice(Option<String>),
     /// Answered with [`Event::Exclusive`] (the old value on failure).
     SetExclusive(bool),
+    /// Answered with [`Event::OutputMode`] (old state on failure).
+    SetExclusiveMode(ExclusiveMode),
+    /// Opens the ASIO driver control panel when supported.
+    OpenAsioControlPanel,
     /// Layout of the right panel (queue / lyrics).
     SetRightPanel(crate::settings::RightPanel),
     SetShortcuts(crate::shortcuts::Shortcuts),
@@ -623,6 +627,12 @@ pub enum Event {
     /// Selected output device (`None` = system default).
     AudioDevice(Option<String>),
     Exclusive(bool),
+    /// Effective output mode, ASIO device availability, and Opus fallback state.
+    OutputMode {
+        mode: ExclusiveMode,
+        asio_available: bool,
+        asio_fallback: bool,
+    },
     /// Lines of the current track (empty: none). `synced` false = plain text.
     Lyrics {
         lines: Vec<LyricRow>,
@@ -775,8 +785,11 @@ enum Internal {
         notice: Option<String>,
         deleted: Option<i64>,
     },
+    AudioDevicesLoaded(Result<Vec<AudioDevice>, String>),
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
+    ExclusiveModeSet(ExclusiveMode, Result<(), String>),
+    AsioControlPanelOpened(Result<(), String>),
     SaveSettings(u64),
     SaveQueue(u64),
     SleepTick(u64),
@@ -1144,6 +1157,14 @@ struct Core {
     saved_revision: u64,
     /// An output device or exclusive mode change is running.
     output_busy: bool,
+    audio_devices: Vec<AudioDevice>,
+    asio_available: bool,
+    /// Active engine stream was started in ASIO mode.
+    asio_active: bool,
+    /// Current track fell back from ASIO to WASAPI (e.g. Opus).
+    asio_fallback: bool,
+    /// Track IDs confirmed to contain Opus at runtime (fallback on subsequent plays).
+    opus_fallback_tracks: std::collections::HashSet<i64>,
     /// Queue entry appended to the engine for gapless playback.
     preloaded: Option<u64>,
     /// URL of the file being loaded; a different `FileLoaded` is a stale preload.
@@ -1229,6 +1250,11 @@ impl Core {
             settings_revision: 0,
             saved_revision: 0,
             output_busy: false,
+            audio_devices: Vec::new(),
+            asio_available: false,
+            asio_active: false,
+            asio_fallback: false,
+            opus_fallback_tracks: std::collections::HashSet::new(),
             preloaded: None,
             expected_path: None,
             started_uid: None,
@@ -1582,13 +1608,12 @@ impl Core {
             }
             Command::RefreshAudioDevices => {
                 let engine = self.engine.clone();
-                let sink = self.sink.clone();
+                let tx = self.internal.clone();
                 tokio::spawn(async move {
-                    match tokio::task::spawn_blocking(move || engine.audio_devices()).await {
-                        Ok(Ok(devices)) => sink(Event::AudioDevices(devices)),
-                        Ok(Err(e)) => tracing::warn!("audio devices: {e}"),
-                        Err(e) => tracing::warn!("audio devices: {e}"),
-                    }
+                    let res = tokio::task::spawn_blocking(move || engine.audio_devices())
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = tx.send(Internal::AudioDevicesLoaded(res));
                 });
             }
             Command::SetAudioDevice(device) => {
@@ -1606,12 +1631,42 @@ impl Core {
             Command::SetExclusive(enabled) => {
                 if self.output_busy || enabled == self.settings.exclusive {
                     self.emit(Event::Exclusive(self.settings.exclusive));
+                    self.emit_output_mode();
                     return;
                 }
                 self.change_output(
                     move |e| e.set_exclusive(enabled),
                     move |r| Internal::ExclusiveSet(enabled, r),
                 );
+            }
+            Command::SetExclusiveMode(mode) => {
+                if self.output_busy {
+                    self.emit_output_mode();
+                    return;
+                }
+                if mode == ExclusiveMode::Asio && !self.asio_available {
+                    self.emit(Event::Notice("当前输出设备不支持 ASIO 模式".into()));
+                    self.emit_output_mode();
+                    return;
+                }
+                if mode == self.settings.exclusive_mode() {
+                    self.emit_output_mode();
+                    return;
+                }
+                self.change_output(
+                    move |e| e.set_exclusive_mode(mode),
+                    move |r| Internal::ExclusiveModeSet(mode, r),
+                );
+            }
+            Command::OpenAsioControlPanel => {
+                let engine = self.engine.clone();
+                let tx = self.internal.clone();
+                tokio::spawn(async move {
+                    let res = tokio::task::spawn_blocking(move || engine.open_asio_control_panel())
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()));
+                    let _ = tx.send(Internal::AsioControlPanelOpened(res));
+                });
             }
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
             Command::SetShortcuts(keys) => self.update_settings(|s| s.shortcuts = keys),
@@ -1852,9 +1907,72 @@ impl Core {
         self.expected_path = None;
         self.position_ms = 0;
         self.pending_seek_ms = None;
+        if self.asio_active || self.asio_fallback {
+            self.asio_active = false;
+            self.asio_fallback = false;
+            self.emit_output_mode();
+        }
         self.save_position();
         self.emit(Event::Paused(true));
         self.emit_position();
+    }
+
+    fn effective_exclusive_mode(&self) -> ExclusiveMode {
+        if !self.settings.exclusive {
+            ExclusiveMode::Off
+        } else if self.settings.asio && self.asio_available {
+            ExclusiveMode::Asio
+        } else {
+            ExclusiveMode::Wasapi
+        }
+    }
+
+    fn emit_output_mode(&self) {
+        self.emit(Event::OutputMode {
+            mode: self.effective_exclusive_mode(),
+            asio_available: self.asio_available,
+            asio_fallback: self.asio_fallback,
+        });
+    }
+
+    fn refresh_asio_availability(&mut self) {
+        self.asio_available = self
+            .engine
+            .supports_asio(&self.audio_devices, self.settings.audio_device.as_deref());
+    }
+
+    fn want_asio_for(&self, track: &Track) -> (bool, bool) {
+        if self.effective_exclusive_mode() != ExclusiveMode::Asio || self.casting() {
+            return (false, false);
+        }
+        if is_opus_track(track, self.transcode()) || self.opus_fallback_tracks.contains(&track.id) {
+            (false, true)
+        } else {
+            (true, false)
+        }
+    }
+
+    fn maybe_handover_backend(&mut self) {
+        if self.idle || self.casting() {
+            return;
+        }
+        let (need_asio, _) = self
+            .queue
+            .current()
+            .map_or((false, false), |i| self.want_asio_for(&i.track));
+        if need_asio != self.asio_active {
+            let was_playing = !self.paused;
+            let position = self.position_ms;
+            let _ = self.engine.stop();
+            self.asio_active = false;
+            self.asio_fallback = false;
+            self.hand_over(false, position);
+            if was_playing {
+                self.play_current(false);
+            }
+        } else {
+            self.sync_preload();
+        }
     }
 
     /// Shows the current entry (if any) without playing it.
@@ -1915,7 +2033,7 @@ impl Core {
         let Some(url) = self.track_url(id, position_ms) else {
             return false;
         };
-        if let Err(e) = self.engine.load(&url) {
+        if let Err(e) = self.engine.load_for(&url, self.asio_active) {
             self.emit(Event::Notice(e));
             return false;
         }
@@ -2145,6 +2263,7 @@ impl Core {
             _ => None,
         };
         let want = next
+            .filter(|item| self.want_asio_for(&item.track).0 == self.asio_active)
             .map(|item| (item.uid, item.track.id))
             .and_then(|(uid, id)| Some((uid, self.track_url(id, 0)?)));
         if want.as_ref().map(|(uid, _)| *uid) == self.preloaded {
@@ -2156,7 +2275,7 @@ impl Core {
             return;
         }
         if let Some((uid, url)) = want {
-            match self.engine.append(&url) {
+            match self.engine.append_for(&url, self.asio_active) {
                 Ok(()) => self.preloaded = Some(uid),
                 Err(e) => tracing::warn!("preloading the next file: {e}"),
             }
@@ -2190,6 +2309,11 @@ impl Core {
                 .then_some(start_ms),
         };
         let casting = self.casting();
+        let (use_asio, asio_fallback) = if casting {
+            (false, false)
+        } else {
+            self.want_asio_for(&item.track)
+        };
         // Lossy transcodes start the stream there instead of seeking.
         let offset_ms = if !casting && self.lossy_transcode() {
             resume_ms.unwrap_or(0)
@@ -2211,7 +2335,7 @@ impl Core {
             let result = match &url {
                 Some(url) => self
                     .engine
-                    .load(url)
+                    .load_for(url, use_asio)
                     .and_then(|()| self.unpause_engine(from_silence)),
                 None => self
                     .cast_start(resume_ms.unwrap_or(0))
@@ -2225,6 +2349,9 @@ impl Core {
             // The speaker moved on by itself.
             cast_offset = self.cast_offset();
         }
+        self.asio_active = use_asio;
+        self.asio_fallback = asio_fallback;
+        self.emit_output_mode();
         self.resume_at = None;
         self.idle = false;
         // Sonos: loading until the speaker reports the pushed entry.
@@ -2375,6 +2502,19 @@ impl Core {
         if self.idle {
             return;
         }
+        if self.asio_active && error.contains("Opus is not supported") {
+            if let Some(item) = self.queue.current() {
+                self.opus_fallback_tracks.insert(item.track.id);
+            }
+            let position = self.position_ms;
+            let _ = self.engine.stop();
+            self.asio_active = false;
+            self.asio_fallback = true;
+            self.emit_output_mode();
+            self.hand_over(false, position);
+            self.play_current(false);
+            return;
+        }
         // Keeps the engine from moving on into the preload.
         let _ = self.engine.stop();
         self.preloaded = None;
@@ -2437,7 +2577,7 @@ impl Core {
                     // The engine moved on to a stale preload (the queue
                     // changed right at the track boundary): load the right one.
                     tracing::debug!(%path, %expected, "unexpected file, reloading");
-                    if let Err(e) = self.engine.load(expected) {
+                    if let Err(e) = self.engine.load_for(expected, self.asio_active) {
                         self.emit(Event::Notice(e));
                     }
                     return;
@@ -2590,21 +2730,61 @@ impl Core {
                     self.emit(Event::Notice(text));
                 }
             }
+            Internal::AudioDevicesLoaded(result) => match result {
+                Ok(devices) => {
+                    self.audio_devices = devices.clone();
+                    self.refresh_asio_availability();
+                    self.emit(Event::AudioDevices(devices));
+                    self.emit_output_mode();
+                }
+                Err(e) => tracing::warn!("audio devices: {e}"),
+            },
             Internal::AudioDeviceSet(device, result) => {
                 self.output_busy = false;
                 match result {
-                    Ok(()) => self.update_settings(|s| s.audio_device.clone_from(&device)),
+                    Ok(()) => {
+                        self.update_settings(|s| s.audio_device.clone_from(&device));
+                        self.refresh_asio_availability();
+                        self.maybe_handover_backend();
+                    }
                     Err(e) => self.emit(Event::Notice(format!("切换输出设备失败：{e}"))),
                 }
                 self.emit(Event::AudioDevice(self.settings.audio_device.clone()));
+                self.emit_output_mode();
             }
             Internal::ExclusiveSet(enabled, result) => {
                 self.output_busy = false;
                 match result {
-                    Ok(()) => self.update_settings(|s| s.exclusive = enabled),
+                    Ok(()) => {
+                        self.update_settings(|s| {
+                            s.exclusive = enabled;
+                            if !enabled {
+                                s.asio = false;
+                            }
+                        });
+                        self.maybe_handover_backend();
+                    }
                     Err(e) => self.emit(Event::Notice(format!("切换独占模式失败：{e}"))),
                 }
                 self.emit(Event::Exclusive(self.settings.exclusive));
+                self.emit_output_mode();
+            }
+            Internal::ExclusiveModeSet(mode, result) => {
+                self.output_busy = false;
+                match result {
+                    Ok(()) => {
+                        self.update_settings(|s| s.set_exclusive_mode(mode));
+                        self.maybe_handover_backend();
+                    }
+                    Err(e) => self.emit(Event::Notice(format!("切换输出模式失败：{e}"))),
+                }
+                self.emit(Event::Exclusive(self.settings.exclusive));
+                self.emit_output_mode();
+            }
+            Internal::AsioControlPanelOpened(result) => {
+                if let Err(e) = result {
+                    self.emit(Event::Notice(format!("打开 ASIO 控制面板失败：{e}")));
+                }
             }
             Internal::SleepTick(generation) => {
                 if generation != self.sleep_generation {
@@ -2776,6 +2956,27 @@ impl Core {
         self.query_albums(false, AlbumFilter::default());
         self.query_tracks(false, TrackFilter::initial(browse));
         self.load_playlists();
+    }
+}
+
+/// Returns true when the stream for `track` uses Opus and must fall back to WASAPI.
+fn is_opus_track(track: &Track, transcode: Option<Transcode>) -> bool {
+    match transcode {
+        Some(Transcode::Ogg(_)) => true,
+        Some(_) => false,
+        None => {
+            track
+                .codec
+                .as_deref()
+                .is_some_and(|c| c.trim().eq_ignore_ascii_case("opus"))
+                || track.container.trim().eq_ignore_ascii_case("opus")
+                || track.mime_type.to_ascii_lowercase().contains("opus")
+                || track
+                    .relative_path
+                    .trim()
+                    .to_ascii_lowercase()
+                    .ends_with(".opus")
+        }
     }
 }
 

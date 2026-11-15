@@ -24,6 +24,8 @@ export component FullScreenPlayer inherits Rectangle {
     in property <string> album;
     in property <string> quality;
     in property <bool> exclusive;
+    in property <int> exclusive-mode;
+    in property <bool> asio-fallback;
     in property <bool> bit-perfect;
     in property <string> lyrics-source;
     // 0 up next, 1 related, 2 lyrics (narrow layout; wide shows the
@@ -182,7 +184,11 @@ export component FullScreenPlayer inherits Rectangle {
                 }
                 if root.exclusive: QualityTag {
                     y: (parent.height - self.height) / 2;
-                    text: root.bit-perfect ? "独占 · bit-perfect" : "独占";
+                    text: root.exclusive-mode == 2
+                        ? (root.asio-fallback
+                            ? (root.bit-perfect ? "WASAPI · Opus 回落" : "WASAPI · Opus")
+                            : (root.bit-perfect ? "ASIO · bit-perfect" : "ASIO"))
+                        : (root.bit-perfect ? "独占 · bit-perfect" : "独占");
                     text-color: Theme.ok;
                 }
                 Rectangle {

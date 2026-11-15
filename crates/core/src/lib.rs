@@ -34,7 +34,7 @@ pub use images::{Rgba, backdrop, decode, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::{
-    CastHiRes, CastOpus, CastRoomSetting, CastSettings, LyricsSettings, RightPanel, Settings,
-    ThemeMode, TranslationMode, WindowState,
+    CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LyricsSettings, RightPanel,
+    Settings, ThemeMode, TranslationMode, WindowState,
 };
 pub use storage::FileStorage;

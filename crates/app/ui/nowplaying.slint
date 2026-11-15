@@ -85,6 +85,8 @@ export component QualityTag inherits Rectangle {
 // "独占 · bit-perfect" (green): exclusive output of the original file.
 export component ExclusiveState inherits HorizontalLayout {
     in property <bool> bit-perfect;
+    in property <int> exclusive-mode;
+    in property <bool> asio-fallback;
     spacing: 6px;
     Icon {
         kind: IconKind.speaker;
@@ -94,7 +96,11 @@ export component ExclusiveState inherits HorizontalLayout {
         color: Theme.ok;
     }
     Text {
-        text: root.bit-perfect ? "独占 · bit-perfect" : "独占";
+        text: root.exclusive-mode == 2
+            ? (root.asio-fallback
+                ? (root.bit-perfect ? "WASAPI · Opus 回落" : "WASAPI · Opus")
+                : (root.bit-perfect ? "ASIO · bit-perfect" : "ASIO"))
+            : (root.bit-perfect ? "独占 · bit-perfect" : "独占");
         color: Theme.ok;
         font-size: 12.5px;
         font-weight: 600;
@@ -112,6 +118,8 @@ export component NowPlayingPanel inherits Rectangle {
     in property <image> cover;
     in property <bool> favorite;
     in property <bool> exclusive;
+    in property <int> exclusive-mode;
+    in property <bool> asio-fallback;
     in property <bool> bit-perfect;
     // Cover side (logical).
     in property <length> art: 372px;
@@ -254,6 +262,8 @@ export component NowPlayingPanel inherits Rectangle {
             }
             if root.exclusive: ExclusiveState {
                 bit-perfect: root.bit-perfect;
+                exclusive-mode: root.exclusive-mode;
+                asio-fallback: root.asio-fallback;
             }
         }
         // Tabs.

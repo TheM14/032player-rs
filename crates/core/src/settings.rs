@@ -17,6 +17,8 @@ pub struct Settings {
     pub audio_device: Option<String>,
     /// WASAPI exclusive mode (`audio-exclusive`).
     pub exclusive: bool,
+    /// Prefer ASIO output when `exclusive` is enabled and available.
+    pub asio: bool,
     pub right_panel: RightPanel,
     /// Left sidebar width in logical px (dragged by its right edge).
     pub sidebar_width: f32,
@@ -37,6 +39,16 @@ pub struct Settings {
     pub shortcuts: crate::shortcuts::Shortcuts,
     /// Sonos output (MusicBridge).
     pub cast: CastSettings,
+}
+
+/// Exclusive audio output mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExclusiveMode {
+    #[default]
+    Off,
+    Wasapi,
+    Asio,
 }
 
 /// Sonos hi-res lossless (> 48 kHz) tracks (MusicBridge `SonosHiResTranscodeMode`).
@@ -253,6 +265,7 @@ impl Default for Settings {
             volume: 100.0,
             audio_device: None,
             exclusive: false,
+            asio: false,
             right_panel: RightPanel::default(),
             sidebar_width: SIDEBAR_WIDTH,
             window: WindowState::default(),
@@ -272,6 +285,34 @@ impl Default for Settings {
 impl Settings {
     pub fn path(data_dir: &Path) -> PathBuf {
         data_dir.join("settings.json")
+    }
+
+    /// Effective exclusive mode persisted in settings.
+    #[must_use]
+    pub fn exclusive_mode(&self) -> ExclusiveMode {
+        match (self.exclusive, self.asio) {
+            (false, _) => ExclusiveMode::Off,
+            (true, false) => ExclusiveMode::Wasapi,
+            (true, true) => ExclusiveMode::Asio,
+        }
+    }
+
+    /// Updates `exclusive` and `asio` flags from `mode`.
+    pub fn set_exclusive_mode(&mut self, mode: ExclusiveMode) {
+        match mode {
+            ExclusiveMode::Off => {
+                self.exclusive = false;
+                self.asio = false;
+            }
+            ExclusiveMode::Wasapi => {
+                self.exclusive = true;
+                self.asio = false;
+            }
+            ExclusiveMode::Asio => {
+                self.exclusive = true;
+                self.asio = true;
+            }
+        }
     }
 
     /// Reads `settings.json` in `data_dir`; defaults when missing or corrupt.
@@ -324,6 +365,7 @@ mod tests {
             volume: 42.0,
             audio_device: Some("wasapi/{x}".into()),
             exclusive: true,
+            asio: true,
             right_panel: RightPanel {
                 open: false,
                 queue_tab: true,
