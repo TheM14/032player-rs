@@ -1,5 +1,5 @@
 import { ArtistLinks, CreditPart } from "views.slint";
-import { Fonts, Theme } from "theme.slint";
+import { ArtFit, Fonts, Theme } from "theme.slint";
 import { Icon, IconKind } from "controls.slint";
 import { PillTab, SourceBadge, QualityTag } from "nowplaying.slint";
 
@@ -107,11 +107,12 @@ export component FullScreenPlayer inherits Rectangle {
             Rectangle {
                 height: root.side;
                 Rectangle {
+                    width: ArtFit.width(root.side, root.side, root.cover);
+                    height: ArtFit.height(root.side, root.side, root.cover);
                     x: root.wide ? 0px : (parent.width - self.width) / 2;
-                    width: root.side;
-                    height: root.side;
+                    y: root.side - self.height;
                     border-radius: 14px;
-                    background: Theme.raised;
+                    background: root.cover.width == 0 ? Theme.raised : transparent;
                     drop-shadow-blur: 60px;
                     drop-shadow-offset-y: 30px;
                     drop-shadow-color: #000000b0;

@@ -70,7 +70,12 @@ fn covers_dir() -> Vec<(String, image::RgbaImage)> {
                         let img = image::open(&path).ok()?.to_rgba8();
                         let img = if img.width() > 640 {
                             let h = img.height() * 640 / img.width();
-                            image::imageops::resize(&img, 640, h, image::imageops::FilterType::Triangle)
+                            image::imageops::resize(
+                                &img,
+                                640,
+                                h,
+                                image::imageops::FilterType::Triangle,
+                            )
                         } else {
                             img
                         };
@@ -96,7 +101,11 @@ fn art(name: &str) -> Image {
     if let Some((_, img)) = covers_dir().iter().find(|(n, _)| n == name) {
         return to_slint(img);
     }
-    gradient(name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 97)
+    gradient(
+        name.bytes()
+            .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+            % 97,
+    )
 }
 
 /// A 2:3 work poster cut from the middle of a named cover.
@@ -104,7 +113,8 @@ fn poster(name: &str) -> Image {
     if let Some((_, img)) = covers_dir().iter().find(|(n, _)| n == name) {
         let w = img.height() * 2 / 3;
         let x = (img.width().saturating_sub(w)) / 2;
-        let crop = image::imageops::crop_imm(img, x, 0, w.min(img.width()), img.height()).to_image();
+        let crop =
+            image::imageops::crop_imm(img, x, 0, w.min(img.width()), img.height()).to_image();
         return to_slint(&crop);
     }
     art(name)
@@ -200,7 +210,13 @@ fn album_rows_n(columns: usize, count: usize) -> Value {
             card.set_field("playing".into(), Value::Bool(i == 1));
             card.set_field(
                 "disc-count".into(),
-                Value::Number(if i % 4 == 0 { 2.0 } else if i % 6 == 3 { 3.0 } else { 1.0 }),
+                Value::Number(if i % 4 == 0 {
+                    2.0
+                } else if i % 6 == 3 {
+                    3.0
+                } else {
+                    1.0
+                }),
             );
             card.set_field(
                 "cover".into(),
@@ -267,7 +283,13 @@ fn tracks() -> Value {
                 row.set_field("cover".into(), Value::Image(cover(i as u32)));
                 row.set_field(
                     "version-count".into(),
-                    Value::Number(if i == 0 || i == 2 { 2.0 } else if i == 1 { 3.0 } else { 0.0 }),
+                    Value::Number(if i == 0 || i == 2 {
+                        2.0
+                    } else if i == 1 {
+                        3.0
+                    } else {
+                        0.0
+                    }),
                 );
                 Value::Struct(row)
             })
@@ -607,7 +629,7 @@ fn main() {
     // Render only the requested regression canvases (faster).
     if matches!(
         std::env::var("UI_SNAPSHOT_ONLY").as_deref(),
-        Ok("wide" | "badges" | "typography" | "play-hover")
+        Ok("wide" | "badges" | "typography" | "play-hover" | "posters")
     ) {
         wide::run(&def, &window, &out);
         return;
@@ -639,18 +661,27 @@ fn main() {
         let recorded = clicks.clone();
         inst.set_callback("track-action", move |args| {
             if let [_, Value::String(action), _, Value::Number(id)] = args {
-                if action == "artist" { recorded.borrow_mut().push(*id as i32); }
+                if action == "artist" {
+                    recorded.borrow_mut().push(*id as i32);
+                }
             }
             Value::Void
-        }).unwrap();
+        })
+        .unwrap();
         for x in [570.0, 655.0] {
             let position = slint::LogicalPosition::new(x, 267.0);
             let button = slint::platform::PointerEventButton::Left;
             window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
-            window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
-            window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
         }
-        assert_eq!(*clicks.borrow(), vec![10, 20], "Each name must dispatch its own artist ID");
+        assert_eq!(
+            *clicks.borrow(),
+            vec![10, 20],
+            "Each name must dispatch its own artist ID"
+        );
         return;
     }
 
@@ -936,13 +967,30 @@ fn main() {
                     }),
                 );
                 row.set_field("tieup-count".into(), n(if i == 0 { 2.0 } else { 1.0 }));
-                row.set_field("tieup-works".into(), model((0..if i == 0 {2} else {1}).map(|j| st(&[
-                    ("id", n(90.0 + f64::from(j))),
-                    ("title", s(if j == 0 { "CLANNAD" } else { "CLANNAD ～AFTER STORY～" })),
-                    ("translated", s("团子大家族")), ("meta", s("TV 动画 · 2007")),
-                    ("usage", s(if i % 2 == 0 { "OP" } else { "插曲" })),
-                    ("poster", Value::Image(cover(8 + j))),
-                ])).collect()));
+                row.set_field(
+                    "tieup-works".into(),
+                    model(
+                        (0..if i == 0 { 2 } else { 1 })
+                            .map(|j| {
+                                st(&[
+                                    ("id", n(90.0 + f64::from(j))),
+                                    (
+                                        "title",
+                                        s(if j == 0 {
+                                            "CLANNAD"
+                                        } else {
+                                            "CLANNAD ～AFTER STORY～"
+                                        }),
+                                    ),
+                                    ("translated", s("团子大家族")),
+                                    ("meta", s("TV 动画 · 2007")),
+                                    ("usage", s(if i % 2 == 0 { "OP" } else { "插曲" })),
+                                    ("poster", Value::Image(cover(8 + j))),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                );
                 row.set_field(
                     "tieup-tooltip".into(),
                     s("作品标题 / 作品譯名\nOP · TV 动画 · 2024\n\n第二部作品\nED · 剧场版 · 2025"),
@@ -1105,7 +1153,11 @@ fn main() {
         let adds = queue_adds.clone();
         inst.set_callback("track-action", move |args| {
             if args.get(1) == Some(&s("last")) {
-                assert_eq!(args.get(2), Some(&n(0.0)), "Only the right-clicked track is added");
+                assert_eq!(
+                    args.get(2),
+                    Some(&n(0.0)),
+                    "Only the right-clicked track is added"
+                );
                 adds.set(adds.get() + 1);
             }
             println!("track-action {args:?}");
@@ -1127,30 +1179,56 @@ fn main() {
         let button = slint::platform::PointerEventButton::Right;
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
-        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-context-menu.png"));
+        render(
+            &window,
+            PhysicalSize::new(1600, 900),
+            &format!("{out}/track-context-menu.png"),
+        );
         // "添加到播放队列末尾", the third menu item.
         let position = slint::LogicalPosition::new(290.0, 634.0);
         let button = slint::platform::PointerEventButton::Left;
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
-        assert_eq!(queue_adds.get(), 1, "Right click must open a working queue menu");
+        assert_eq!(
+            queue_adds.get(),
+            1,
+            "Right click must open a working queue menu"
+        );
         println!("track right-click queue action passed");
-        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-menu-closed.png"));
+        render(
+            &window,
+            PhysicalSize::new(1600, 900),
+            &format!("{out}/track-menu-closed.png"),
+        );
         // The "◆ OP 2" chip.
         let position = slint::LogicalPosition::new(283.0, 533.0);
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
         slint::platform::update_timers_and_animations();
         std::thread::sleep(std::time::Duration::from_millis(900));
         slint::platform::update_timers_and_animations();
-        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-tieup-tooltip.png"));
+        render(
+            &window,
+            PhysicalSize::new(1600, 900),
+            &format!("{out}/track-tieup-tooltip.png"),
+        );
         let button = slint::platform::PointerEventButton::Left;
         window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
         window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
-        render(&window, PhysicalSize::new(1600, 900), &format!("{out}/track-tieup-popover.png"));
-        window.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: slint::platform::Key::Escape.into() });
-        window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: slint::platform::Key::Escape.into() });
-        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: slint::LogicalPosition::new(190.0, 480.0) });
+        render(
+            &window,
+            PhysicalSize::new(1600, 900),
+            &format!("{out}/track-tieup-popover.png"),
+        );
+        window.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Escape.into(),
+        });
+        window.dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Escape.into(),
+        });
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(190.0, 480.0),
+        });
     }
     set(&inst, "panel-open", Value::Bool(true));
     set(&inst, "sidebar-width", Value::Number(300.0));
@@ -1313,7 +1391,11 @@ fn main() {
         ),
     );
     render(&window, size, &format!("{out}/settings.png"));
-    render(&window, PhysicalSize::new(1280, 1500), &format!("{out}/settings-tall.png"));
+    render(
+        &window,
+        PhysicalSize::new(1280, 1500),
+        &format!("{out}/settings-tall.png"),
+    );
     set(
         &inst,
         "info-rows",
@@ -1328,7 +1410,10 @@ fn main() {
                 ("作曲", "Ayase"),
                 ("音质", "FLAC / 24bit / 48kHz"),
                 ("文件大小", "31.2 MB"),
-                ("路径", "YOASOBI/THE BOOK/03 夜に駆ける (A very long file name to check wrapping).flac"),
+                (
+                    "路径",
+                    "YOASOBI/THE BOOK/03 夜に駆ける (A very long file name to check wrapping).flac",
+                ),
                 ("入库时间", "2026年10月12日 09:15"),
             ]
             .iter()
@@ -1676,7 +1761,11 @@ fn main() {
     render(&window, size, &format!("{out}/full-queue.png"));
     set(&inst, "full-related", tracks());
     set(&inst, "full-tab", n(1.0));
-    render(&window, PhysicalSize::new(1000, 640), &format!("{out}/full-related-small.png"));
+    render(
+        &window,
+        PhysicalSize::new(1000, 640),
+        &format!("{out}/full-related-small.png"),
+    );
     set(&inst, "full-open", Value::Bool(false));
     set_g(&inst, "LyricsSearch", "name", s("夜に駆ける"));
     set_g(&inst, "LyricsSearch", "artist", s("YOASOBI"));

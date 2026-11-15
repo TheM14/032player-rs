@@ -10,11 +10,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use client_core::{
-    AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, AudioDevice, Command, Commander, DetailView,
-    Event, ExclusiveMode, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter, PlaylistSort,
-    QueuePosition, Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason, SleepTimer,
-    SortOrder, ThemeMode, TrackFilter, TrackItem, TrackList, TrackSort, TrackSource, Transcode,
-    format,
+    AlbumFilter, AlbumSort, ArtistFilter, ArtistSort, ArtworkFit, AudioDevice, Command, Commander,
+    DetailView, Event, ExclusiveMode, FavoriteKind, LoginFailure, NowPlaying, PlaylistFilter,
+    PlaylistSort, QueuePosition, Repeat, Rgba, RightPanel, ServerFeatures, Settings, SignOutReason,
+    SleepTimer, SortOrder, ThemeMode, TrackFilter, TrackItem, TrackList, TrackSort, TrackSource,
+    Transcode, format,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -1090,12 +1090,19 @@ impl Ui {
         );
         for (i, path) in artworks {
             let tracks_model = self.detail_tracks.clone();
-            self.bind_image(w, Bind::Detail, &path, (54.0, 54.0), move |image| {
-                if let Some(mut row) = tracks_model.row_data(i) {
-                    row.cover = image.clone();
-                    tracks_model.set_row_data(i, row);
-                }
-            });
+            self.bind_image(
+                w,
+                Bind::Detail,
+                &path,
+                (54.0, 54.0),
+                ArtworkFit::Contain,
+                move |image| {
+                    if let Some(mut row) = tracks_model.row_data(i) {
+                        row.cover = image.clone();
+                        tracks_model.set_row_data(i, row);
+                    }
+                },
+            );
         }
         if self.m032_detail(w, &view, rows) {
             let (kind, id, title) = match &view {
@@ -1305,6 +1312,7 @@ impl Ui {
                 m032::Bind::Queue,
                 &path.clone(),
                 (QUEUE_COVER, QUEUE_COVER),
+                ArtworkFit::Contain,
                 move |image| {
                     covers.borrow_mut().insert(path.clone(), image.clone());
                     for (i, p) in paths.borrow().iter().enumerate() {
@@ -1358,12 +1366,13 @@ impl Ui {
         let artwork = self.now.borrow().as_ref().map(|n| n.artwork.clone());
         if let Some(artwork) = artwork.filter(|a| !a.is_empty()) {
             let px = physical_box(NP_COVER, NP_COVER, scale);
-            let key = image_key(&artwork, px);
+            let key = image_key(&artwork, px, ArtworkFit::Contain);
             self.send(Command::LoadImage {
                 key: key.clone(),
                 path: artwork,
                 width: px.0,
                 height: px.1,
+                fit: ArtworkFit::Contain,
             });
             *self.now_cover_key.borrow_mut() = Some(key);
             *self.now_large_key.borrow_mut() = None;
@@ -1393,7 +1402,7 @@ impl Ui {
     fn load_now_large(&self, w: &AppWindow, artwork: &str) {
         let side = w.get_np_art_side();
         let px = physical_box(side, side, self.scale(w));
-        let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
+        let key = (!artwork.is_empty()).then(|| image_key(artwork, px, ArtworkFit::Contain));
         if *self.now_large_key.borrow() == key {
             return;
         }
@@ -1403,6 +1412,7 @@ impl Ui {
                 path: artwork.to_owned(),
                 width: px.0,
                 height: px.1,
+                fit: ArtworkFit::Contain,
             }),
             None => w.set_np_cover_large(Image::default()),
         }
@@ -1428,7 +1438,7 @@ impl Ui {
         let side = w.get_full_cover_side();
         let px = physical_box(side, side, self.scale(w));
         let key = (!artwork.is_empty() && w.get_full_cover_side() > 0.0)
-            .then(|| format!("full|{}", image_key(&artwork, px)));
+            .then(|| format!("full|{}", image_key(&artwork, px, ArtworkFit::Contain)));
         if *self.full_cover_key.borrow() != key {
             match &key {
                 Some(key) => {
@@ -1446,6 +1456,7 @@ impl Ui {
                         path: artwork.clone(),
                         width: px.0,
                         height: px.1,
+                        fit: ArtworkFit::Contain,
                     });
                 }
                 None => w.set_full_cover(Image::default()),
@@ -1465,7 +1476,12 @@ impl Ui {
     fn load_detail_cover(&self, w: &AppWindow, artwork: &str) {
         let side = w.get_detail_art_side();
         let px = physical_box(side, side, self.scale(w));
-        let key = (!artwork.is_empty()).then(|| image_key(artwork, px));
+        let fit = if w.get_detail().kind == 1 {
+            ArtworkFit::Cover
+        } else {
+            ArtworkFit::Contain
+        };
+        let key = (!artwork.is_empty()).then(|| image_key(artwork, px, fit));
         let old = self.detail_cover_key.replace(key.clone());
         if old == key {
             return;
@@ -1480,6 +1496,7 @@ impl Ui {
                 path: artwork.to_owned(),
                 width: px.0,
                 height: px.1,
+                fit,
             });
         }
     }
@@ -1625,6 +1642,13 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     let grids: Vec<Rc<CardGridModel>> = (0..GRIDS)
         .map(|_| CardGridModel::new(commander.clone()))
         .collect();
+    // Album and playlist grids preserve poster/landscape aspect ratios.
+    for grid in ALBUM_GRIDS {
+        grids[grid].set_fit(ArtworkFit::Contain);
+    }
+    for grid in [GRID_PLAYLISTS, GRID_HOME_PLAYLISTS, GRID_SERIES_ALBUMS] {
+        grids[grid].set_fit(ArtworkFit::Contain);
+    }
     // The artist page's release groups share one Flickable (no ListView).
     for grid in RELEASE_GRIDS {
         grids[grid].set_lazy(true);
@@ -2474,7 +2498,8 @@ pub fn apply(event: Event) {
             // Decoded at the player bar size: a large grid cover shrunk
             // by the renderer (no mipmaps) looks jagged.
             let px = physical_box(NP_COVER, NP_COVER, ui.scale(w));
-            let key = (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px));
+            let key =
+                (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px, ArtworkFit::Contain));
             match &key {
                 Some(key) => {
                     let placeholder = ui.grids.iter().find_map(|g| g.cover(&now.artwork));
@@ -2484,6 +2509,7 @@ pub fn apply(event: Event) {
                         path: now.artwork.clone(),
                         width: px.0,
                         height: px.1,
+                        fit: ArtworkFit::Contain,
                     });
                 }
                 None => w.set_np_cover(Image::default()),

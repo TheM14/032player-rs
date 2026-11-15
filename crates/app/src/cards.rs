@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use client_core::{AlbumItem, ArtistItem, Command, Commander, PlaylistItem};
+use client_core::{AlbumItem, ArtistItem, ArtworkFit, Command, Commander, PlaylistItem};
 use slint::{Image, Model, ModelNotify, ModelRc, ModelTracker, SharedString, VecModel};
 
 use crate::{AlbumCard, AlbumRow};
@@ -25,9 +25,13 @@ const MAX_COVERS: usize = 96;
 /// Physical pixel box an image is decoded for.
 pub type ImageBox = (u32, u32);
 
-/// Image request key: display box and artwork path.
-pub fn image_key(path: &str, (width, height): ImageBox) -> String {
-    format!("{width}x{height}|{path}")
+/// Image request key: fit mode, display box and artwork path.
+pub fn image_key(path: &str, (width, height): ImageBox, fit: ArtworkFit) -> String {
+    let prefix = match fit {
+        ArtworkFit::Cover => "",
+        ArtworkFit::Contain => "fit:",
+    };
+    format!("{prefix}{width}x{height}|{path}")
 }
 
 /// Physical box of a `width` x `height` logical one at `scale`.
@@ -39,13 +43,17 @@ pub fn physical_box(width: f32, height: f32, scale: f32) -> ImageBox {
 
 /// Artwork path of an image key.
 pub fn key_path(key: &str) -> Option<&str> {
-    parse_key(key).map(|(_, path)| path)
+    parse_key(key).map(|(_, _, path)| path)
 }
 
-fn parse_key(key: &str) -> Option<(ImageBox, &str)> {
-    let (size, path) = key.split_once('|')?;
+fn parse_key(key: &str) -> Option<(ArtworkFit, ImageBox, &str)> {
+    let (fit, rest) = match key.strip_prefix("fit:") {
+        Some(rest) => (ArtworkFit::Contain, rest),
+        None => (ArtworkFit::Cover, key),
+    };
+    let (size, path) = rest.split_once('|')?;
     let (width, height) = size.split_once('x')?;
-    Some(((width.parse().ok()?, height.parse().ok()?), path))
+    Some((fit, (width.parse().ok()?, height.parse().ok()?), path))
 }
 
 /// What a card shows.
@@ -158,6 +166,8 @@ pub struct CardGridModel {
     playing: RefCell<std::collections::HashSet<i64>>,
     /// Covers wait for [`Self::show_row`] instead of `row_data`.
     lazy: Cell<bool>,
+    /// How artwork is fitted into its box.
+    fit: Cell<ArtworkFit>,
 }
 
 impl CardGridModel {
@@ -176,7 +186,13 @@ impl CardGridModel {
             commander,
             playing: RefCell::default(),
             lazy: Cell::new(false),
+            fit: Cell::new(ArtworkFit::Cover),
         })
+    }
+
+    /// Sets how covers are fitted into each card box.
+    pub fn set_fit(&self, fit: ArtworkFit) {
+        self.fit.set(fit);
     }
 
     /// Requests covers only for rows reported by [`Self::show_row`].
@@ -203,14 +219,16 @@ impl CardGridModel {
     /// Asks for the cover of `entry` at `px` unless it is there or on its way.
     fn request(&self, entry: &Entry, px: ImageBox) {
         let path = &entry.item.artwork;
+        let fit = self.fit.get();
         let current = entry.cover.as_ref().is_some_and(|(_, at)| *at == px);
         if !current && !path.is_empty() && !entry.requested.get() {
             entry.requested.set(true);
             self.commander.send(Command::LoadImage {
-                key: image_key(path, px),
+                key: image_key(path, px, fit),
                 path: path.clone(),
                 width: px.0,
                 height: px.1,
+                fit,
             });
         }
     }
@@ -338,10 +356,10 @@ impl CardGridModel {
     /// Stores a loaded cover; true when some album uses it. Covers decoded
     /// for an outdated size are ignored.
     pub fn set_cover(&self, key: &str, image: &Image) -> bool {
-        let Some((px, path)) = parse_key(key) else {
+        let Some((fit, px, path)) = parse_key(key) else {
             return false;
         };
-        if px != self.cover_px.get() {
+        if fit != self.fit.get() || px != self.cover_px.get() {
             return false;
         }
         let Some(indices) = self.by_path.borrow().get(path).cloned() else {

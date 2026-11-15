@@ -4,7 +4,7 @@
 // `pane-height`).
 
 import { ArtistLinks, CreditPart } from "views.slint";
-import { Fonts, Theme } from "theme.slint";
+import { ArtFit, Fonts, Theme } from "theme.slint";
 import { Icon, IconKind } from "controls.slint";
 
 // Pill tab of the panel / full-screen player ("歌词", "队列 11").
@@ -158,11 +158,12 @@ export component NowPlayingPanel inherits Rectangle {
         Rectangle {
             height: root.art;
             Rectangle {
-                x: 24px;
-                width: root.art;
-                height: root.art;
+                width: ArtFit.width(root.art, root.art, root.cover);
+                height: ArtFit.height(root.art, root.art, root.cover);
+                x: (parent.width - self.width) / 2;
+                y: (root.art - self.height) / 2;
                 border-radius: 12px;
-                background: Theme.raised;
+                background: root.cover.width == 0 ? Theme.raised : transparent;
                 drop-shadow-blur: 24px;
                 drop-shadow-offset-y: 10px;
                 drop-shadow-color: #00000066;

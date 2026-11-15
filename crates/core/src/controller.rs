@@ -217,14 +217,14 @@ pub enum Command {
     CheckUpdate,
     /// Start (`Some`) or cancel the sleep timer.
     SetSleepTimer(Option<SleepTimer>),
-    /// Load artwork `path` for a `width` x `height` box (physical pixels,
-    /// cover-fit and cropped to exactly that size); answered with
-    /// [`Event::Image`] carrying `key`.
+    /// Load artwork `path` for a `width` x `height` box (physical pixels)
+    /// using `fit`; answered with [`Event::Image`] carrying `key`.
     LoadImage {
         key: String,
         path: String,
         width: u32,
         height: u32,
+        fit: crate::ArtworkFit,
     },
     /// Like [`Command::LoadImage`], but downloads the original artwork (no
     /// `size`; the full-screen player).
@@ -233,6 +233,7 @@ pub enum Command {
         path: String,
         width: u32,
         height: u32,
+        fit: crate::ArtworkFit,
     },
     /// Songs similar to track `id` ([`Event::Related`], `TrackList::Related`).
     LoadRelated(i64),
@@ -1753,13 +1754,15 @@ impl Core {
                 path,
                 width,
                 height,
-            } => self.load_image(key, path, (width, height), false),
+                fit,
+            } => self.load_image(key, path, (width, height), fit, false),
             Command::LoadOriginalImage {
                 key,
                 path,
                 width,
                 height,
-            } => self.load_image(key, path, (width, height), true),
+                fit,
+            } => self.load_image(key, path, (width, height), fit, true),
             Command::DiscoverCast => self.discover_cast(),
             Command::SetCastOutput(id) => self.set_cast_output(id),
             Command::SetCastOptions { hires, opus, hosts } => {
@@ -1788,7 +1791,14 @@ impl Core {
 
     /// Loads artwork for a `(width, height)` box; `original`: the uploaded
     /// file rather than a server-rendered size.
-    fn load_image(&self, key: String, path: String, (width, height): (u32, u32), original: bool) {
+    fn load_image(
+        &self,
+        key: String,
+        path: String,
+        (width, height): (u32, u32),
+        fit: crate::ArtworkFit,
+        original: bool,
+    ) {
         let Some(library) = &self.library else { return };
         let images = library.images.clone();
         let url = if original {
@@ -1801,7 +1811,7 @@ impl Core {
         };
         let sink = self.sink.clone();
         tokio::spawn(async move {
-            match images.load(url, width, height).await {
+            match images.load(url, width, height, fit).await {
                 Ok(image) => sink(Event::Image { key, image }),
                 Err(e) => tracing::debug!("artwork {path}: {e}"),
             }

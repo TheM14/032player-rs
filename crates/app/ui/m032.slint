@@ -4,7 +4,7 @@
 // the components (forwarded by app.slint) or of the globals.
 
 import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
-import { Fonts, Theme, Shell } from "theme.slint";
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
     RoundIconButton,
@@ -618,20 +618,28 @@ export component CardShelf inherits Rectangle {
 component Cover inherits Rectangle {
     in property <image> source;
     in property <string> placeholder: "032";
-    border-radius: 5px;
-    background: Theme.raised;
-    clip: true;
-    if root.source.width == 0: Text {
-        text: root.placeholder;
-        font-family: Fonts.family(self.text);
-        color: Theme.text-faint;
-        font-size: 12px;
-    }
-    Image {
-        source: root.source;
-        width: 100%;
-        height: 100%;
-        image-fit: ImageFit.cover;
+    in property <length> radius: 5px;
+    in property <bool> adaptive: true;
+    Rectangle {
+        width: root.adaptive ? ArtFit.width(parent.width, parent.height, root.source) : parent.width;
+        height: root.adaptive ? ArtFit.height(parent.width, parent.height, root.source) : parent.height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: root.radius;
+        background: root.source.width == 0 ? Theme.raised : transparent;
+        clip: true;
+        if root.source.width == 0: Text {
+            text: root.placeholder;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 12px;
+        }
+        Image {
+            source: root.source;
+            width: 100%;
+            height: 100%;
+            image-fit: ImageFit.cover;
+        }
     }
 }
 
@@ -678,11 +686,13 @@ export component HomeRowView inherits Rectangle {
         padding: root.card ? 12px : 0px;
         spacing: root.card ? 16px : root.mix ? 16px : 16px;
         Rectangle {
+            property <length> img-w: root.item.covers.length < 4 ? ArtFit.width(root.art, root.art, root.item.cover) : root.art;
+            property <length> img-h: root.item.covers.length < 4 ? ArtFit.height(root.art, root.art, root.item.cover) : root.art;
             width: root.art;
             height: root.art;
             y: (parent.height - self.height) / 2;
             if root.item.covers.length < 4: Cover {
-                border-radius: root.mix || root.card ? 6px : 5px;
+                radius: root.mix || root.card ? 6px : 5px;
                 source: root.item.cover;
                 placeholder: root.mix ? "♪" : "032";
             }
@@ -699,45 +709,51 @@ export component HomeRowView inherits Rectangle {
                     image-fit: ImageFit.cover;
                 }
             }
-            if !root.card: Rectangle {
-                border-radius: 5px;
-                background: art-area.has-hover || root.playing ? #0000008c : transparent;
-                if root.playing && !art-area.has-hover: PlayingBars {
-                    width: 16px;
-                    height: 14px;
-                    bar-color: #ffffff;
+            Rectangle {
+                width: parent.img-w;
+                height: parent.img-h;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                if !root.card: Rectangle {
+                    border-radius: 5px;
+                    background: art-area.has-hover || root.playing ? #0000008c : transparent;
+                    if root.playing && !art-area.has-hover: PlayingBars {
+                        width: 16px;
+                        height: 14px;
+                        bar-color: #ffffff;
+                    }
+                    Icon {
+                        visible: art-area.has-hover;
+                        kind: IconKind.play;
+                        width: 16px;
+                        height: 16px;
+                        color: #ffffff;
+                    }
                 }
-                Icon {
-                    visible: art-area.has-hover;
-                    kind: IconKind.play;
-                    width: 16px;
-                    height: 16px;
-                    color: #ffffff;
+                // 接着听: a white play button on the cover.
+                if root.card: Rectangle {
+                    x: parent.width - 36px;
+                    y: parent.height - 36px;
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 15px;
+                    background: art-area.has-hover ? #ffffff : #ffffffeb;
+                    if root.playing: PlayingBars {
+                        width: 12px;
+                        height: 11px;
+                    }
+                    if !root.playing: Icon {
+                        kind: IconKind.play;
+                        width: 13px;
+                        height: 13px;
+                        color: #111113;
+                    }
                 }
-            }
-            // 接着听: a white play button on the cover.
-            if root.card: Rectangle {
-                x: parent.width - 36px;
-                y: parent.height - 36px;
-                width: 30px;
-                height: 30px;
-                border-radius: 15px;
-                background: art-area.has-hover ? #ffffff : #ffffffeb;
-                if root.playing: PlayingBars {
-                    width: 12px;
-                    height: 11px;
-                }
-                if !root.playing: Icon {
-                    kind: IconKind.play;
-                    width: 13px;
-                    height: 13px;
-                    color: #111113;
-                }
-            }
-            art-area := TouchArea {
-                mouse-cursor: pointer;
-                clicked => {
-                    root.action("play", 0);
+                art-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("play", 0);
+                    }
                 }
             }
         }
@@ -1031,10 +1047,10 @@ component Spotlight inherits Rectangle {
 
         // Art: the album cover, or up to three covers fanned out.
         if Home.tab != 2: Rectangle {
-            width: root.art;
-            height: root.art;
+            width: ArtFit.width(root.art, root.art, Home.pane.cover);
+            height: ArtFit.height(root.art, root.art, Home.pane.cover);
             y: (parent.height - self.height) / 2;
-            background: Theme.raised;
+            background: Home.pane.cover.width == 0 ? Theme.raised : transparent;
             drop-shadow-blur: 40px;
             drop-shadow-offset-y: 24px;
             drop-shadow-color: #000000a0;
@@ -2284,6 +2300,7 @@ component DetailHero inherits HorizontalLayout {
         height: root.poster-h;
         source: root.poster;
         placeholder: "作";
+        adaptive: false;
     }
     VerticalLayout {
         alignment: end;
@@ -2650,9 +2667,10 @@ export component MixPage inherits VerticalLayout {
             width: 180px;
             height: 180px;
             border-radius: Theme.radius;
-            background: Theme.raised;
+            background: Lib032.mix-covers.length >= 4 ? Theme.raised : transparent;
             clip: true;
             if Lib032.mix-covers.length < 4: Cover {
+                radius: Theme.radius;
                 source: Lib032.mix-covers.length > 0 ? Lib032.mix-covers[0] : root.no-image;
                 placeholder: "♪";
             }

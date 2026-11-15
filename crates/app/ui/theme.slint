@@ -76,3 +76,33 @@ export global Shell {
     // physical pixels.
     out property <length> detail-art: root.tier == 2 ? 380px : root.tier == 1 ? 280px : 220px;
 }
+
+// Fits non-square artwork inside a `(max-w, max-h)` slot preserving aspect
+// ratio (near-square 0.94..1.06 snaps to 1:1; extremes clamp to 1:2..2:1).
+export global ArtFit {
+    pure function ratio(img: image) -> float {
+        return (img.width <= 0 || img.height <= 0) ? 1.0
+            : (img.width * 1.0 / img.height >= 0.94 && img.width * 1.0 / img.height <= 1.06) ? 1.0
+            : clamp(img.width * 1.0 / img.height, 0.5, 2.0);
+    }
+
+    pure public function width(max-w: length, max-h: length, img: image) -> length {
+        if img.width <= 0 || img.height <= 0 || max-h <= 0px {
+            return max-w;
+        }
+        if (max-w / max-h) > ArtFit.ratio(img) {
+            return max(1px, max-h * ArtFit.ratio(img));
+        }
+        return max-w;
+    }
+
+    pure public function height(max-w: length, max-h: length, img: image) -> length {
+        if img.width <= 0 || img.height <= 0 || max-w <= 0px {
+            return max-h;
+        }
+        if (max-w / max-h) > ArtFit.ratio(img) {
+            return max-h;
+        }
+        return max(1px, max-w / ArtFit.ratio(img));
+    }
+}

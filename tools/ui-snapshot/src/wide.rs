@@ -1111,6 +1111,90 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
         return;
     }
 
+    // Tall poster and landscape cover adaptation across grid, detail, panel,
+    // spotlight and full-screen player.
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("posters") {
+        let make_art = |w: u32, h: u32, c1: [u8; 3], c2: [u8; 3]| -> Image {
+            let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+            for (idx, p) in buf.make_mut_slice().iter_mut().enumerate() {
+                let x = (idx as u32) % w;
+                let y = (idx as u32) / w;
+                let border = x < 4 || y < 4 || x + 4 >= w || y + 4 >= h;
+                if border {
+                    *p = slint::Rgba8Pixel {
+                        r: 235,
+                        g: 100,
+                        b: 140,
+                        a: 255,
+                    };
+                } else {
+                    let t = y as f32 / h.max(1) as f32;
+                    let mix = |a: u8, b: u8| ((a as f32) * (1.0 - t) + (b as f32) * t) as u8;
+                    *p = slint::Rgba8Pixel {
+                        r: mix(c1[0], c2[0]),
+                        g: mix(c1[1], c2[1]),
+                        b: mix(c1[2], c2[2]),
+                        a: 255,
+                    };
+                }
+            }
+            Image::from_rgba8(buf)
+        };
+        let tall = make_art(320, 480, [255, 220, 235], [170, 140, 230]);
+        let wide_art = make_art(480, 270, [130, 200, 240], [60, 90, 180]);
+        let square = make_art(360, 360, [250, 210, 110], [210, 90, 60]);
+
+        let size = PhysicalSize::new(1600, 900);
+        set(&inst, "theme-mode", n(2.0));
+        set(&inst, "page", n(0.0));
+        for _ in 0..3 {
+            super::settle(window);
+            window.set_size(size);
+            fill_grids(&inst, &layouts);
+        }
+        let cols = layouts.borrow().get(&0).copied().unwrap_or((5, 0)).0;
+        let mut cards = album_cards(10);
+        for (idx, img) in [
+            (0, square.clone()),
+            (1, tall.clone()),
+            (2, wide_art.clone()),
+            (3, tall.clone()),
+            (4, square.clone()),
+            (5, tall.clone()),
+            (6, wide_art.clone()),
+        ] {
+            if let Value::Struct(mut st_card) = cards[idx].clone() {
+                st_card.set_field("cover".into(), Value::Image(img));
+                if idx == 1 || idx == 2 {
+                    st_card.set_field("disc-count".into(), n(2.0));
+                }
+                cards[idx] = Value::Struct(st_card);
+            }
+        }
+        set(&inst, "album-rows", rows(&cards, cols, 0));
+        set(&inst, "detail-cover", Value::Image(tall.clone()));
+        set(&inst, "np-cover", Value::Image(tall.clone()));
+        set(&inst, "np-cover-large", Value::Image(tall.clone()));
+        set(&inst, "full-cover", Value::Image(tall.clone()));
+        let mut p = pane("MURI MURI EVOLUTION");
+        if let Value::Struct(mut st_pane) = p {
+            st_pane.set_field("cover".into(), Value::Image(tall.clone()));
+            p = Value::Struct(st_pane);
+        }
+        set_g(&inst, "Home", "pane", p);
+
+        render(window, size, &format!("{out}/posters-albums-light.png"));
+        set(&inst, "page", n(10.0));
+        render(window, size, &format!("{out}/posters-detail-light.png"));
+        set(&inst, "theme-mode", n(1.0));
+        set(&inst, "page", n(20.0));
+        render(window, size, &format!("{out}/posters-home-dark.png"));
+        set(&inst, "full-open", Value::Bool(true));
+        render(window, size, &format!("{out}/posters-player-dark.png"));
+        inst.hide().unwrap();
+        return;
+    }
+
     // Header typography: short CJK, long Japanese, and long Latin titles.
     if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("typography") {
         for (w, h) in SIZES {

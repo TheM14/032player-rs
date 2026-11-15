@@ -1,4 +1,4 @@
-import { Fonts, Theme, Shell } from "theme.slint";
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { Palette, ScrollView } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ArtistLinks,
@@ -765,20 +765,26 @@ export component AppWindow inherits Window {
                                             width: 42px;
                                             height: 42px;
                                             y: (parent.height - self.height) / 2;
-                                            border-radius: 6px;
-                                            background: Theme.raised;
-                                            clip: true;
-                                            if p.cover.width == 0: Icon {
-                                                kind: IconKind.list;
-                                                width: 18px;
-                                                height: 18px;
-                                                color: Theme.text-faint;
-                                            }
-                                            Image {
-                                                source: p.cover;
-                                                width: 100%;
-                                                height: 100%;
-                                                image-fit: ImageFit.cover;
+                                            Rectangle {
+                                                width: ArtFit.width(42px, 42px, p.cover);
+                                                height: ArtFit.height(42px, 42px, p.cover);
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                border-radius: 6px;
+                                                background: p.cover.width == 0 ? Theme.raised : transparent;
+                                                clip: true;
+                                                if p.cover.width == 0: Icon {
+                                                    kind: IconKind.list;
+                                                    width: 18px;
+                                                    height: 18px;
+                                                    color: Theme.text-faint;
+                                                }
+                                                Image {
+                                                    source: p.cover;
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    image-fit: ImageFit.cover;
+                                                }
                                             }
                                         }
                                         if !sidebar.rail: VerticalLayout {
@@ -1750,38 +1756,44 @@ export component AppWindow inherits Window {
                                     width: 54px;
                                     height: 54px;
                                     y: (parent.height - self.height) / 2;
-                                    border-radius: 4px;
-                                    background: Theme.raised;
-                                    clip: true;
-                                    if track.cover.width == 0: Icon {
-                                        kind: IconKind.disc;
-                                        width: 22px;
-                                        height: 22px;
-                                        color: Theme.text-faint;
-                                    }
-                                    if track.cover.width > 0: Image {
-                                        source: track.cover;
-                                        width: 100%;
-                                        height: 100%;
-                                        image-fit: ImageFit.cover;
-                                    }
-                                    if is-playing || v-row-area.has-hover || v-cover-area.has-hover: Rectangle {
-                                        background: #00000066;
-                                        if is-playing: PlayingBars {
-                                            width: 15px;
-                                            height: 14px;
-                                            bar-color: #ffffff;
+                                    Rectangle {
+                                        width: ArtFit.width(54px, 54px, track.cover);
+                                        height: ArtFit.height(54px, 54px, track.cover);
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 4px;
+                                        background: track.cover.width == 0 ? Theme.raised : transparent;
+                                        clip: true;
+                                        if track.cover.width == 0: Icon {
+                                            kind: IconKind.disc;
+                                            width: 22px;
+                                            height: 22px;
+                                            color: Theme.text-faint;
                                         }
-                                        if !is-playing: Icon {
-                                            kind: IconKind.play;
-                                            width: 16px;
-                                            height: 16px;
-                                            color: #ffffff;
+                                        if track.cover.width > 0: Image {
+                                            source: track.cover;
+                                            width: 100%;
+                                            height: 100%;
+                                            image-fit: ImageFit.cover;
                                         }
-                                    }
-                                    v-cover-area := TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.track-action(2, "play", track.index, 0); }
+                                        if is-playing || v-row-area.has-hover || v-cover-area.has-hover: Rectangle {
+                                            background: #00000066;
+                                            if is-playing: PlayingBars {
+                                                width: 15px;
+                                                height: 14px;
+                                                bar-color: #ffffff;
+                                            }
+                                            if !is-playing: Icon {
+                                                kind: IconKind.play;
+                                                width: 16px;
+                                                height: 16px;
+                                                color: #ffffff;
+                                            }
+                                        }
+                                        v-cover-area := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.track-action(2, "play", track.index, 0); }
+                                        }
                                     }
                                 }
                                 VerticalLayout {

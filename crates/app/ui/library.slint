@@ -1,5 +1,5 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
-import { Fonts, Theme, Shell } from "theme.slint";
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
     BigTitle, RoundIconButton,
@@ -374,11 +374,14 @@ export component DetailHeader inherits Rectangle {
     callback action(string, int);
     property <length> pad: Shell.pad;
     property <length> art: round(Shell.detail-art / 1phx) * 1phx;
+    property <bool> adaptive: root.info.kind != 1;
+    property <length> art-w: root.adaptive ? ArtFit.width(root.art, root.art, root.cover) : root.art;
+    property <length> art-h: root.adaptive ? ArtFit.height(root.art, root.art, root.cover) : root.art;
     property <length> gap: Shell.tier == 2 ? 48px : Shell.tier == 1 ? 36px : 28px;
     property <length> top: Shell.tier == 2 ? 56px : 44px;
     property <length> bottom: Shell.tier == 2 ? 40px : 28px;
     property <string> kicker: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
-    height: max(root.art, info-col.preferred-height) + root.top + root.bottom;
+    height: max(root.art-h, info-col.preferred-height) + root.top + root.bottom;
 
     HorizontalLayout {
         padding-left: root.pad;
@@ -388,11 +391,11 @@ export component DetailHeader inherits Rectangle {
         spacing: root.gap;
 
         Rectangle {
-            width: root.art;
-            height: root.art;
+            width: root.art-w;
+            height: root.art-h;
             y: (parent.height - self.height) / 2;
             border-radius: root.info.kind == 1 ? root.art / 2 : 0px;
-            background: Theme.raised;
+            background: root.cover.width == 0 ? Theme.raised : transparent;
             clip: true;
             drop-shadow-blur: 48px;
             drop-shadow-offset-y: 28px;
