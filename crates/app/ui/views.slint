@@ -354,7 +354,7 @@ export component CardView inherits Rectangle {
     property <length> img-h: root.adaptive ? ArtFit.height(root.size, root.art-h, root.card.cover) : root.art-h;
     property <length> img-x: (root.size - root.img-w) / 2;
     property <length> img-y: root.art-h - root.img-h;
-    property <bool> center-meta: root.kind == 1 || root.img-w < root.size - 1px;
+    property <bool> center-meta: root.kind == 1;
     // The pointer is on the round play button (bottom right of the cover).
     property <bool> has-play: root.kind != 1 && root.kind != 4;
     property <bool> over-play: root.has-play && area.has-hover
