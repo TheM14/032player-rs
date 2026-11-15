@@ -379,3 +379,60 @@ async fn requests_and_decodes_gzip_json() {
     let page: api::Page<Value> = client.get("/tracks", &api::Query::new()).await.unwrap();
     assert_eq!(page.total, 7);
 }
+
+#[tokio::test]
+async fn unified_search_overview_and_category_pages() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("q", "星街彗星"))
+        .and(query_param_is_missing("category"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "query": "星街彗星",
+            "category": "",
+            "bestMatch": {
+                "type": "artists",
+                "id": 42,
+                "title": "星街すいせい",
+                "subtitle": "",
+                "imageUrl": "/api/v1/artists/42/image"
+            },
+            "artists": { "items": [{ "id": 42, "name": "星街すいせい", "albumCount": 3, "trackCount": 20 }], "total": 1, "limit": 5, "offset": 0 },
+            "albums": { "items": [], "total": 0, "limit": 6, "offset": 0 },
+            "tracks": { "items": [track_json(7)], "total": 12, "limit": 10, "offset": 0 },
+            "composers": { "items": [], "total": 0, "limit": 5, "offset": 0 }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .and(query_param("q", "星街彗星"))
+        .and(query_param("category", "tracks"))
+        .and(query_param("offset", "10"))
+        .and(query_param("limit", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "query": "星街彗星",
+            "category": "tracks",
+            "bestMatch": null,
+            "artists": { "items": [], "total": 0, "limit": 5, "offset": 0 },
+            "albums": { "items": [], "total": 0, "limit": 6, "offset": 0 },
+            "tracks": { "items": [track_json(8)], "total": 12, "limit": 100, "offset": 10 },
+            "composers": { "items": [], "total": 0, "limit": 5, "offset": 0 }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = Client::new(&server.uri(), API, MEDIA).unwrap();
+    let overview = client.search("  星街彗星  ", None, 0, 0).await.unwrap();
+    assert_eq!(overview.best_match.as_ref().unwrap().id, 42);
+    assert_eq!(overview.artists.total, 1);
+    assert_eq!(overview.tracks.total, 12);
+
+    let page = client
+        .search("星街彗星", Some(api::SearchCategory::Tracks), 10, 100)
+        .await
+        .unwrap();
+    assert_eq!(page.category, "tracks");
+    assert_eq!(page.tracks.items[0].id, 8);
+    assert_eq!(page.tracks.total, 12);
+}

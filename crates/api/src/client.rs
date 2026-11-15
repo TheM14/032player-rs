@@ -325,6 +325,26 @@ impl Client {
             .await
     }
 
+    /// Unified local-library search (`GET /api/v1/search`).
+    pub async fn search(
+        &self,
+        query: &str,
+        category: Option<crate::SearchCategory>,
+        offset: u32,
+        limit: u32,
+    ) -> Result<crate::SearchResults, ApiError> {
+        let trimmed: String = query.trim().chars().take(200).collect();
+        let mut q = Query::new();
+        if !trimmed.is_empty() {
+            q.push("q", &trimmed);
+        }
+        if let Some(cat) = category {
+            q.push("category", cat.as_str());
+            q.page(offset, limit.max(1));
+        }
+        self.get("/search", &q).await
+    }
+
     /// Every track of an artist (performed or album artist).
     pub async fn artist_tracks(
         &self,

@@ -244,6 +244,64 @@ pub struct Page<T> {
     pub total: i64,
 }
 
+impl<T> Default for Page<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            limit: 0,
+            offset: 0,
+            total: 0,
+        }
+    }
+}
+
+/// Category filter for `GET /api/v1/search`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchCategory {
+    Artists,
+    Albums,
+    Tracks,
+    Composers,
+}
+
+impl SearchCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Artists => "artists",
+            Self::Albums => "albums",
+            Self::Tracks => "tracks",
+            Self::Composers => "composers",
+        }
+    }
+}
+
+/// Top hit returned in `GET /api/v1/search` overview (`bestMatch`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SearchMatch {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub image_url: String,
+    pub album_id: i64,
+}
+
+/// Answer of `GET /api/v1/search`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SearchResults {
+    pub query: String,
+    pub category: String,
+    pub best_match: Option<SearchMatch>,
+    pub artists: Page<Artist>,
+    pub albums: Page<Album>,
+    pub tracks: Page<Track>,
+    pub composers: Page<Artist>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PlaybackCapabilities {
@@ -302,6 +360,7 @@ pub enum Feature {
     WorkPosters,
     /// `GET /works/{id}` carries `series` (else a missing field means nothing).
     WorkSeriesInfo,
+    UnifiedSearch,
 }
 
 impl Feature {
@@ -321,6 +380,7 @@ impl Feature {
             Self::Works => "works",
             Self::WorkPosters => "workPosters",
             Self::WorkSeriesInfo => "workSeriesInfo",
+            Self::UnifiedSearch => "unifiedSearch",
         }
     }
 }
