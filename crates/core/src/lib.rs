@@ -16,13 +16,13 @@ pub mod shortcuts;
 mod storage;
 
 pub use api::{
-    AlbumSort, ArtistRef, ArtistSort, FavoriteKind, SortOrder, TrackSort, Transcode, WorkListQuery,
-    WorkSort,
+    AlbumSort, ArtistRef, ArtistSort, FavoriteKind, SearchCategory, SortOrder, TrackSort,
+    Transcode, WorkListQuery, WorkSort,
 };
 pub use browse::{
     AlbumFilter, AlbumItem, AlbumView, ArtistFilter, ArtistItem, ArtistView, CreditPart,
     DetailView, PlaylistFilter, PlaylistItem, PlaylistSort, PlaylistView, ReleaseGroup,
-    TrackFilter, TrackItem, TrackList, release_groups,
+    SearchBestMatch, TrackFilter, TrackItem, TrackList, release_groups,
 };
 pub use controller::{
     CastRoom, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow,

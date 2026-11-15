@@ -118,7 +118,9 @@ pub enum TrackList {
     Favorites,
     /// The open album / artist (top tracks) / playlist / similar page.
     Detail,
-    /// Search results.
+    /// Search preview tracks ("全部" tab).
+    SearchPreview,
+    /// Search single-category track results ("歌曲" tab).
     Search,
     /// Preview tracks of a home spotlight album tab.
     Spotlight(crate::m032::SpotlightTab),
@@ -155,6 +157,7 @@ pub struct AlbumItem {
     /// When it entered the library (ISO time, may be empty).
     pub added_at: String,
     pub disc_count: i32,
+    pub track_count: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -198,6 +201,34 @@ pub struct ArtistItem {
     pub album_count: i64,
     pub track_count: i64,
     pub favorite: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchBestMatch {
+    pub category: api::SearchCategory,
+    pub id: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub image: String,
+    pub album_id: i64,
+}
+
+pub fn search_best_match(m: &api::SearchMatch) -> Option<SearchBestMatch> {
+    let category = match m.kind.as_str() {
+        "artists" => api::SearchCategory::Artists,
+        "albums" => api::SearchCategory::Albums,
+        "tracks" => api::SearchCategory::Tracks,
+        "composers" => api::SearchCategory::Composers,
+        _ => return None,
+    };
+    Some(SearchBestMatch {
+        category,
+        id: m.id,
+        title: m.title.clone(),
+        subtitle: m.subtitle.clone(),
+        image: m.image_url.clone(),
+        album_id: m.album_id,
+    })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -318,6 +349,7 @@ pub fn album_item(album: &Album) -> AlbumItem {
         .to_lowercase(),
         added_at: album.added_at.clone(),
         disc_count: album.disc_count,
+        track_count: album.track_count,
     }
 }
 

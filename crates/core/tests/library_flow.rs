@@ -92,24 +92,41 @@ async fn server() -> MockServer {
         })))
         .mount(&server)
         .await;
-    // Search (with q) before the media token probe.
-    Mock::given(path("/api/v1/tracks"))
+    // Unified search mock.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
         .and(query_param("q", "夜"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![track(3, "夜")], 1)))
+        .and(query_param("category", "tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "query": "夜",
+            "category": "tracks",
+            "bestMatch": null,
+            "artists": page(vec![], 0),
+            "albums": page(vec![], 0),
+            "tracks": page(vec![track(3, "夜"), track(4, "夜明け")], 2),
+            "composers": page(vec![], 0),
+        })))
         .with_priority(1)
         .mount(&server)
         .await;
-    Mock::given(path("/api/v1/artists"))
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
         .and(query_param("q", "夜"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page(
-            vec![json!({ "id": 5, "name": "歌手", "albumCount": 1 })],
-            1,
-        )))
-        .mount(&server)
-        .await;
-    Mock::given(path("/api/v1/albums"))
-        .and(query_param("q", "夜"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "query": "夜",
+            "category": "",
+            "bestMatch": {
+                "type": "artists",
+                "id": 5,
+                "title": "歌手",
+                "subtitle": "",
+                "imageUrl": ""
+            },
+            "artists": page(vec![json!({ "id": 5, "name": "歌手", "albumCount": 1, "trackCount": 3 })], 1),
+            "albums": page(vec![], 0),
+            "tracks": page(vec![track(3, "夜")], 1),
+            "composers": page(vec![json!({ "id": 8, "name": "作曲家", "trackCount": 2 })], 1),
+        })))
         .mount(&server)
         .await;
     Mock::given(path("/api/v1/tracks"))
@@ -517,15 +534,41 @@ async fn album_detail_search_and_similar() {
     h.send(Command::Search(" 夜 ".into()));
     let Event::SearchResults {
         query,
+        best_match,
         artists,
+        artists_total,
         albums,
         tracks,
+        composers,
+        ..
     } = h.wait("search", |e| matches!(e, Event::SearchResults { .. }))
     else {
         unreachable!()
     };
     assert_eq!(query, "夜");
-    assert_eq!((artists.len(), albums.len(), tracks.len()), (1, 0, 1));
+    assert_eq!(best_match.as_ref().map(|m| m.id), Some(5));
+    assert_eq!(artists_total, 1);
+    assert_eq!(
+        (artists.len(), albums.len(), tracks.len(), composers.len()),
+        (1, 0, 1, 1)
+    );
+
+    h.send(Command::SearchCategory {
+        query: "夜".into(),
+        category: client_core::SearchCategory::Tracks,
+    });
+    let Event::SearchCategoryAppended {
+        tracks: cat_tracks,
+        total,
+        ..
+    } = h.wait("search category", |e| {
+        matches!(e, Event::SearchCategoryAppended { .. })
+    })
+    else {
+        unreachable!()
+    };
+    assert_eq!(total, 2);
+    assert_eq!(cat_tracks.len(), 2);
 
     h.send(Command::OpenSimilar(TrackList::Library, 1));
     let Event::Detail { view, tracks } = h.wait("similar", |e| matches!(e, Event::Detail { .. }))

@@ -7,23 +7,23 @@ use std::collections::HashSet;
 
 use api::{
     Album, AlbumListQuery, ApiError, Artist, ArtistListQuery, ArtistTrackSort, Client,
-    FavoriteKind, Page, Query, Track, TrackListQuery, TrackSort, seed_key,
+    FavoriteKind, Page, Query, SearchCategory, Track, TrackListQuery, TrackSort, seed_key,
 };
 use serde::de::DeserializeOwned;
 
 use super::m032::SourceKey;
-use super::{Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, Target, TrackSource};
+use super::{
+    Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, SearchPreviewData, Target, TrackSource,
+};
 use crate::browse::{
     self, AlbumFilter, ArtistFilter, DetailView, TrackFilter, TrackList, album_item, artist_item,
-    playlist_item, track_item,
+    playlist_item, search_best_match, track_item,
 };
 
 /// Tracks of "随机播放全部" (the Electron dialog's default).
 const SHUFFLE_ALL_COUNT: u32 = 100;
 const SIMILAR_COUNT: u32 = 50;
-const SEARCH_ARTISTS: u32 = 20;
-const SEARCH_ALBUMS: u32 = 40;
-const SEARCH_TRACKS: u32 = 100;
+const SEARCH_PAGE: u32 = 200;
 /// How long the artist page reuses the favorite tracks it fetched.
 const FAVORITES_FRESH: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -593,48 +593,135 @@ impl Core {
     }
 
     pub(super) fn search(&mut self, query: String) {
-        let query = query.trim().to_owned();
+        let query: String = query.trim().chars().take(200).collect();
         let Some((client, tx)) = self.request() else {
             return;
         };
         let seq = self.next_seq(Target::Search);
         if query.is_empty() {
-            self.loaded(Loaded::Search {
-                query,
+            self.loaded(Loaded::SearchPreview(Box::default()));
+            return;
+        }
+        tokio::spawn(async move {
+            let msg = match client.search(&query, None, 0, 0).await {
+                Ok(res) => Internal::Loaded(
+                    Target::Search,
+                    seq,
+                    Loaded::SearchPreview(Box::new(SearchPreviewData {
+                        query: if res.query.is_empty() {
+                            query
+                        } else {
+                            res.query
+                        },
+                        best_match: res.best_match.as_ref().and_then(search_best_match),
+                        artists: res.artists.items.iter().map(artist_item).collect(),
+                        artists_total: usize::try_from(res.artists.total).unwrap_or(0),
+                        albums: res.albums.items.iter().map(album_item).collect(),
+                        albums_total: usize::try_from(res.albums.total).unwrap_or(0),
+                        tracks: res.tracks.items,
+                        tracks_total: usize::try_from(res.tracks.total).unwrap_or(0),
+                        composers: res.composers.items.iter().map(artist_item).collect(),
+                        composers_total: usize::try_from(res.composers.total).unwrap_or(0),
+                    })),
+                ),
+                Err(e) => Self::failed(&client, "搜索", e),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    pub(super) fn search_category(&mut self, query: String, category: SearchCategory) {
+        let query: String = query.trim().chars().take(200).collect();
+        let page_size = self
+            .library
+            .as_ref()
+            .map_or(SEARCH_PAGE, |l| l.capabilities.page_size().min(SEARCH_PAGE));
+        let Some((client, tx)) = self.request() else {
+            return;
+        };
+        let seq = self.next_seq(Target::Search);
+        if category == SearchCategory::Tracks
+            && let Some(library) = self.library.as_mut()
+        {
+            library.lists.remove(&TrackList::Search);
+        }
+        self.emit(Event::SearchCategoryReset { category });
+        if query.is_empty() {
+            self.emit(Event::SearchCategoryAppended {
+                category,
                 artists: Vec::new(),
                 albums: Vec::new(),
                 tracks: Vec::new(),
+                total: 0,
             });
             return;
         }
         tokio::spawn(async move {
-            let q = |limit: u32| {
-                let mut q = Query::new();
-                q.push("q", &query).page(0, limit);
-                q
-            };
-            let (qa, qb, qt) = (q(SEARCH_ARTISTS), q(SEARCH_ALBUMS), q(SEARCH_TRACKS));
-            let (artists, albums, tracks) = tokio::join!(
-                client.get::<Page<Artist>>("/artists", &qa),
-                client.get::<Page<Album>>("/albums", &qb),
-                client.get::<Page<Track>>("/tracks", &qt),
-            );
-            let msg = match (artists, albums, tracks) {
-                (Ok(artists), Ok(albums), Ok(tracks)) => Internal::Loaded(
-                    Target::Search,
-                    seq,
-                    Loaded::Search {
-                        query,
-                        artists: artists.items.iter().map(artist_item).collect(),
-                        albums: albums.items.iter().map(album_item).collect(),
-                        tracks: tracks.items,
-                    },
-                ),
-                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-                    Self::failed(&client, "搜索", e)
+            let mut offset = 0u32;
+            loop {
+                match client
+                    .search(&query, Some(category), offset, page_size)
+                    .await
+                {
+                    Ok(res) => {
+                        let (total_i64, count, artists, albums, tracks) = match category {
+                            SearchCategory::Artists => (
+                                res.artists.total,
+                                res.artists.items.len(),
+                                res.artists.items.iter().map(artist_item).collect(),
+                                Vec::new(),
+                                Vec::new(),
+                            ),
+                            SearchCategory::Albums => (
+                                res.albums.total,
+                                res.albums.items.len(),
+                                Vec::new(),
+                                res.albums.items.iter().map(album_item).collect(),
+                                Vec::new(),
+                            ),
+                            SearchCategory::Tracks => (
+                                res.tracks.total,
+                                res.tracks.items.len(),
+                                Vec::new(),
+                                Vec::new(),
+                                res.tracks.items,
+                            ),
+                            SearchCategory::Composers => (
+                                res.composers.total,
+                                res.composers.items.len(),
+                                res.composers.items.iter().map(artist_item).collect(),
+                                Vec::new(),
+                                Vec::new(),
+                            ),
+                        };
+                        let total = usize::try_from(total_i64).unwrap_or(0);
+                        let n = u32::try_from(count).unwrap_or(u32::MAX);
+                        offset = offset.saturating_add(n);
+                        let done = n == 0 || i64::from(offset) >= total_i64;
+                        if tx
+                            .send(Internal::Loaded(
+                                Target::Search,
+                                seq,
+                                Loaded::SearchCategoryPage {
+                                    category,
+                                    artists,
+                                    albums,
+                                    tracks,
+                                    total,
+                                },
+                            ))
+                            .is_err()
+                            || done
+                        {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Self::failed(&client, "搜索", e));
+                        break;
+                    }
                 }
-            };
-            let _ = tx.send(msg);
+            }
         });
     }
 
@@ -737,19 +824,45 @@ impl Core {
                     tieups,
                 });
             }
-            Loaded::Search {
-                query,
+            Loaded::SearchPreview(data) => {
+                let items = data.tracks.iter().map(track_item).collect();
+                self.set_list(TrackList::SearchPreview, data.tracks);
+                self.emit(Event::SearchResults {
+                    query: data.query,
+                    best_match: data.best_match,
+                    artists: data.artists,
+                    artists_total: data.artists_total,
+                    albums: data.albums,
+                    albums_total: data.albums_total,
+                    tracks: items,
+                    tracks_total: data.tracks_total,
+                    composers: data.composers,
+                    composers_total: data.composers_total,
+                });
+            }
+            Loaded::SearchCategoryPage {
+                category,
                 artists,
                 albums,
                 tracks,
+                total,
             } => {
-                let items = tracks.iter().map(track_item).collect();
-                self.set_list(TrackList::Search, tracks);
-                self.emit(Event::SearchResults {
-                    query,
+                let track_items = tracks.iter().map(track_item).collect();
+                if category == SearchCategory::Tracks
+                    && let Some(library) = self.library.as_mut()
+                {
+                    library
+                        .lists
+                        .entry(TrackList::Search)
+                        .or_default()
+                        .extend(tracks);
+                }
+                self.emit(Event::SearchCategoryAppended {
+                    category,
                     artists,
                     albums,
-                    tracks: items,
+                    tracks: track_items,
+                    total,
                 });
             }
             Loaded::WorksPage(items, total) => self.emit(Event::WorksAppended { items, total }),

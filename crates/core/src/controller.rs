@@ -17,14 +17,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::{
-    AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, RandomSeeds, Track, Transcode,
+    AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, RandomSeeds, SearchCategory,
+    Track, Transcode,
 };
 use session::{AdapterStatus, AdapterTrack};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::browse::{
     AlbumFilter, AlbumItem, ArtistFilter, ArtistItem, DetailView, PlaylistFilter, PlaylistItem,
-    TrackFilter, TrackItem, TrackList,
+    SearchBestMatch, TrackFilter, TrackItem, TrackList,
 };
 use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 use crate::format;
@@ -137,8 +138,14 @@ pub enum Command {
     OpenVersions(TrackList, usize),
     /// Play one disc of the open album.
     PlayAlbumDisc(i32),
-    /// Answered with [`Event::SearchResults`].
+    /// Unified search overview (`GET /api/v1/search`), answered with [`Event::SearchResults`].
     Search(String),
+    /// Single-category paginated search, answered with [`Event::SearchCategoryReset`]
+    /// and [`Event::SearchCategoryAppended`].
+    SearchCategory {
+        query: String,
+        category: SearchCategory,
+    },
     /// Answered with [`Event::Favorite`].
     SetFavorite {
         kind: FavoriteKind,
@@ -592,9 +599,25 @@ pub enum Event {
     },
     SearchResults {
         query: String,
+        best_match: Option<SearchBestMatch>,
+        artists: Vec<ArtistItem>,
+        artists_total: usize,
+        albums: Vec<AlbumItem>,
+        albums_total: usize,
+        tracks: Vec<TrackItem>,
+        tracks_total: usize,
+        composers: Vec<ArtistItem>,
+        composers_total: usize,
+    },
+    SearchCategoryReset {
+        category: SearchCategory,
+    },
+    SearchCategoryAppended {
+        category: SearchCategory,
         artists: Vec<ArtistItem>,
         albums: Vec<AlbumItem>,
         tracks: Vec<TrackItem>,
+        total: usize,
     },
     /// A favorite flag changed on the server.
     Favorite {
@@ -854,6 +877,20 @@ enum Target {
     ArtistFavorites,
 }
 
+#[derive(Default)]
+pub(super) struct SearchPreviewData {
+    pub query: String,
+    pub best_match: Option<SearchBestMatch>,
+    pub artists: Vec<ArtistItem>,
+    pub artists_total: usize,
+    pub albums: Vec<AlbumItem>,
+    pub albums_total: usize,
+    pub tracks: Vec<Track>,
+    pub tracks_total: usize,
+    pub composers: Vec<ArtistItem>,
+    pub composers_total: usize,
+}
+
 enum Loaded {
     AlbumsPage(Vec<AlbumItem>, usize),
     TracksPage(Vec<Track>, usize),
@@ -864,11 +901,13 @@ enum Loaded {
     Playlists(Vec<Playlist>),
     /// The view, its tracks and their tags.
     Detail(Box<DetailView>, Vec<Track>, Vec<String>),
-    Search {
-        query: String,
+    SearchPreview(Box<SearchPreviewData>),
+    SearchCategoryPage {
+        category: SearchCategory,
         artists: Vec<ArtistItem>,
         albums: Vec<AlbumItem>,
         tracks: Vec<Track>,
+        total: usize,
     },
     Home(Box<api::Home>),
     HomeUnavailable,
@@ -1508,6 +1547,7 @@ impl Core {
                 }
             }
             Command::Search(query) => self.search(query),
+            Command::SearchCategory { query, category } => self.search_category(query, category),
             Command::SetFavorite { kind, id, favorite } => self.set_favorite(kind, id, favorite),
             Command::CreatePlaylist {
                 name,
