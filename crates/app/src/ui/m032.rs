@@ -51,6 +51,7 @@ pub(super) fn track_list(id: i32) -> TrackList {
         10 => TrackList::History,
         11 => TrackList::Related,
         12 => TrackList::ArtistFavorites,
+        13 => TrackList::SearchPreview,
         _ => TrackList::Library,
     }
 }
@@ -121,6 +122,8 @@ pub(super) enum Bind {
     Queue,
     /// Sidebar playlist covers.
     Side,
+    /// Unified search overview images (best match, compact cards, preview tracks).
+    Search,
 }
 
 type Setter = Box<dyn Fn(&Image)>;

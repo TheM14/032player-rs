@@ -1,0 +1,1092 @@
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import {
+    GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, SearchField, Tab,
+} from "controls.slint";
+import {
+    AlbumRow, ArtistLinks, CardGrid, CreditPart, PlaylistChoice, TrackList, TrackRow,
+} from "views.slint";
+
+// Best-match hero card (`kind`: 0 artist, 1 album, 2 track, 3 composer).
+export struct SearchBestMatch {
+    has: bool,
+    kind: int,
+    kind-label: string,
+    id: int,
+    album-id: int,
+    title: string,
+    subtitle: string,
+    cover: image,
+    initial: string,
+    favorite: bool,
+}
+
+// Compact horizontal card used in the "全部" overview grids (artists, albums, composers).
+export struct SearchCompactCard {
+    id: int,
+    title: string,
+    subtitle: string,
+    meta: string,
+    cover: image,
+    initial: string,
+    is-avatar: bool,
+    favorite: bool,
+}
+
+// Compact track row used in the "全部" overview (up to 10 items).
+export struct SearchPreviewTrack {
+    id: int,
+    index: int,
+    title: string,
+    artist: string,
+    album: string,
+    album-id: int,
+    artist-id: int,
+    artists: [CreditPart],
+    duration: string,
+    cover: image,
+    favorite: bool,
+    disabled: bool,
+}
+
+export global SearchState {
+    in-out property <string> query-input;
+    in property <string> active-query;
+    // 0: 全部, 1: 歌手, 2: 专辑, 3: 歌曲, 4: 作曲家
+    in-out property <int> tab: 0;
+    in property <bool> loading;
+    in property <bool> tab-loading;
+    in property <SearchBestMatch> best-match;
+    in property <[SearchCompactCard]> artists;
+    in property <int> artists-total;
+    in property <[SearchCompactCard]> albums;
+    in property <int> albums-total;
+    in property <[SearchPreviewTrack]> tracks;
+    in property <int> tracks-total;
+    in property <[SearchCompactCard]> composers;
+    in property <int> composers-total;
+
+    callback search(string);
+    callback select-tab(int);
+    callback open-best();
+    callback best-action(string, int);
+    callback card-action(int, string, int, int);
+    callback track-action(string, int, int);
+}
+
+component SearchSectionHead inherits VerticalLayout {
+    in property <string> title;
+    in property <int> total;
+    in property <bool> has-more;
+    callback more();
+    spacing: 0px;
+
+    HorizontalLayout {
+        height: 44px;
+        spacing: 10px;
+        alignment: stretch;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.total;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 13.5px;
+                vertical-alignment: center;
+            }
+        }
+        if root.has-more: GhostButton {
+            y: (parent.height - self.height) / 2;
+            height: 30px;
+            text: "更多";
+            clicked => {
+                root.more();
+            }
+        }
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+component SearchCompactCardView inherits Rectangle {
+    in property <SearchCompactCard> item;
+    // 0: artist, 1: album, 3: composer
+    in property <int> kind;
+    in property <[PlaylistChoice]> playlists;
+    callback action(string, int);
+
+    border-radius: 8px;
+    background: card-area.has-hover ? Theme.surface-hover : transparent;
+
+    card-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.action("open", 0);
+        }
+    }
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 16px;
+        Rectangle {
+            width: 72px;
+            height: 72px;
+            y: (parent.height - self.height) / 2;
+            border-radius: root.item.is-avatar ? 36px : 6px;
+            background: Theme.raised;
+            clip: true;
+            if root.item.cover.width > 0: Image {
+                source: root.item.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: ImageFit.cover;
+            }
+            if root.item.cover.width == 0: Text {
+                text: root.item.is-avatar ? root.item.initial : "032";
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: root.item.is-avatar ? 22px : 12px;
+                font-weight: 600;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: root.item.title;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.item.subtitle != "": Text {
+                text: root.item.subtitle;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 13px;
+                overflow: elide;
+            }
+            if root.item.meta != "": Text {
+                text: root.item.meta;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 12.5px;
+                overflow: elide;
+            }
+        }
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: root.kind == 1 ? "打开专辑" : "打开艺人";
+                activated => {
+                    root.action("open", 0);
+                }
+            }
+            MenuItem {
+                title: "播放";
+                activated => {
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "随机播放";
+                activated => {
+                    root.action("shuffle", 0);
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                activated => {
+                    root.action("next", 0);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                activated => {
+                    root.action("last", 0);
+                }
+            }
+            if root.kind == 1: Menu {
+                title: "添加到歌单";
+                MenuItem {
+                    title: "新建歌单…";
+                    activated => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                for p in root.playlists: MenuItem {
+                    title: p.name;
+                    activated => {
+                        root.action("add", p.id);
+                    }
+                }
+            }
+            MenuItem {
+                title: root.item.favorite ? "取消收藏" : "收藏";
+                activated => {
+                    root.action("favorite", root.item.favorite ? 0 : 1);
+                }
+            }
+        }
+    }
+}
+
+component SearchPreviewTrackView inherits Rectangle {
+    in property <SearchPreviewTrack> track;
+    in property <bool> playing;
+    in property <[PlaylistChoice]> playlists;
+    callback action(string, int);
+
+    height: 64px;
+    border-radius: 8px;
+    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    opacity: root.track.disabled ? 0.5 : 1.0;
+
+    row-area := TouchArea {
+        double-clicked => {
+            if !root.track.disabled {
+                root.action("play", 0);
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 14px;
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 5px;
+            background: Theme.raised;
+            clip: true;
+            if root.track.cover.width > 0: Image {
+                source: root.track.cover;
+                width: 100%;
+                height: 100%;
+                image-fit: ImageFit.cover;
+            }
+            if root.track.cover.width == 0: Text {
+                text: "032";
+                color: Theme.text-faint;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            Rectangle {
+                background: art-area.has-hover || root.playing ? #0000008c : transparent;
+                if root.playing && !art-area.has-hover: PlayingBars {
+                    width: 15px;
+                    height: 13px;
+                    bar-color: #ffffff;
+                }
+                if art-area.has-hover: Icon {
+                    kind: IconKind.play;
+                    width: 15px;
+                    height: 15px;
+                    color: #ffffff;
+                }
+                art-area := TouchArea {
+                    enabled: !root.track.disabled;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.action("play", 0);
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: root.track.title;
+                font-family: Fonts.family(self.text);
+                color: root.playing ? Theme.accent-text : Theme.text;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 0px;
+                ArtistLinks {
+                    artists: root.track.artists;
+                    fallback: root.track.artist;
+                    font-size: 13px;
+                    text-color: Theme.text-dim;
+                    open(id) => {
+                        root.action("artist", id);
+                    }
+                }
+                if root.track.album != "": Text {
+                    text: " · ";
+                    font-size: 13px;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+                if root.track.album != "": Text {
+                    text: root.track.album;
+                    font-family: Fonts.family(self.text);
+                    color: album-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                    font-size: 13px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    album-area := TouchArea {
+                        enabled: root.track.album-id > 0;
+                        mouse-cursor: root.track.album-id > 0 ? pointer : default;
+                        clicked => {
+                            root.action("album", root.track.album-id);
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.track.duration;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 20px;
+            background: play-area.has-hover ? Theme.raised : transparent;
+            Icon {
+                kind: IconKind.play;
+                width: 16px;
+                height: 16px;
+                color: play-area.has-hover ? Theme.text : Theme.text-dim;
+            }
+            play-area := TouchArea {
+                enabled: !root.track.disabled;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action("play", 0);
+                }
+            }
+        }
+    }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "播放";
+                enabled: !root.track.disabled;
+                activated => {
+                    root.action("play", 0);
+                }
+            }
+            MenuItem {
+                title: "下一首播放";
+                enabled: !root.track.disabled;
+                activated => {
+                    root.action("next", 0);
+                }
+            }
+            MenuItem {
+                title: "添加到队列末尾";
+                enabled: !root.track.disabled;
+                activated => {
+                    root.action("last", 0);
+                }
+            }
+            Menu {
+                title: "添加到歌单";
+                MenuItem {
+                    title: "新建歌单…";
+                    activated => {
+                        root.action("new-playlist", 0);
+                    }
+                }
+                for p in root.playlists: MenuItem {
+                    title: p.name;
+                    activated => {
+                        root.action("add", p.id);
+                    }
+                }
+            }
+            MenuItem {
+                title: root.track.favorite ? "取消收藏" : "收藏";
+                activated => {
+                    root.action("favorite", root.track.favorite ? 0 : 1);
+                }
+            }
+            MenuItem {
+                title: "相似歌曲";
+                activated => {
+                    root.action("similar", 0);
+                }
+            }
+            MenuItem {
+                title: "其他版本";
+                activated => {
+                    root.action("versions", 0);
+                }
+            }
+            MenuItem {
+                title: "查看信息";
+                activated => {
+                    root.action("info", 0);
+                }
+            }
+            if root.track.album-id > 0: MenuItem {
+                title: "转到专辑";
+                activated => {
+                    root.action("album", root.track.album-id);
+                }
+            }
+            if root.track.artist-id > 0 || root.track.artists.length > 0: MenuItem {
+                title: "转到艺人";
+                activated => {
+                    root.action("artists", root.track.artist-id);
+                }
+            }
+        }
+    }
+}
+
+export component SearchPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
+    in property <int> playing-id: -1;
+    in property <[PlaylistChoice]> playlists;
+    in property <[AlbumRow]> artist-rows;
+    in property <[AlbumRow]> album-rows;
+    in property <[TrackRow]> track-rows;
+    in property <[AlbumRow]> composer-rows;
+    callback card-layout-changed(int, int, length);
+    callback card-action(int, string, int, int);
+    callback track-action(int, string, int, int);
+
+    property <length> pad: Shell.pad;
+    property <length> content-w: max(200px, root.width - 2 * root.pad);
+    property <bool> narrow-head: root.content-w < 780px;
+    property <int> grid-cols: max(1, floor((root.content-w + 20px) / 280px));
+    property <length> card-w: (root.content-w - (root.grid-cols - 1) * 20px) / root.grid-cols;
+    property <int> artist-grid-rows: SearchState.artists.length == 0 ? 0 : floor((SearchState.artists.length + root.grid-cols - 1) / root.grid-cols);
+    property <int> album-grid-rows: SearchState.albums.length == 0 ? 0 : floor((SearchState.albums.length + root.grid-cols - 1) / root.grid-cols);
+    property <int> composer-grid-rows: SearchState.composers.length == 0 ? 0 : floor((SearchState.composers.length + root.grid-cols - 1) / root.grid-cols);
+    property <bool> has-any-results: SearchState.artists-total + SearchState.albums-total + SearchState.tracks-total + SearchState.composers-total > 0;
+
+    function tab-label(base: string, count: int) -> string {
+        return count > 0 ? base + " " + count : base;
+    }
+
+    search-debounce := Timer {
+        interval: 400ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.scroll-y = 0px;
+            SearchState.search(SearchState.query-input);
+        }
+    }
+
+    // Header + tabs
+    VerticalLayout {
+        vertical-stretch: 0;
+        padding-left: root.pad;
+        padding-right: root.pad;
+        padding-top: Shell.tier == 2 ? 44px : 32px;
+        spacing: 20px;
+
+        if !root.narrow-head: HorizontalLayout {
+            padding-right: 40px;
+            spacing: 24px;
+            alignment: stretch;
+            Text {
+                text: SearchState.active-query != "" ? "“" + SearchState.active-query + "”的搜索结果" : "搜索音乐库";
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: Shell.tier == 2 ? 42px : 34px;
+                font-weight: 850;
+                letter-spacing: -1.2px;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                horizontal-stretch: 0;
+                alignment: end;
+                search-field := SearchField {
+                    width: 340px;
+                    height: 40px;
+                    border-radius: 20px;
+                    placeholder: "搜索歌手、专辑或歌曲";
+                    text <=> SearchState.query-input;
+                    init => {
+                        self.focus();
+                    }
+                    edited => {
+                        search-debounce.restart();
+                    }
+                    accepted => {
+                        search-debounce.running = false;
+                        root.scroll-y = 0px;
+                        SearchState.search(SearchState.query-input);
+                    }
+                }
+                GhostButton {
+                    y: (parent.height - self.height) / 2;
+                    height: 40px;
+                    text: "搜索";
+                    clicked => {
+                        search-debounce.running = false;
+                        root.scroll-y = 0px;
+                        SearchState.search(SearchState.query-input);
+                    }
+                }
+            }
+        }
+
+        if root.narrow-head: VerticalLayout {
+            spacing: 16px;
+            Text {
+                text: SearchState.active-query != "" ? "“" + SearchState.active-query + "”的搜索结果" : "搜索音乐库";
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 850;
+                letter-spacing: -0.8px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                search-field-narrow := SearchField {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    border-radius: 20px;
+                    placeholder: "搜索歌手、专辑或歌曲";
+                    text <=> SearchState.query-input;
+                    edited => {
+                        search-debounce.restart();
+                    }
+                    accepted => {
+                        search-debounce.running = false;
+                        root.scroll-y = 0px;
+                        SearchState.search(SearchState.query-input);
+                    }
+                }
+                GhostButton {
+                    y: (parent.height - self.height) / 2;
+                    height: 40px;
+                    text: "搜索";
+                    clicked => {
+                        search-debounce.running = false;
+                        root.scroll-y = 0px;
+                        SearchState.search(SearchState.query-input);
+                    }
+                }
+            }
+        }
+
+        if SearchState.active-query != "": HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            padding-bottom: 4px;
+            Tab {
+                text: "全部";
+                selected: SearchState.tab == 0;
+                clicked => {
+                    root.scroll-y = 0px;
+                    SearchState.select-tab(0);
+                }
+            }
+            Tab {
+                text: root.tab-label("歌手", SearchState.artists-total);
+                selected: SearchState.tab == 1;
+                clicked => {
+                    root.scroll-y = 0px;
+                    SearchState.select-tab(1);
+                }
+            }
+            Tab {
+                text: root.tab-label("专辑", SearchState.albums-total);
+                selected: SearchState.tab == 2;
+                clicked => {
+                    root.scroll-y = 0px;
+                    SearchState.select-tab(2);
+                }
+            }
+            Tab {
+                text: root.tab-label("歌曲", SearchState.tracks-total);
+                selected: SearchState.tab == 3;
+                clicked => {
+                    root.scroll-y = 0px;
+                    SearchState.select-tab(3);
+                }
+            }
+            Tab {
+                text: root.tab-label("作曲家", SearchState.composers-total);
+                selected: SearchState.tab == 4;
+                clicked => {
+                    root.scroll-y = 0px;
+                    SearchState.select-tab(4);
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+    }
+
+    // Empty initial state (no active query)
+    if SearchState.active-query == "" && !SearchState.loading: Rectangle {
+        vertical-stretch: 1;
+        VerticalLayout {
+            width: min(520px, root.content-w);
+            height: self.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: max(48px, (parent.height - self.height) * 0.35);
+            spacing: 12px;
+            alignment: center;
+            Icon {
+                x: (parent.width - self.width) / 2;
+                kind: IconKind.search;
+                width: 34px;
+                height: 34px;
+                color: Theme.text-faint;
+            }
+            Text {
+                text: "从一个名字开始";
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "搜索歌手、专辑或歌曲。已保存的中文名、日文名和其他别名都可以找到同一位歌手。";
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 14px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    // Loading state for initial query when tab == 0
+    if SearchState.active-query == "" && SearchState.loading: Rectangle {
+        vertical-stretch: 1;
+        Text {
+            x: root.pad;
+            y: 28px;
+            text: "搜索中…";
+            color: Theme.text-faint;
+            font-size: 15px;
+        }
+    }
+
+    // "全部" aggregated overview
+    if SearchState.active-query != "" && SearchState.tab == 0: overview := Flickable {
+        vertical-stretch: 1;
+        content-y <=> root.scroll-y;
+        content-height: overview-body.preferred-height;
+
+        overview-body := VerticalLayout {
+            width: overview.width;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            padding-top: 24px;
+            padding-bottom: 48px;
+            spacing: 36px;
+            alignment: start;
+
+            if SearchState.loading: Text {
+                text: "搜索中…";
+                color: Theme.text-faint;
+                font-size: 15px;
+            }
+
+            if !SearchState.loading && !root.has-any-results: VerticalLayout {
+                padding-top: 32px;
+                spacing: 10px;
+                Text {
+                    text: "没有找到匹配结果";
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "试试其他名称或更短的关键词，也可以在服务端歌手资料页补充搜索别名。";
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text-dim;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+            }
+
+            // Best match hero card
+            if !SearchState.loading && SearchState.best-match.has: Rectangle {
+                property <length> art-size: root.content-w < 560px ? 112px : 176px;
+                property <bool> is-person: SearchState.best-match.kind == 0 || SearchState.best-match.kind == 3;
+                height: max(self.art-size, best-info.preferred-height) + 16px;
+                border-radius: 12px;
+                background: best-area.has-hover ? Theme.surface-hover : transparent;
+
+                best-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        SearchState.open-best();
+                    }
+                }
+
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: root.content-w < 560px ? 20px : 28px;
+                    Rectangle {
+                        width: art-size;
+                        height: art-size;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: is-person ? art-size / 2 : 8px;
+                        background: Theme.raised;
+                        clip: true;
+                        if SearchState.best-match.cover.width > 0: Image {
+                            source: SearchState.best-match.cover;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: ImageFit.cover;
+                        }
+                        if SearchState.best-match.cover.width == 0: Text {
+                            text: is-person ? SearchState.best-match.initial : "032";
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-faint;
+                            font-size: is-person ? 40px : 20px;
+                            font-weight: 700;
+                        }
+                    }
+                    best-info := VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        Text {
+                            text: "最佳匹配";
+                            color: Theme.text;
+                            font-size: 16px;
+                            font-weight: 700;
+                        }
+                        Text {
+                            text: SearchState.best-match.kind-label;
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-dim;
+                            font-size: 13.5px;
+                        }
+                        Text {
+                            text: SearchState.best-match.title;
+                            font-family: Fonts.family(self.text);
+                            color: best-area.has-hover ? Theme.accent-text : Theme.text;
+                            font-size: root.content-w < 560px ? 22px : 28px;
+                            font-weight: 750;
+                            wrap: word-wrap;
+                        }
+                        if SearchState.best-match.subtitle != "": Text {
+                            text: SearchState.best-match.subtitle;
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-dim;
+                            font-size: 14px;
+                            overflow: elide;
+                        }
+                        if SearchState.best-match.kind == 2: HorizontalLayout {
+                            padding-top: 6px;
+                            spacing: 10px;
+                            alignment: start;
+                            PrimaryButton {
+                                height: 34px;
+                                text: "播放";
+                                clicked => {
+                                    SearchState.best-action("play", 0);
+                                }
+                            }
+                            if SearchState.best-match.album-id > 0: GhostButton {
+                                height: 34px;
+                                text: "打开所在专辑";
+                                clicked => {
+                                    SearchState.best-action("album", SearchState.best-match.album-id);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ContextMenuArea {
+                    Menu {
+                        if SearchState.best-match.kind != 2: MenuItem {
+                            title: SearchState.best-match.kind == 1 ? "打开专辑" : "打开艺人";
+                            activated => {
+                                SearchState.open-best();
+                            }
+                        }
+                        MenuItem {
+                            title: "播放";
+                            activated => {
+                                SearchState.best-action("play", 0);
+                            }
+                        }
+                        if SearchState.best-match.kind != 2: MenuItem {
+                            title: "随机播放";
+                            activated => {
+                                SearchState.best-action("shuffle", 0);
+                            }
+                        }
+                        MenuItem {
+                            title: "下一首播放";
+                            activated => {
+                                SearchState.best-action("next", 0);
+                            }
+                        }
+                        MenuItem {
+                            title: "添加到队列末尾";
+                            activated => {
+                                SearchState.best-action("last", 0);
+                            }
+                        }
+                        if SearchState.best-match.kind == 1 || SearchState.best-match.kind == 2: Menu {
+                            title: "添加到歌单";
+                            MenuItem {
+                                title: "新建歌单…";
+                                activated => {
+                                    SearchState.best-action("new-playlist", 0);
+                                }
+                            }
+                            for p in root.playlists: MenuItem {
+                                title: p.name;
+                                activated => {
+                                    SearchState.best-action("add", p.id);
+                                }
+                            }
+                        }
+                        if SearchState.best-match.kind == 2 && SearchState.best-match.album-id > 0: MenuItem {
+                            title: "打开所在专辑";
+                            activated => {
+                                SearchState.best-action("album", SearchState.best-match.album-id);
+                            }
+                        }
+                        if SearchState.best-match.kind == 2: MenuItem {
+                            title: "相似歌曲";
+                            activated => {
+                                SearchState.best-action("similar", 0);
+                            }
+                        }
+                        if SearchState.best-match.kind == 2: MenuItem {
+                            title: "查看信息";
+                            activated => {
+                                SearchState.best-action("info", 0);
+                            }
+                        }
+                        MenuItem {
+                            title: SearchState.best-match.favorite ? "取消收藏" : "收藏";
+                            activated => {
+                                SearchState.best-action("favorite", SearchState.best-match.favorite ? 0 : 1);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 歌手 section
+            if !SearchState.loading && SearchState.artists.length > 0: VerticalLayout {
+                spacing: 14px;
+                SearchSectionHead {
+                    title: "歌手";
+                    total: SearchState.artists-total;
+                    has-more: SearchState.artists-total > SearchState.artists.length;
+                    more => {
+                        root.scroll-y = 0px;
+                        SearchState.select-tab(1);
+                    }
+                }
+                Rectangle {
+                    width: root.content-w;
+                    height: root.artist-grid-rows == 0 ? 0px : root.artist-grid-rows * 92px + (root.artist-grid-rows - 1) * 12px;
+                    for item[i] in SearchState.artists: SearchCompactCardView {
+                        x: mod(i, root.grid-cols) * (root.card-w + 20px);
+                        y: floor(i / root.grid-cols) * (92px + 12px);
+                        width: root.card-w;
+                        height: 92px;
+                        item: item;
+                        kind: 0;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            SearchState.card-action(0, what, item.id, arg);
+                        }
+                    }
+                }
+            }
+
+            // 专辑 section
+            if !SearchState.loading && SearchState.albums.length > 0: VerticalLayout {
+                spacing: 14px;
+                SearchSectionHead {
+                    title: "专辑";
+                    total: SearchState.albums-total;
+                    has-more: SearchState.albums-total > SearchState.albums.length;
+                    more => {
+                        root.scroll-y = 0px;
+                        SearchState.select-tab(2);
+                    }
+                }
+                Rectangle {
+                    width: root.content-w;
+                    height: root.album-grid-rows == 0 ? 0px : root.album-grid-rows * 92px + (root.album-grid-rows - 1) * 12px;
+                    for item[i] in SearchState.albums: SearchCompactCardView {
+                        x: mod(i, root.grid-cols) * (root.card-w + 20px);
+                        y: floor(i / root.grid-cols) * (92px + 12px);
+                        width: root.card-w;
+                        height: 92px;
+                        item: item;
+                        kind: 1;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            SearchState.card-action(1, what, item.id, arg);
+                        }
+                    }
+                }
+            }
+
+            // 歌曲 section
+            if !SearchState.loading && SearchState.tracks.length > 0: VerticalLayout {
+                spacing: 10px;
+                SearchSectionHead {
+                    title: "歌曲";
+                    total: SearchState.tracks-total;
+                    has-more: SearchState.tracks-total > SearchState.tracks.length;
+                    more => {
+                        root.scroll-y = 0px;
+                        SearchState.select-tab(3);
+                    }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    for row in SearchState.tracks: SearchPreviewTrackView {
+                        track: row;
+                        playing: row.id == root.playing-id && root.playing-id > 0;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            SearchState.track-action(what, row.index, arg);
+                        }
+                    }
+                }
+            }
+
+            // 作曲家 section
+            if !SearchState.loading && SearchState.composers.length > 0: VerticalLayout {
+                spacing: 14px;
+                SearchSectionHead {
+                    title: "作曲家";
+                    total: SearchState.composers-total;
+                    has-more: SearchState.composers-total > SearchState.composers.length;
+                    more => {
+                        root.scroll-y = 0px;
+                        SearchState.select-tab(4);
+                    }
+                }
+                Rectangle {
+                    width: root.content-w;
+                    height: root.composer-grid-rows == 0 ? 0px : root.composer-grid-rows * 92px + (root.composer-grid-rows - 1) * 12px;
+                    for item[i] in SearchState.composers: SearchCompactCardView {
+                        x: mod(i, root.grid-cols) * (root.card-w + 20px);
+                        y: floor(i / root.grid-cols) * (92px + 12px);
+                        width: root.card-w;
+                        height: 92px;
+                        item: item;
+                        kind: 3;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            SearchState.card-action(3, what, item.id, arg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Single-category virtualized views
+    if SearchState.active-query != "" && SearchState.tab == 1: CardGrid {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: root.artist-rows;
+        kind: 1;
+        loading: SearchState.tab-loading;
+        empty-text: "没有找到歌手";
+        playlists: root.playlists;
+        layout-changed(n, size) => {
+            root.card-layout-changed(4, n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(4, what, id, arg);
+        }
+    }
+    if SearchState.active-query != "" && SearchState.tab == 2: CardGrid {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: root.album-rows;
+        kind: 0;
+        loading: SearchState.tab-loading;
+        empty-text: "没有找到专辑";
+        playlists: root.playlists;
+        layout-changed(n, size) => {
+            root.card-layout-changed(5, n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(5, what, id, arg);
+        }
+    }
+    if SearchState.active-query != "" && SearchState.tab == 3: TrackList {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: root.track-rows;
+        mode: 0;
+        loading: SearchState.tab-loading;
+        empty-text: "没有找到歌曲";
+        playing-id: root.playing-id;
+        playlists: root.playlists;
+        action(what, i, arg) => {
+            root.track-action(3, what, i, arg);
+        }
+    }
+    if SearchState.active-query != "" && SearchState.tab == 4: CardGrid {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: root.composer-rows;
+        kind: 1;
+        loading: SearchState.tab-loading;
+        empty-text: "没有找到作曲家";
+        playlists: root.playlists;
+        layout-changed(n, size) => {
+            root.card-layout-changed(23, n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(23, what, id, arg);
+        }
+    }
+}

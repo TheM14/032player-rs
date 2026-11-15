@@ -739,7 +739,8 @@ fn main() {
         set(&inst, "recording-shortcut", n(-1.0));
         inst.set_callback("shortcut-key", |_| Value::Bool(false))
             .unwrap();
-        set(&inst, "search-text", s(""));
+        set_g(&inst, "SearchState", "query-input", s(""));
+        set_g(&inst, "SearchState", "active-query", s(""));
         set(&inst, "page", n(0.0));
         println!("keyboard focus checks passed");
     }
@@ -898,9 +899,122 @@ fn main() {
     set(&inst, "fav-tracks", tracks());
     set(&inst, "page", Value::Number(5.0));
     render(&window, size, &format!("{out}/favorites.png"));
-    set(&inst, "search-text", s("夜"));
-    set(&inst, "search-tracks", tracks());
-    set(&inst, "search-album-count", Value::Number(3.0));
+    set_g(&inst, "SearchState", "query-input", s("麻枝"));
+    set_g(&inst, "SearchState", "active-query", s("麻枝"));
+    set_g(&inst, "SearchState", "tab", Value::Number(0.0));
+    set_g(
+        &inst,
+        "SearchState",
+        "best-match",
+        Value::Struct(Struct::from_iter([
+            ("has".into(), Value::Bool(true)),
+            ("kind".into(), Value::Number(3.0)),
+            ("kind-label".into(), s("作曲家")),
+            ("id".into(), Value::Number(7.0)),
+            ("album-id".into(), Value::Number(0.0)),
+            ("title".into(), s("麻枝准")),
+            ("subtitle".into(), s("作曲 84 首")),
+            ("cover".into(), Value::Image(cover(5))),
+            ("initial".into(), s("麻")),
+            ("favorite".into(), Value::Bool(true)),
+        ])),
+    );
+    set_g(
+        &inst,
+        "SearchState",
+        "artists",
+        model(vec![Value::Struct(Struct::from_iter([
+            ("id".into(), Value::Number(7.0)),
+            ("title".into(), s("麻枝准")),
+            ("subtitle".into(), s("12 张专辑 · 42 首演唱")),
+            ("meta".into(), s("")),
+            ("cover".into(), Value::Image(cover(5))),
+            ("initial".into(), s("麻")),
+            ("is-avatar".into(), Value::Bool(true)),
+            ("favorite".into(), Value::Bool(true)),
+        ]))]),
+    );
+    set_g(&inst, "SearchState", "artists-total", Value::Number(3.0));
+    set_g(
+        &inst,
+        "SearchState",
+        "albums",
+        model(vec![
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(11.0)),
+                ("title".into(), s("CLANNAD ORIGINAL SOUNDTRACK")),
+                ("subtitle".into(), s("麻枝准 / 戸越まごめ")),
+                ("meta".into(), s("2004 · 64 首")),
+                ("cover".into(), Value::Image(cover(1))),
+                ("initial".into(), s("032")),
+                ("is-avatar".into(), Value::Bool(false)),
+                ("favorite".into(), Value::Bool(false)),
+            ])),
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(12.0)),
+                ("title".into(), s("AIR ORIGINAL SOUNDTRACK")),
+                ("subtitle".into(), s("Key Sounds Label")),
+                ("meta".into(), s("2002 · 31 首")),
+                ("cover".into(), Value::Image(cover(2))),
+                ("initial".into(), s("032")),
+                ("is-avatar".into(), Value::Bool(false)),
+                ("favorite".into(), Value::Bool(true)),
+            ])),
+        ]),
+    );
+    set_g(&inst, "SearchState", "albums-total", Value::Number(14.0));
+    set_g(
+        &inst,
+        "SearchState",
+        "tracks",
+        model(vec![
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(101.0)),
+                ("index".into(), Value::Number(0.0)),
+                ("title".into(), s("だんご大家族")),
+                ("artist".into(), s("茶太")),
+                ("album".into(), s("CLANNAD ORIGINAL SOUNDTRACK")),
+                ("album-id".into(), Value::Number(11.0)),
+                ("artist-id".into(), Value::Number(7.0)),
+                ("artists".into(), model(Vec::new())),
+                ("duration".into(), s("3:38")),
+                ("cover".into(), Value::Image(cover(3))),
+                ("favorite".into(), Value::Bool(true)),
+                ("disabled".into(), Value::Bool(false)),
+            ])),
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(102.0)),
+                ("index".into(), Value::Number(1.0)),
+                ("title".into(), s("鳥の詩")),
+                ("artist".into(), s("Lia")),
+                ("album".into(), s("AIR ORIGINAL SOUNDTRACK")),
+                ("album-id".into(), Value::Number(12.0)),
+                ("artist-id".into(), Value::Number(8.0)),
+                ("artists".into(), model(Vec::new())),
+                ("duration".into(), s("6:08")),
+                ("cover".into(), Value::Image(cover(4))),
+                ("favorite".into(), Value::Bool(false)),
+                ("disabled".into(), Value::Bool(false)),
+            ])),
+        ]),
+    );
+    set_g(&inst, "SearchState", "tracks-total", Value::Number(84.0));
+    set_g(
+        &inst,
+        "SearchState",
+        "composers",
+        model(vec![Value::Struct(Struct::from_iter([
+            ("id".into(), Value::Number(7.0)),
+            ("title".into(), s("麻枝准")),
+            ("subtitle".into(), s("作曲 84 首")),
+            ("meta".into(), s("")),
+            ("cover".into(), Value::Image(cover(5))),
+            ("initial".into(), s("麻")),
+            ("is-avatar".into(), Value::Bool(true)),
+            ("favorite".into(), Value::Bool(true)),
+        ]))]),
+    );
+    set_g(&inst, "SearchState", "composers-total", Value::Number(6.0));
     set(&inst, "page", Value::Number(6.0));
     render(&window, size, &format!("{out}/search.png"));
 

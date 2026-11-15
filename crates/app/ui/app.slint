@@ -19,6 +19,9 @@ import {
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
     HistoryPage, WorkPage, SeriesDetailPage, MixPage, LyricsSearchDialog,
 } from "m032.slint";
+import {
+    SearchState, SearchBestMatch, SearchCompactCard, SearchPreviewTrack, SearchPage,
+} from "search.slint";
 
 export { Fonts, Playback, CastState, CastRoomRow }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
@@ -26,6 +29,7 @@ export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult,
 }
+export { SearchState, SearchBestMatch, SearchCompactCard, SearchPreviewTrack }
 
 component NavItem inherits Rectangle {
     in property <string> text;
@@ -311,16 +315,11 @@ export component AppWindow inherits Window {
     in property <int> fav-artist-count;
     in property <bool> fav-loading;
 
-    // Search: tab 0 tracks, 1 albums, 2 artists.
-    in-out property <string> search-text;
-    in-out property <int> search-tab: 0;
+    // Search: single-category virtualized models (overview state lives in SearchState).
     in property <[TrackRow]> search-tracks;
     in property <[AlbumRow]> search-album-rows;
     in property <[AlbumRow]> search-artist-rows;
-    in property <int> search-album-count;
-    in property <int> search-artist-count;
-    in property <bool> search-loading;
-    callback search(string);
+    in property <[AlbumRow]> search-composer-rows;
 
     // Detail page.
     in property <DetailInfo> detail;
@@ -565,16 +564,6 @@ export component AppWindow inherits Window {
     callback transcode-selected(int);
 
     in property <string> notice;
-
-    search-debounce := Timer {
-        interval: 400ms;
-        running: false;
-        triggered => {
-            self.running = false;
-            root.content-scroll-y = 0px;
-            root.search(root.search-text);
-        }
-    }
 
     function count(n: int, unit: string) -> string {
         return n == 0 ? "" : n + " " + unit;
@@ -1213,97 +1202,22 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.page == 6: VerticalLayout {
-                    PageHeader {
-                        title: "搜索";
-                        search-field := SearchField {
-                            vertical-stretch: 0;
-                            height: 38px;
-                            placeholder: "搜索曲目、专辑、艺人";
-                            text <=> root.search-text;
-                            init => {
-                                self.focus();
-                            }
-                            edited => {
-                                search-debounce.restart();
-                            }
-                            accepted => {
-                                search-debounce.running = false;
-                                root.content-scroll-y = 0px;
-                                root.search(root.search-text);
-                            }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-                            Tab {
-                                text: "曲目" + (root.search-tracks.length > 0 ? " " + root.search-tracks.length : "");
-                                selected: root.search-tab == 0;
-                                clicked => {
-                                    root.content-scroll-y = 0px;
-                                    root.search-tab = 0;
-                                }
-                            }
-                            Tab {
-                                text: "专辑" + (root.search-album-count > 0 ? " " + root.search-album-count : "");
-                                selected: root.search-tab == 1;
-                                clicked => {
-                                    root.content-scroll-y = 0px;
-                                    root.search-tab = 1;
-                                }
-                            }
-                            Tab {
-                                text: "艺人" + (root.search-artist-count > 0 ? " " + root.search-artist-count : "");
-                                selected: root.search-tab == 2;
-                                clicked => {
-                                    root.content-scroll-y = 0px;
-                                    root.search-tab = 2;
-                                }
-                            }
-                        }
+                if root.page == 6: SearchPage {
+                    scroll-y <=> root.content-scroll-y;
+                    playing-id: root.playing-id;
+                    playlists: root.playlist-choices;
+                    artist-rows: root.search-artist-rows;
+                    album-rows: root.search-album-rows;
+                    track-rows: root.search-tracks;
+                    composer-rows: root.search-composer-rows;
+                    card-layout-changed(g, n, size) => {
+                        root.card-layout-changed(g, n, size);
                     }
-                    if root.search-tab == 0: TrackList {
-                        vertical-stretch: 1;
-                        scroll-y <=> root.content-scroll-y;
-                        rows: root.search-tracks;
-                        mode: 0;
-                        loading: root.search-loading;
-                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到曲目";
-                        playing-id: root.playing-id;
-                        playlists: root.playlist-choices;
-                        action(what, i, arg) => {
-                            root.track-action(3, what, i, arg);
-                        }
+                    card-action(g, what, id, arg) => {
+                        root.card-action(g, what, id, arg);
                     }
-                    if root.search-tab == 1: CardGrid {
-                        vertical-stretch: 1;
-                        scroll-y <=> root.content-scroll-y;
-                        rows: root.search-album-rows;
-                        kind: 0;
-                        loading: root.search-loading;
-                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到专辑";
-                        playlists: root.playlist-choices;
-                        layout-changed(n, size) => {
-                            root.card-layout-changed(5, n, size);
-                        }
-                        action(what, id, arg) => {
-                            root.card-action(5, what, id, arg);
-                        }
-                    }
-                    if root.search-tab == 2: CardGrid {
-                        vertical-stretch: 1;
-                        scroll-y <=> root.content-scroll-y;
-                        rows: root.search-artist-rows;
-                        kind: 1;
-                        loading: root.search-loading;
-                        empty-text: root.search-text == "" ? "输入关键词搜索" : "没有找到艺人";
-                        playlists: root.playlist-choices;
-                        layout-changed(n, size) => {
-                            root.card-layout-changed(4, n, size);
-                        }
-                        action(what, id, arg) => {
-                            root.card-action(4, what, id, arg);
-                        }
+                    track-action(list, what, i, arg) => {
+                        root.track-action(list, what, i, arg);
                     }
                 }
 

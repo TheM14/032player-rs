@@ -2,6 +2,7 @@
 
 mod cast;
 mod m032;
+mod search;
 mod shortcuts;
 
 use std::cell::{Cell, RefCell};
@@ -32,6 +33,8 @@ use m032::{
     track_list,
 };
 
+use search::SearchUiState;
+
 /// Card grids, by the `grid` id used in app.slint.
 const GRID_ALBUMS: usize = 0;
 const GRID_ARTISTS: usize = 1;
@@ -39,12 +42,13 @@ const GRID_FAV_ALBUMS: usize = 2;
 const GRID_FAV_ARTISTS: usize = 3;
 const GRID_SEARCH_ARTISTS: usize = 4;
 const GRID_SEARCH_ALBUMS: usize = 5;
+const GRID_SEARCH_COMPOSERS: usize = 23;
 const GRID_RELEASES: usize = 6;
 const GRID_PLAYLISTS: usize = 7;
 /// Release groups of the artist page (专辑, 单曲与 EP, 合辑与现场, 其他发行,
 /// 合作发行, 参与作品, 幕后参与), one grid each.
 const RELEASE_GRIDS: [usize; 7] = [GRID_RELEASES, 17, 18, 19, 20, 21, 22];
-const GRIDS: usize = 23;
+const GRIDS: usize = 24;
 /// Grids of album cards: the card of the playing album gets the
 /// equalizer badge (Electron `useAlbumPlayState`).
 const ALBUM_GRIDS: [usize; 13] = [
@@ -253,6 +257,8 @@ struct Ui {
     fav_tracks: Rc<VecModel<TrackRow>>,
     detail_tracks: Rc<VecModel<TrackRow>>,
     search_tracks: Rc<VecModel<TrackRow>>,
+    search_preview_tracks: Rc<VecModel<TrackRow>>,
+    search: RefCell<SearchUiState>,
     /// The playback history page.
     played: Rc<VecModel<TrackRow>>,
     /// Preview tracks of the shown spotlight tab.
@@ -367,6 +373,7 @@ impl Ui {
             TrackList::Favorites => &self.fav_tracks,
             TrackList::Detail => &self.detail_tracks,
             TrackList::Search => &self.search_tracks,
+            TrackList::SearchPreview => &self.search_preview_tracks,
             TrackList::Spotlight(_) => &self.pane_tracks,
             TrackList::History => &self.played,
             TrackList::Related => &self.related,
@@ -669,7 +676,7 @@ impl Ui {
         }
         let card = self.grids.get(grid).and_then(|g| g.item(id));
         let (source, kind) = match grid {
-            GRID_ARTISTS | GRID_FAV_ARTISTS | GRID_SEARCH_ARTISTS => {
+            GRID_ARTISTS | GRID_FAV_ARTISTS | GRID_SEARCH_ARTISTS | GRID_SEARCH_COMPOSERS => {
                 (TrackSource::Artist(id), Some(FavoriteKind::Artist))
             }
             GRID_PLAYLISTS | GRID_HOME_PLAYLISTS => (TrackSource::Playlist(id), None),
@@ -1049,7 +1056,7 @@ impl Ui {
                 PAGE_ALBUMS
             }),
         );
-        w.set_search_text(SharedString::new());
+        self.reset_search(w, true);
     }
 
     fn detail_loaded(&self, w: &AppWindow, view: DetailView, tracks: Vec<TrackItem>) {
@@ -1525,6 +1532,7 @@ impl Ui {
                     &self.fav_tracks,
                     &self.detail_tracks,
                     &self.search_tracks,
+                    &self.search_preview_tracks,
                     &self.played,
                     &self.pane_tracks,
                     &self.related,
@@ -1550,8 +1558,10 @@ impl Ui {
                     w.set_np_favorite(favorite);
                 }
                 tracing::debug!(id, favorite, current, "track favorite changed");
+                self.update_search_favorite(w, kind, id, favorite);
             }
             FavoriteKind::Album | FavoriteKind::Artist => {
+                self.update_search_favorite(w, kind, id, favorite);
                 for grid in &self.grids {
                     grid.set_favorite(id, favorite);
                 }
@@ -1662,6 +1672,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         fav_tracks: new_tracks(),
         detail_tracks: new_tracks(),
         search_tracks: new_tracks(),
+        search_preview_tracks: new_tracks(),
+        search: RefCell::default(),
         played: new_tracks(),
         pane_tracks: new_tracks(),
         related: new_tracks(),
@@ -1714,6 +1726,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_fav_artist_rows(ModelRc::from(ui.grids[GRID_FAV_ARTISTS].clone()));
     window.set_search_artist_rows(ModelRc::from(ui.grids[GRID_SEARCH_ARTISTS].clone()));
     window.set_search_album_rows(ModelRc::from(ui.grids[GRID_SEARCH_ALBUMS].clone()));
+    window.set_search_composer_rows(ModelRc::from(ui.grids[GRID_SEARCH_COMPOSERS].clone()));
     window.set_playlist_rows(ModelRc::from(ui.grids[GRID_PLAYLISTS].clone()));
     window.set_tracks(ModelRc::from(ui.tracks.clone()));
     window.set_fav_tracks(ModelRc::from(ui.fav_tracks.clone()));
@@ -1883,14 +1896,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             Command::Play(source)
         });
     });
-    let c = commander.clone();
-    let weak = window.as_weak();
-    window.on_search(move |text| {
-        if let Some(w) = weak.upgrade() {
-            w.set_search_loading(!text.trim().is_empty());
-        }
-        c.send(Command::Search(text.to_string()));
-    });
+    search::install_callbacks(window);
     window.on_toggle_now_favorite(|| {
         with_ui(|ui, _| {
             if let Some(now) = ui.now.borrow().as_ref() {
@@ -2343,7 +2349,7 @@ pub fn apply(event: Event) {
                 grid.clear();
             }
             ui.detail_tracks.set_vec(Vec::new());
-            ui.search_tracks.set_vec(Vec::new());
+            ui.reset_search(w, true);
             ui.unbind(Bind::Home);
             ui.unbind(Bind::Detail);
             for model in [
@@ -2445,18 +2451,37 @@ pub fn apply(event: Event) {
             tieups,
         } => ui.album_works_loaded(w, album_id, &works, &tieups),
         Event::SearchResults {
-            query: _,
+            query,
+            best_match,
+            artists,
+            artists_total,
+            albums,
+            albums_total,
+            tracks,
+            tracks_total,
+            composers,
+            composers_total,
+        } => ui.search_overview_loaded(
+            w,
+            query,
+            best_match,
+            artists,
+            artists_total,
+            albums,
+            albums_total,
+            tracks,
+            tracks_total,
+            composers,
+            composers_total,
+        ),
+        Event::SearchCategoryReset { category } => ui.search_category_reset(w, category),
+        Event::SearchCategoryAppended {
+            category,
             artists,
             albums,
             tracks,
-        } => {
-            w.set_search_artist_count(i32::try_from(artists.len()).unwrap_or(i32::MAX));
-            w.set_search_album_count(i32::try_from(albums.len()).unwrap_or(i32::MAX));
-            ui.grids[GRID_SEARCH_ARTISTS].set(cards(artists));
-            ui.grids[GRID_SEARCH_ALBUMS].set(cards(albums));
-            ui.search_tracks.set_vec(track_rows(tracks, 0));
-            w.set_search_loading(false);
-        }
+            total,
+        } => ui.search_category_appended(w, category, artists, albums, tracks, total),
         Event::Favorite { kind, id, favorite } => ui.favorite_changed(w, kind, id, favorite),
         Event::Image { key, image } => {
             let image = to_image(&image);
@@ -2621,7 +2646,10 @@ pub fn apply(event: Event) {
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
-        Event::Notice(text) => ui.notice(text),
+        Event::Notice(text) => {
+            ui.clear_search_loading_on_notice(w, &text);
+            ui.notice(text);
+        }
         Event::LyricsTools(tools) => ui.lyrics_tools(w, &tools),
         Event::LyricsSearchResults(results) => ui.lyrics_results(w, results),
         Event::LyricsPreview(lines) => Ui::lyrics_preview(w, lines),
