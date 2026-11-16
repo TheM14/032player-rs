@@ -20,6 +20,7 @@ pub struct HybridEngine {
     exclusive: AtomicBool,
     volume: Mutex<f64>,
     fade_gain: Mutex<f64>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     forward: Arc<OnceLock<Forward>>,
 }
 

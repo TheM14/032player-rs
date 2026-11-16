@@ -182,6 +182,18 @@ fn wait(rx: &mpsc::Receiver<Event>, what: &str, pred: impl Fn(&Event) -> bool) -
     }
 }
 
+async fn wait_call(engine: &AsioFakeEngine, call: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !engine.calls().iter().any(|c| c == call) {
+        assert!(
+            Instant::now() < deadline,
+            "{call} not sent: {:?}",
+            engine.calls()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
     let server = setup_server().await;
@@ -283,9 +295,7 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
     core.engine_event(EngineEvent::FileLoaded {
         path: Some(url1.clone()),
     });
-    wait(&rx, "seeked to 42s", |_| {
-        engine.calls().iter().any(|c| c == "seek 42.000")
-    });
+    wait_call(&engine, "seek 42.000").await;
 
     // Next track is Opus -> must NOT preload into ASIO.
     assert!(
