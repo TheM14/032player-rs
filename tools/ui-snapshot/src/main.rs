@@ -545,6 +545,84 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
         Value::String(fonts::display_family(&text).into())
     })
     .unwrap();
+    fn extract_names(val: Option<&Value>) -> Vec<String> {
+        let Some(Value::Model(model)) = val else {
+            return Vec::new();
+        };
+        (0..model.row_count())
+            .filter_map(|i| match model.row_data(i) {
+                Some(Value::Struct(s)) => match s.get_field("text") {
+                    Some(Value::String(t)) => Some(t.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+    inst.set_global_callback("ArtistLayout", "fit-count", |args| {
+        let names = extract_names(args.first());
+        let avail = match args.get(1) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 0.0,
+        };
+        let size = match args.get(2) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 14.0,
+        };
+        let weight = match args.get(3) {
+            Some(Value::Number(n)) => *n as i32,
+            _ => 400,
+        };
+        Value::Number(
+            fonts::fit_artist_count(names.iter().map(String::as_str), avail, size, weight) as f64,
+        )
+    })
+    .unwrap();
+    inst.set_global_callback("ArtistLayout", "full-width", |args| {
+        let names = extract_names(args.first());
+        let size = match args.get(1) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 14.0,
+        };
+        let weight = match args.get(2) {
+            Some(Value::Number(n)) => *n as i32,
+            _ => 400,
+        };
+        Value::Number(f64::from(fonts::artists_full_width(
+            names.iter().map(String::as_str),
+            size,
+            weight,
+        )))
+    })
+    .unwrap();
+    inst.set_global_callback("ArtistLayout", "chip-width", |args| {
+        let hidden = match args.first() {
+            Some(Value::Number(n)) if *n > 0.0 => *n as usize,
+            _ => 0,
+        };
+        let size = match args.get(1) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 14.0,
+        };
+        Value::Number(f64::from(fonts::artist_chip_width(hidden, size)))
+    })
+    .unwrap();
+    inst.set_global_callback("ArtistLayout", "cap-width", |args| {
+        let text = match args.first() {
+            Some(Value::String(s)) => s.to_string(),
+            _ => String::new(),
+        };
+        let size = match args.get(1) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 14.0,
+        };
+        let max_w = match args.get(2) {
+            Some(Value::Number(n)) => *n as f32,
+            _ => 100.0,
+        };
+        Value::Number(f64::from(fonts::text_width(&text, size, 400).min(max_w)))
+    })
+    .unwrap();
     inst
 }
 

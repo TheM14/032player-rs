@@ -2,7 +2,7 @@ import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { Palette, ScrollView } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ArtistLinks,
-    LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
+    ArtistLayout, LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
 } from "views.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, ArtistHeader, PromptDialog,
@@ -23,7 +23,7 @@ import {
     SearchState, SearchBestMatch, SearchCompactCard, SearchPreviewTrack, SearchPage,
 } from "search.slint";
 
-export { Fonts, Playback, CastState, CastRoomRow }
+export { Fonts, Playback, CastState, CastRoomRow, ArtistLayout }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -552,9 +552,13 @@ export component AppWindow inherits Window {
     init => {
         root.apply-theme();
         Shell.window-width = root.width;
+        Shell.window-height = root.height;
     }
     changed width => {
         Shell.window-width = root.width;
+    }
+    changed height => {
+        Shell.window-height = root.height;
     }
     changed theme-mode => {
         root.apply-theme();
@@ -572,6 +576,12 @@ export component AppWindow inherits Window {
     shortcut-scope := FocusScope {
         width: root.width;
         height: root.height;
+        changed width => {
+            Shell.window-width = self.width;
+        }
+        changed height => {
+            Shell.window-height = self.height;
+        }
         capture-key-pressed(e) => {
             if root.recording-shortcut >= 0 { return root.capture-shortcut(e) ? accept : reject; }
             return reject;
@@ -1729,9 +1739,11 @@ export component AppWindow inherits Window {
                                         overflow: elide;
                                     }
                                     HorizontalLayout {
+                                        min-width: 0px;
                                         spacing: 28px;
                                         alignment: start;
                                         if track.artist != "": HorizontalLayout {
+                                            min-width: 0px;
                                             spacing: 6px;
                                             Text {
                                                 text: "演出者";
@@ -1739,6 +1751,7 @@ export component AppWindow inherits Window {
                                                 color: Theme.text-faint;
                                                 font-size: 12px;
                                                 vertical-alignment: center;
+                                                horizontal-stretch: 0;
                                             }
                                             ArtistLinks {
                                                 fallback: track.artist;
@@ -1748,6 +1761,7 @@ export component AppWindow inherits Window {
                                             }
                                         }
                                         if track.album != "": HorizontalLayout {
+                                            min-width: 0px;
                                             spacing: 6px;
                                             Text {
                                                 text: "出演于";
@@ -1755,12 +1769,15 @@ export component AppWindow inherits Window {
                                                 color: Theme.text-faint;
                                                 font-size: 12px;
                                                 vertical-alignment: center;
+                                                horizontal-stretch: 0;
                                             }
                                             Text {
                                                 text: track.album;
                                                 font-family: Fonts.family(self.text);
                                                 color: track.album-id > 0 && v-alb-area.has-hover ? Theme.accent-text : Theme.text-dim;
                                                 font-size: 12.5px;
+                                                overflow: elide;
+                                                min-width: ArtistLayout.cap-width(track.album, 12.5px, 100px);
                                                 vertical-alignment: center;
                                                 v-alb-area := TouchArea {
                                                     enabled: track.album-id > 0;

@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use client_core::{Command, CoreConfig, Engine, EngineEvent, SecretStore, Settings};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model};
 
 /// Code generated from `ui/*.slint`.
 #[allow(clippy::all, clippy::todo)]
@@ -27,6 +27,12 @@ mod generated {
 pub use generated::*;
 
 type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
+
+fn credit_names(artists: &slint::ModelRc<CreditPart>) -> Vec<String> {
+    (0..artists.row_count())
+        .filter_map(|i| artists.row_data(i).map(|a| a.text.to_string()))
+        .collect()
+}
 
 /// Log directory (also opened from the settings page).
 pub fn log_dir() -> PathBuf {
@@ -122,6 +128,26 @@ fn main() -> Result<(), slint::PlatformError> {
     window
         .global::<Fonts>()
         .on_display(|text| fonts::display_family(&text).into());
+    window
+        .global::<ArtistLayout>()
+        .on_fit_count(|artists, avail, size, weight| {
+            let names = credit_names(&artists);
+            fonts::fit_artist_count(names.iter().map(String::as_str), avail, size, weight) as i32
+        });
+    window
+        .global::<ArtistLayout>()
+        .on_full_width(|artists, size, weight| {
+            let names = credit_names(&artists);
+            fonts::artists_full_width(names.iter().map(String::as_str), size, weight)
+        });
+    window
+        .global::<ArtistLayout>()
+        .on_chip_width(|hidden, size| {
+            fonts::artist_chip_width(usize::try_from(hidden).unwrap_or(0), size)
+        });
+    window
+        .global::<ArtistLayout>()
+        .on_cap_width(|text, size, max_w| fonts::text_width(&text, size, 400).min(max_w));
     let settings = Settings::load(&data_dir);
     let player_options = player::PlayerOptions {
         audio_device: settings.audio_device.clone(),

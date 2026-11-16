@@ -423,6 +423,7 @@ export component DetailHeader inherits Rectangle {
                 max-size: Shell.tier == 2 ? Theme.font-album : Shell.tier == 1 ? 56px : 44px;
             }
             if root.info.subtitle != "": HorizontalLayout {
+                min-width: 0px;
                 alignment: start;
                 padding-top: Shell.tier == 2 ? 18px : 12px;
                 ArtistLinks {

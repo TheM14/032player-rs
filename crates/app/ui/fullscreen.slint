@@ -1,4 +1,4 @@
-import { ArtistLinks, CreditPart } from "views.slint";
+import { ArtistLayout, ArtistLinks, CreditPart } from "views.slint";
 import { ArtFit, Fonts, Theme } from "theme.slint";
 import { Icon, IconKind } from "controls.slint";
 import { PillTab, SourceBadge, QualityTag } from "nowplaying.slint";
@@ -145,6 +145,7 @@ export component FullScreenPlayer inherits Rectangle {
                 height: 10px;
             }
             if root.has-track: HorizontalLayout {
+                min-width: 0px;
                 alignment: root.wide ? start : center;
                 spacing: 0px;
                 ArtistLinks {
@@ -158,6 +159,7 @@ export component FullScreenPlayer inherits Rectangle {
                     text: " · ";
                     color: Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
+                    horizontal-stretch: 0;
                 }
                 if root.album != "": Text {
                     text: root.album;
@@ -165,6 +167,7 @@ export component FullScreenPlayer inherits Rectangle {
                     color: album-area.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
                     overflow: elide;
+                    min-width: ArtistLayout.cap-width(root.album, root.wide ? 22px : 18px, 140px);
                     album-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {

@@ -248,6 +248,7 @@ dependencies = [
  "slint-build",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
  "winresource",
 ]
 

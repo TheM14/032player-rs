@@ -3,7 +3,7 @@
 // queue panes (the children of the panel, sized by `pane-width` /
 // `pane-height`).
 
-import { ArtistLinks, CreditPart } from "views.slint";
+import { ArtistLayout, ArtistLinks, CreditPart } from "views.slint";
 import { ArtFit, Fonts, Theme } from "theme.slint";
 import { Icon, IconKind } from "controls.slint";
 
@@ -205,6 +205,7 @@ export component NowPlayingPanel inherits Rectangle {
                     overflow: elide;
                 }
                 if root.has-track: HorizontalLayout {
+                    min-width: 0px;
                     alignment: start;
                     spacing: 0px;
                     ArtistLinks {
@@ -217,6 +218,7 @@ export component NowPlayingPanel inherits Rectangle {
                         text: " · ";
                         color: Theme.text-dim;
                         font-size: 14.5px;
+                        horizontal-stretch: 0;
                     }
                     if root.album != "": Text {
                         text: root.album;
@@ -224,6 +226,7 @@ export component NowPlayingPanel inherits Rectangle {
                         color: album-area.has-hover ? Theme.text : Theme.text-dim;
                         font-size: 14.5px;
                         overflow: elide;
+                        min-width: ArtistLayout.cap-width(root.album, 14.5px, 100px);
                         album-area := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {

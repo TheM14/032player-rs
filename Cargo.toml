@@ -51,6 +51,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "p
 # Sonos control (UPnP SOAP replies, DIDL-Lite) and the SSDP interfaces.
 roxmltree = "0.21"
 if-addrs = "0.15"
+ttf-parser = "0.25"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

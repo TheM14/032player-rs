@@ -19,6 +19,7 @@ slint = { workspace = true, features = ["raw-window-handle-06", "unstable-fontiq
 raw-window-handle.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ttf-parser.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

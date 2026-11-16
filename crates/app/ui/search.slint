@@ -3,7 +3,7 @@ import {
     GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, SearchField, Tab,
 } from "controls.slint";
 import {
-    AlbumRow, ArtistLinks, CardGrid, CreditPart, PlaylistChoice, TrackList, TrackRow,
+    AlbumRow, ArtistLayout, ArtistLinks, CardGrid, CreditPart, PlaylistChoice, TrackList, TrackRow,
 } from "views.slint";
 
 // Best-match hero card (`kind`: 0 artist, 1 album, 2 track, 3 composer).
@@ -325,6 +325,7 @@ component SearchPreviewTrackView inherits Rectangle {
                 overflow: elide;
             }
             HorizontalLayout {
+                min-width: 0px;
                 alignment: start;
                 spacing: 0px;
                 ArtistLinks {
@@ -349,6 +350,7 @@ component SearchPreviewTrackView inherits Rectangle {
                     color: album-area.has-hover ? Theme.accent-text : Theme.text-dim;
                     font-size: 13px;
                     overflow: elide;
+                    min-width: ArtistLayout.cap-width(root.track.album, 13px, 100px);
                     vertical-alignment: center;
                     album-area := TouchArea {
                         enabled: root.track.album-id > 0;

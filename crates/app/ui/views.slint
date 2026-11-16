@@ -8,7 +8,97 @@ export struct CreditPart {
     id: int,
 }
 
+export global ArtistLayout {
+    pure callback fit-count([CreditPart], length, length, int) -> int;
+    pure callback full-width([CreditPart], length, int) -> length;
+    pure callback chip-width(int, length) -> length;
+    pure callback cap-width(string, length, length) -> length;
+}
+
+component ArtistPopoverPanel inherits Rectangle {
+    in property <[CreditPart]> artists;
+    callback open(int);
+    property <int> active-index: -1;
+    out property <bool> hovered: panel-area.has-hover || root.active-index >= 0;
+    property <length> list-h: min(root.artists.length * 32px, 224px);
+    width: 248px;
+    height: content.preferred-height;
+    background: Theme.popover;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.popover-border;
+    drop-shadow-blur: 28px;
+    drop-shadow-offset-y: 12px;
+    drop-shadow-color: #00000099;
+    panel-area := TouchArea {
+        width: 100%;
+        height: 100%;
+    }
+    content := VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        Text {
+            text: "全部艺人 (" + root.artists.length + ")";
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 11.5px;
+            font-weight: 600;
+            height: 22px;
+            vertical-alignment: center;
+        }
+        ScrollView {
+            height: root.list-h;
+            VerticalLayout {
+                alignment: start;
+                for artist[i] in root.artists: Rectangle {
+                    height: 32px;
+                    border-radius: 6px;
+                    background: artist.id > 0 && item-area.has-hover ? (Theme.dark ? #ffffff0d : #0000000a) : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Text {
+                            text: artist.text;
+                            font-family: Fonts.family(self.text);
+                            color: artist.id > 0 && item-area.has-hover ? Theme.accent-text : Theme.text;
+                            font-size: 13px;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        if artist.id > 0: Icon {
+                            kind: IconKind.chevron-right;
+                            width: 13px;
+                            height: 13px;
+                            y: (parent.height - self.height) / 2;
+                            color: item-area.has-hover ? Theme.accent-text : Theme.text-faint;
+                        }
+                    }
+                    item-area := TouchArea {
+                        enabled: artist.id > 0;
+                        mouse-cursor: artist.id > 0 ? pointer : default;
+                        changed has-hover => {
+                            if self.has-hover {
+                                root.active-index = i;
+                            } else if root.active-index == i {
+                                root.active-index = -1;
+                            }
+                        }
+                        clicked => {
+                            root.active-index = -1;
+                            root.open(artist.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Every identity has its own hit target; separators never navigate.
+// When the list exceeds `root.width`, fits as many full names as possible and
+// collapses the remainder into a `+N` chip with a hover/click popover.
 export component ArtistLinks inherits Rectangle {
     in property <[CreditPart]> artists;
     in property <string> fallback;
@@ -16,12 +106,24 @@ export component ArtistLinks inherits Rectangle {
     in property <int> font-weight: 400;
     in property <color> text-color: Theme.text-dim;
     callback open(int);
+    property <int> raw-fit: root.artists.length == 0 ? 0 : ArtistLayout.fit-count(root.artists, root.width, root.font-size, root.font-weight);
+    property <int> shown-count: root.artists.length == 0 ? 0 : clamp(root.raw-fit <= 0 ? root.artists.length : root.raw-fit, 1, root.artists.length);
+    property <int> hidden-count: max(0, root.artists.length - root.shown-count);
+    property <length> chip-font-size: max(11px, root.font-size * 0.82);
+    property <length> chip-gap: max(6px, root.font-size * 0.45);
+    property <length> chip-w: root.hidden-count > 0 ? ArtistLayout.chip-width(root.hidden-count, root.font-size) : 0px;
+    property <length> chip-h: max(20px, root.font-size * 1.35);
+    property <length> full-w: root.artists.length == 0 ? measure.preferred-width : ArtistLayout.full-width(root.artists, root.font-size, root.font-weight);
     min-width: 0px;
-    preferred-width: measure.preferred-width;
-    preferred-height: root.font-size * 1.5;
+    preferred-width: root.full-w > 0px ? root.full-w : measure.preferred-width;
+    preferred-height: max(root.font-size * 1.5, root.chip-h);
     clip: true;
-    measure := Text { visible: false; text: root.fallback; font-size: root.font-size; font-weight: root.font-weight; font-family: Fonts.family(self.text); }
+    measure := Text { visible: false; x: 0px; y: 0px; text: root.fallback; font-size: root.font-size; font-weight: root.font-weight; font-family: Fonts.family(self.text); }
     if root.artists.length == 0: Text {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
         text: root.fallback;
         font-family: Fonts.family(self.text);
         font-size: root.font-size;
@@ -31,18 +133,22 @@ export component ArtistLinks inherits Rectangle {
         vertical-alignment: center;
     }
     if root.artists.length > 0: HorizontalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
         alignment: start;
         spacing: 0px;
         for artist[i] in root.artists: HorizontalLayout {
             spacing: 0px;
-            if i > 0: Text {
+            if i < root.shown-count && i > 0: Text {
                 text: " | ";
                 font-size: root.font-size;
                 color: Theme.text-faint;
                 vertical-alignment: center;
                 horizontal-stretch: 0;
             }
-            Text {
+            if i < root.shown-count: Text {
                 text: artist.text;
                 font-family: Fonts.family(self.text);
                 font-size: root.font-size;
@@ -50,12 +156,104 @@ export component ArtistLinks inherits Rectangle {
                 color: artist.id > 0 && link.has-hover ? Theme.accent-text : root.text-color;
                 overflow: elide;
                 vertical-alignment: center;
-                max-width: max(0px, (root.width - (root.artists.length - 1) * root.font-size) / root.artists.length);
+                max-width: (root.shown-count == 1 && root.hidden-count > 0) ? max(0px, root.width - root.chip-w - root.chip-gap) : 10000px;
                 horizontal-stretch: 0;
                 link := TouchArea {
                     enabled: artist.id > 0;
                     mouse-cursor: artist.id > 0 ? pointer : default;
                     clicked => { root.open(artist.id); }
+                }
+            }
+        }
+        if root.hidden-count > 0: HorizontalLayout {
+            padding-left: root.chip-gap;
+            horizontal-stretch: 0;
+            chip := Rectangle {
+                width: root.chip-w;
+                height: root.chip-h;
+                y: (parent.height - self.height) / 2;
+                border-radius: self.height / 2;
+                background: chip-area.has-hover || chip-area.previewing ? Theme.accent-dim : Theme.raised;
+                border-width: chip-area.has-hover || chip-area.previewing ? 1px : 0px;
+                border-color: Theme.accent;
+                property <bool> panel-hovered;
+                changed panel-hovered => {
+                    if self.panel-hovered {
+                        hover-close.running = false;
+                    } else if chip-area.previewing && !chip-area.has-hover {
+                        hover-close.running = true;
+                    }
+                }
+                Text {
+                    text: "+" + root.hidden-count;
+                    font-size: root.chip-font-size;
+                    font-weight: 600;
+                    color: chip-area.has-hover || chip-area.previewing ? Theme.accent-text : root.text-color;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                artists-popup := PopupWindow {
+                    property <length> pop-w: 248px;
+                    property <length> pop-h: min(266px, 42px + root.artists.length * 32px);
+                    property <bool> open-above: chip.absolute-position.y + chip.height + pop-h + 16px > Shell.window-height;
+                    x: -64px;
+                    y: open-above ? -pop-h - 4px : chip.height + 4px;
+                    width: pop-w;
+                    height: pop-h;
+                    close-policy: PopupClosePolicy.close-on-click-outside;
+                    popup-panel := ArtistPopoverPanel {
+                        artists: root.artists;
+                        changed hovered => { chip.panel-hovered = self.hovered; }
+                        open(id) => {
+                            hover-open.running = false;
+                            hover-close.running = false;
+                            chip-area.previewing = false;
+                            chip.panel-hovered = false;
+                            artists-popup.close();
+                            root.open(id);
+                        }
+                    }
+                }
+                hover-open := Timer {
+                    running: false;
+                    interval: 150ms;
+                    triggered => {
+                        self.running = false;
+                        if chip-area.has-hover {
+                            chip-area.previewing = true;
+                            artists-popup.show();
+                        }
+                    }
+                }
+                hover-close := Timer {
+                    running: false;
+                    interval: 220ms;
+                    triggered => {
+                        self.running = false;
+                        if chip-area.previewing && !chip-area.has-hover && !chip.panel-hovered {
+                            artists-popup.close();
+                            chip-area.previewing = false;
+                        }
+                    }
+                }
+                chip-area := TouchArea {
+                    property <bool> previewing;
+                    changed has-hover => {
+                        if self.has-hover {
+                            hover-close.running = false;
+                            if !self.previewing { hover-open.running = true; }
+                        } else {
+                            hover-open.running = false;
+                            if self.previewing && !chip.panel-hovered { hover-close.running = true; }
+                        }
+                    }
+                    mouse-cursor: pointer;
+                    clicked => {
+                        hover-open.running = false;
+                        hover-close.running = false;
+                        chip-area.previewing = true;
+                        artists-popup.show();
+                    }
                 }
             }
         }
@@ -1264,8 +1462,8 @@ export component TrackList inherits Rectangle {
     // Page side padding, fixed columns, gaps of 16px.
     in property <length> pad: Shell.pad;
     property <length> flex: max(0px, self.width - 2 * root.pad - TrackColumns.number - 46px - TrackColumns.heart - TrackColumns.duration - 96px - (root.mode == 4 ? 80px : 0px));
-    // Album pages: artist column 220 (less when narrow).
-    property <length> artist-w: root.mode == 1 ? min(220px, root.flex * 0.38) - 16px : root.flex * 0.24;
+    // Album pages: artist column up to 316 (less when narrow).
+    property <length> artist-w: root.mode == 1 ? min(316px, root.flex * 0.40) - 16px : root.flex * 0.24;
     property <length> title-w: root.mode == 1 ? root.flex - 16px - root.artist-w : root.flex * 0.42;
     property <length> album-w: root.flex * 0.34;
     // Playlist drag and drop: dragged row and where it would land.
@@ -2253,8 +2451,8 @@ export component PlayerBar inherits Rectangle {
             }
             if root.has-track: HorizontalLayout {
                 spacing: 10px;
-                alignment: start;
                 if root.quality != "": Rectangle {
+                    horizontal-stretch: 0;
                     width: quality-text.preferred-width + 14px;
                     height: 20px;
                     y: (parent.height - self.height) / 2;
@@ -2270,6 +2468,8 @@ export component PlayerBar inherits Rectangle {
                 }
                 HorizontalLayout {
                     min-width: 0px;
+                    horizontal-stretch: 1;
+                    alignment: start;
                     ArtistLinks {
                         fallback: root.artist;
                         artists: root.artists;
@@ -2281,6 +2481,7 @@ export component PlayerBar inherits Rectangle {
                         color: Theme.text-dim;
                         font-size: 13.5px;
                         vertical-alignment: center;
+                        horizontal-stretch: 0;
                     }
                     if root.album != "": Text {
                         text: root.album;
@@ -2288,6 +2489,7 @@ export component PlayerBar inherits Rectangle {
                         color: album-area.has-hover ? Theme.text : Theme.text-dim;
                         font-size: 13.5px;
                         overflow: elide;
+                        min-width: ArtistLayout.cap-width(root.album, 13.5px, 36px);
                         vertical-alignment: center;
                         album-area := TouchArea {
                             mouse-cursor: pointer;
