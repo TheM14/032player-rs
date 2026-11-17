@@ -194,6 +194,11 @@ export component AppWindow inherits Window {
     default-font-family: "Noto Sans SC";
 
     in-out property <bool> logged-in: false;
+    // True while startup restore/auto-login checks saved credentials so
+    // LoginView does not flash before the main UI appears.
+    in-out property <bool> login-restoring: false;
+    // Shown only when startup restore takes noticeably long.
+    in-out property <bool> login-restoring-hint: false;
 
     // Login.
     in-out property <string> login-server;
@@ -599,7 +604,7 @@ export component AppWindow inherits Window {
             return reject;
         }
 
-    if !root.logged-in: LoginView {
+    if !root.logged-in && !root.login-restoring: LoginView {
         server <=> root.login-server;
         api-token <=> root.login-api-token;
         media-token <=> root.login-media-token;
@@ -609,6 +614,15 @@ export component AppWindow inherits Window {
         busy: root.login-busy;
         login(s, a, m) => {
             root.login(s, a, m);
+        }
+    }
+
+    if !root.logged-in && root.login-restoring && root.login-restoring-hint: Rectangle {
+        background: Theme.bg;
+        Text {
+            text: "正在连接服务器…";
+            color: Theme.text-faint;
+            font-size: 14px;
         }
     }
 

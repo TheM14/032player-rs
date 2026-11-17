@@ -303,6 +303,7 @@ struct Ui {
     transcode: Cell<Option<Transcode>>,
     transcode_choices: RefCell<Vec<Option<Transcode>>>,
     notice_timer: Timer,
+    restore_hint_timer: Timer,
     /// Polls the scale factor (no change event in Slint) so artwork is
     /// re-decoded when the window moves to a screen with another scale.
     scale_timer: Timer,
@@ -955,6 +956,30 @@ impl Ui {
             Some(Dialog::Delete(id)) => self.send(Command::DeletePlaylist(id)),
             None => {}
         }
+    }
+
+    fn begin_restore(&self, w: &AppWindow) {
+        w.set_login_restoring(true);
+        w.set_login_restoring_hint(false);
+        let weak = self.window.clone();
+        self.restore_hint_timer.start(
+            slint::TimerMode::SingleShot,
+            Duration::from_millis(400),
+            move || {
+                if let Some(w) = weak.upgrade()
+                    && w.get_login_restoring()
+                    && !w.get_logged_in()
+                {
+                    w.set_login_restoring_hint(true);
+                }
+            },
+        );
+    }
+
+    fn finish_restore(&self, w: &AppWindow) {
+        self.restore_hint_timer.stop();
+        w.set_login_restoring(false);
+        w.set_login_restoring_hint(false);
     }
 
     fn notice(&self, text: String) {
@@ -1708,6 +1733,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         transcode: Cell::new(settings.transcode),
         transcode_choices: RefCell::new(vec![None]),
         notice_timer: Timer::default(),
+        restore_hint_timer: Timer::default(),
         scale_timer: Timer::default(),
         queue_all: RefCell::default(),
         queue_covers: Rc::default(),
@@ -2313,6 +2339,11 @@ fn cards<T: Into<Card>>(items: Vec<T>) -> Vec<Card> {
     items.into_iter().map(Into::into).collect()
 }
 
+/// Hides `LoginView` while startup restore / auto-login checks saved credentials.
+pub fn begin_restore() {
+    with_ui(|ui, w| ui.begin_restore(w));
+}
+
 /// Applies one core event on the UI thread.
 #[allow(clippy::too_many_lines)]
 pub fn apply(event: Event) {
@@ -2326,9 +2357,12 @@ pub fn apply(event: Event) {
             if saved.signing_in {
                 w.set_login_busy(true);
                 w.set_login_error(SharedString::new());
+            } else {
+                ui.finish_restore(w);
             }
         }
         Event::SignedOut(reason) => {
+            ui.finish_restore(w);
             w.set_logged_in(false);
             w.set_login_busy(false);
             w.set_login_api_token(SharedString::new());
@@ -2362,6 +2396,7 @@ pub fn apply(event: Event) {
             }
         }
         Event::LoginFailed(failure) => {
+            ui.finish_restore(w);
             w.set_login_busy(false);
             w.set_login_error(login_message(&failure).into());
         }
@@ -2369,6 +2404,7 @@ pub fn apply(event: Event) {
             server_url,
             features,
         } => {
+            ui.finish_restore(w);
             w.set_login_busy(false);
             w.set_logged_in(true);
             w.set_server_label(server_url.as_str().into());
