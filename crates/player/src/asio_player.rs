@@ -108,8 +108,9 @@ struct SharedState {
     seeking: AtomicBool,
     /// Producer finished decoding and no same-rate gapless track follows.
     drain_eof: AtomicBool,
-    /// Consumer drained `ring` completely after `drain_eof`.
-    drained_eof_reached: AtomicBool,
+    /// Consumed frame index when the sink observed an empty ring at EOF.
+    /// `u64::MAX` means no drain has been observed.
+    drained_eof_frame: AtomicU64,
     /// Set by consumer when `ring` underruns while `drain_eof == false`.
     underrun: AtomicBool,
     volume_bits: AtomicU64,
@@ -131,7 +132,7 @@ impl SharedState {
             muted: AtomicBool::new(false),
             seeking: AtomicBool::new(false),
             drain_eof: AtomicBool::new(false),
-            drained_eof_reached: AtomicBool::new(false),
+            drained_eof_frame: AtomicU64::new(u64::MAX),
             underrun: AtomicBool::new(false),
             volume_bits: AtomicU64::new(volume.clamp(0.0, 100.0).to_bits()),
             fade_bits: AtomicU64::new(1.0_f64.to_bits()),
@@ -414,7 +415,10 @@ fn make_render_fn(shared: Arc<SharedState>) -> RenderFn {
         if got < needed {
             out_lr[got..needed].fill(0.0);
             if got == 0 && shared.drain_eof.load(Ordering::Acquire) {
-                shared.drained_eof_reached.store(true, Ordering::Release);
+                shared.drained_eof_frame.store(
+                    shared.consumed_frames.load(Ordering::Relaxed),
+                    Ordering::Release,
+                );
             } else if !shared.drain_eof.load(Ordering::Acquire) {
                 shared.underrun.store(true, Ordering::Release);
             }
@@ -502,7 +506,7 @@ fn worker_loop<S: AudioSink>(
                     shared.seeking.store(true, Ordering::Release);
                     shared.ring.clear();
                     shared.drain_eof.store(false, Ordering::Release);
-                    shared.drained_eof_reached.store(false, Ordering::Release);
+                    shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
                     shared
                         .next_boundary_frame
                         .store(u64::MAX, Ordering::Release);
@@ -553,7 +557,7 @@ fn worker_loop<S: AudioSink>(
                         thread::sleep(Duration::from_millis(15));
                         shared.ring.clear();
                         shared.drain_eof.store(false, Ordering::Release);
-                        shared.drained_eof_reached.store(false, Ordering::Release);
+                        shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
                         shared
                             .next_boundary_frame
                             .store(u64::MAX, Ordering::Release);
@@ -595,7 +599,7 @@ fn worker_loop<S: AudioSink>(
                     shared.seeking.store(true, Ordering::Release);
                     shared.ring.clear();
                     shared.drain_eof.store(false, Ordering::Release);
-                    shared.drained_eof_reached.store(false, Ordering::Release);
+                    shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
                     shared
                         .next_boundary_frame
                         .store(u64::MAX, Ordering::Release);
@@ -698,16 +702,22 @@ fn worker_loop<S: AudioSink>(
         }
 
         // Poll completed prefetch if any.
-        if prefetched_ready.is_none()
-            && let Some(handle) = prefetch.as_ref()
-            && let Ok(res) = handle.rx.try_recv()
-        {
-            prefetch = None;
-            match res {
-                Ok(ready) => prefetched_ready = Some(ready),
-                Err(e) => {
-                    tracing::warn!("ASIO prefetch failed: {e}");
-                    prefetch_error = Some(e.to_string());
+        if let Some(handle) = prefetch.as_ref() {
+            let result = match handle.rx.try_recv() {
+                Ok(result) => Some(result.map_err(|e| e.to_string())),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("ASIO prefetch worker stopped".into()))
+                }
+            };
+            if let Some(result) = result {
+                prefetch = None;
+                match result {
+                    Ok(ready) => prefetched_ready = Some(ready),
+                    Err(e) => {
+                        tracing::warn!("ASIO prefetch failed: {e}");
+                        prefetch_error = Some(e);
+                    }
                 }
             }
         }
@@ -780,19 +790,8 @@ fn worker_loop<S: AudioSink>(
                 && track.pending_offset >= track.pending_pcm.len()
                 && shared.next_boundary_frame.load(Ordering::Acquire) == u64::MAX
                 && !shared.drain_eof.load(Ordering::Acquire)
+                && prefetch.is_none()
             {
-                // If prefetch is still running, let it finish before deciding gapless vs drain.
-                if prefetched_ready.is_none()
-                    && prefetch_error.is_none()
-                    && let Some(handle) = prefetch.take()
-                {
-                    match handle.rx.recv() {
-                        Ok(Ok(ready)) => prefetched_ready = Some(ready),
-                        Ok(Err(e)) => prefetch_error = Some(e.to_string()),
-                        Err(_) => {}
-                    }
-                }
-
                 if let Some(next) = prefetched_ready.as_ref()
                     && next.sample_rate == track.sample_rate
                 {
@@ -811,10 +810,21 @@ fn worker_loop<S: AudioSink>(
                 }
             }
 
-            // Handle clean drain EOF (no same-rate gapless track).
-            if shared.drained_eof_reached.swap(false, Ordering::AcqRel) {
+            // A late append can still be loading after the sink drains. Keep the
+            // current track until that prefetch resolves, and keep handling commands.
+            let end_frame =
+                shared.track_start_consumed.load(Ordering::Acquire) + track.pushed_frames;
+            let drained = shared.drain_eof.load(Ordering::Acquire)
+                && shared.drained_eof_frame.load(Ordering::Acquire) == end_frame;
+            let awaiting_prefetch = drained && prefetch.is_some();
+            if drained && prefetch.is_none() {
                 active = None;
                 shared.drain_eof.store(false, Ordering::Release);
+                shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
+                if buffering_reported {
+                    buffering_reported = false;
+                    emit(PlayerEvent::Buffering(false));
+                }
                 emit(PlayerEvent::EndFile {
                     reason: EndReason::Eof,
                     error: None,
@@ -850,11 +860,11 @@ fn worker_loop<S: AudioSink>(
                             pending_pcm: next.predecoded,
                             pending_offset: 0,
                         };
-                        push_pending(&mut next_active, &shared.ring);
                         let consumed = shared.consumed_frames.load(Ordering::Acquire);
                         shared
                             .track_start_consumed
                             .store(consumed, Ordering::Release);
+                        push_pending(&mut next_active, &shared.ring);
                         if next_active.eof_decoded
                             && next_active.pending_offset >= next_active.pending_pcm.len()
                         {
@@ -881,10 +891,11 @@ fn worker_loop<S: AudioSink>(
 
             // Buffering state & TimePos reporting.
             if let Some(track) = active.as_ref() {
-                if shared.underrun.swap(false, Ordering::AcqRel) && !buffering_reported {
+                let underrun = shared.underrun.swap(false, Ordering::AcqRel);
+                if (underrun || awaiting_prefetch) && !buffering_reported {
                     buffering_reported = true;
                     emit(PlayerEvent::Buffering(true));
-                } else if buffering_reported {
+                } else if buffering_reported && !awaiting_prefetch {
                     let min_resume = usize::try_from(track.sample_rate).unwrap_or(44_100) / 2; // 250ms stereo samples
                     if shared.ring.len() >= min_resume || track.eof_decoded {
                         buffering_reported = false;
@@ -940,76 +951,51 @@ mod tests {
     use super::{AsioPlayer, AudioSink, RenderFn};
     use crate::{EndReason, PlayerEvent, Result};
 
-    struct FakeSink {
-        rates: Arc<Mutex<Vec<f64>>>,
-        rendered_samples: Arc<Mutex<Vec<f32>>>,
-        frames: Arc<AtomicU64>,
-        running: Arc<AtomicBool>,
-        pump: Option<thread::JoinHandle<()>>,
-    }
+    struct FakeSink(Arc<FakeSinkLog>);
 
+    #[derive(Default)]
     struct FakeSinkLog {
-        rates: Arc<Mutex<Vec<f64>>>,
-        rendered_samples: Arc<Mutex<Vec<f32>>>,
+        render: Mutex<Option<RenderFn>>,
+        rates: Mutex<Vec<f64>>,
+        rendered_samples: Mutex<Vec<f32>>,
+        frames: AtomicU64,
     }
 
-    impl FakeSink {
-        fn new() -> (Self, FakeSinkLog) {
-            let rates = Arc::new(Mutex::new(Vec::new()));
-            let rendered_samples = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    rates: rates.clone(),
-                    rendered_samples: rendered_samples.clone(),
-                    frames: Arc::new(AtomicU64::new(0)),
-                    running: Arc::new(AtomicBool::new(false)),
-                    pump: None,
-                },
-                FakeSinkLog {
-                    rates,
-                    rendered_samples,
-                },
-            )
+    impl FakeSinkLog {
+        fn render_buffer(&self) {
+            let mut render = self.render.lock().unwrap();
+            if let Some(render) = render.as_mut() {
+                let mut buf = [0.0; 512];
+                render(256, &mut buf);
+                self.frames.fetch_add(256, Ordering::Relaxed);
+                if buf.iter().any(|s| *s != 0.0) {
+                    self.rendered_samples
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&buf);
+                }
+            }
         }
     }
 
     impl AudioSink for FakeSink {
-        fn start(&mut self, sample_rate: f64, mut render: RenderFn) -> Result<()> {
-            self.stop();
-            self.rates.lock().unwrap().push(sample_rate);
-            let running = Arc::new(AtomicBool::new(true));
-            self.running = running.clone();
-            let captured = self.rendered_samples.clone();
-            let frames = self.frames.clone();
-            let handle = thread::spawn(move || {
-                let mut buf = vec![0.0_f32; 512];
-                while running.load(Ordering::Acquire) {
-                    render(256, &mut buf);
-                    frames.fetch_add(256, Ordering::Release);
-                    if buf.iter().any(|s| *s != 0.0) {
-                        captured.lock().unwrap().extend_from_slice(&buf);
-                    }
-                    thread::sleep(Duration::from_millis(2));
-                }
-            });
-            self.pump = Some(handle);
+        fn start(&mut self, sample_rate: f64, render: RenderFn) -> Result<()> {
+            self.0.rates.lock().unwrap().push(sample_rate);
+            *self.0.render.lock().unwrap() = Some(render);
             Ok(())
         }
 
         fn set_sample_rate(&mut self, sample_rate: f64) -> Result<()> {
-            self.rates.lock().unwrap().push(sample_rate);
+            self.0.rates.lock().unwrap().push(sample_rate);
             Ok(())
         }
 
         fn stop(&mut self) {
-            self.running.store(false, Ordering::Release);
-            if let Some(h) = self.pump.take() {
-                let _ = h.join();
-            }
+            *self.0.render.lock().unwrap() = None;
         }
 
         fn rendered_frames(&self) -> u64 {
-            self.frames.load(Ordering::Acquire)
+            self.0.frames.load(Ordering::Relaxed)
         }
 
         fn open_control_panel(&self) -> Result<()> {
@@ -1043,7 +1029,10 @@ mod tests {
         out
     }
 
-    fn spawn_http_files(files: HashMap<&'static str, Vec<u8>>) -> (String, Arc<AtomicBool>) {
+    fn spawn_http_files(
+        files: HashMap<&'static str, Vec<u8>>,
+        release_c: mpsc::Receiver<()>,
+    ) -> (String, Arc<AtomicBool>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -1076,6 +1065,9 @@ mod tests {
                     .next()
                     .and_then(|l| l.split_whitespace().nth(1))
                     .unwrap_or("/");
+                if path == "/c.wav" && release_c.recv().is_err() {
+                    return;
+                }
                 if let Some(body) = files.get(path) {
                     let header = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
@@ -1101,9 +1093,11 @@ mod tests {
         let wav_44b = make_wav(44_100, 16_384, 8_000);
         let wav_48 = make_wav(48_000, 8_192, 12_000);
         let files = HashMap::from([("/a.wav", wav_44a), ("/b.wav", wav_44b), ("/c.wav", wav_48)]);
-        let (base, shutdown) = spawn_http_files(files);
+        let (release_c, wait_for_release) = mpsc::channel();
+        let (base, shutdown) = spawn_http_files(files, wait_for_release);
 
-        let (sink, log) = FakeSink::new();
+        let log = Arc::new(FakeSinkLog::default());
+        let sink = FakeSink(log.clone());
         let (tx, rx) = mpsc::channel();
         let player = AsioPlayer::new(sink, 100.0, move |ev| {
             let _ = tx.send(ev);
@@ -1115,53 +1109,72 @@ mod tests {
         let url_b = format!("{base}/b.wav");
         let url_c = format!("{base}/c.wav");
 
-        player.load(&url_a).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut loaded_count = 0;
-        let mut appended_b = false;
-        let mut appended_c = false;
-        while Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(PlayerEvent::FileLoaded { path }) => {
-                    loaded_count += 1;
-                    if path.as_deref() == Some(url_a.as_str()) && !appended_b {
-                        player.append(&url_b).unwrap();
-                        appended_b = true;
-                    } else if path.as_deref() == Some(url_b.as_str()) && !appended_c {
-                        player.append(&url_c).unwrap();
-                        appended_c = true;
-                    } else if path.as_deref() == Some(url_c.as_str()) {
-                        break;
+        let expect_event = |expected: PlayerEvent| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "timed out waiting for {expected:?}");
+                let event = match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(event) => event,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        log.render_buffer();
+                        continue;
                     }
+                    Err(e) => panic!("waiting for {expected:?}: {e}"),
+                };
+                if event == expected {
+                    break;
                 }
-                Ok(PlayerEvent::EndFile {
-                    reason: EndReason::Error,
-                    error,
-                }) => panic!("unexpected player error: {error:?}"),
-                Ok(_) | Err(_) => {}
+                assert!(
+                    !matches!(
+                        event,
+                        PlayerEvent::EndFile { .. } | PlayerEvent::FileLoaded { .. }
+                    ),
+                    "expected {expected:?}, got {event:?}"
+                );
             }
-        }
+        };
+        let loaded = |url: &str| PlayerEvent::FileLoaded {
+            path: Some(url.to_owned()),
+        };
+        let eof = PlayerEvent::EndFile {
+            reason: EndReason::Eof,
+            error: None,
+        };
 
-        // Wait briefly for final track EOF drain.
-        let mut got_final_eof = false;
-        let eof_deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < eof_deadline {
-            if let Ok(PlayerEvent::EndFile {
-                reason: EndReason::Eof,
-                ..
-            }) = rx.recv_timeout(Duration::from_millis(50))
-            {
-                got_final_eof = true;
-                break;
-            }
-        }
+        player.load(&url_a).unwrap();
+        expect_event(loaded(&url_a));
+        player.append(&url_b).unwrap();
+        expect_event(eof.clone());
+        expect_event(loaded(&url_b));
 
+        // Do not respond to C until B has drained and is waiting for its preload.
+        player.append(&url_c).unwrap();
+        expect_event(PlayerEvent::Buffering(true));
+        let previous_end_frame = player.shared.drained_eof_frame.load(Ordering::Acquire);
+        assert_eq!(previous_end_frame, 16_384 + 16_384);
+        player.set_paused(true).unwrap();
+        expect_event(PlayerEvent::Paused(true));
+        player.set_paused(false).unwrap();
+        expect_event(PlayerEvent::Paused(false));
+        release_c.send(()).unwrap();
+
+        expect_event(eof.clone());
+        expect_event(loaded(&url_c));
+        // Simulate a last callback from B publishing its drain after C starts.
+        player
+            .shared
+            .drained_eof_frame
+            .store(previous_end_frame, Ordering::Release);
+        expect_event(eof);
         player.stop().unwrap();
         shutdown.store(true, Ordering::Release);
 
-        assert_eq!(loaded_count, 3);
-        assert!(got_final_eof);
         assert_eq!(*log.rates.lock().unwrap(), vec![44_100.0, 48_000.0]);
-        assert!(!log.rendered_samples.lock().unwrap().is_empty());
+        assert_eq!(
+            log.rendered_samples.lock().unwrap().len(),
+            2 * (16_384 + 16_384 + 8_192),
+            "All three tracks must be rendered"
+        );
     }
 }
