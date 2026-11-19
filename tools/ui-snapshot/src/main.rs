@@ -545,22 +545,34 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
         Value::String(fonts::display_family(&text).into())
     })
     .unwrap();
-    fn extract_names(val: Option<&Value>) -> Vec<String> {
-        let Some(Value::Model(model)) = val else {
+    fn extract_widths(arg: Option<&Value>, size: f32, weight: i32) -> Vec<f32> {
+        let Some(Value::Model(model)) = arg else {
             return Vec::new();
         };
         (0..model.row_count())
-            .filter_map(|i| match model.row_data(i) {
-                Some(Value::Struct(s)) => match s.get_field("text") {
-                    Some(Value::String(t)) => Some(t.to_string()),
-                    _ => None,
-                },
-                _ => None,
+            .filter_map(|i| {
+                let Some(Value::Struct(artist)) = model.row_data(i) else {
+                    return None;
+                };
+                let Value::String(name) = artist.get_field("text")? else {
+                    return None;
+                };
+                let separator = if i == 0 {
+                    ""
+                } else {
+                    match artist.get_field("join-phrase") {
+                        Some(Value::String(phrase)) => phrase.as_str(),
+                        _ => ", ",
+                    }
+                };
+                Some(
+                    fonts::text_width(&name, size, weight)
+                        + fonts::text_width(&separator, size, 400),
+                )
             })
             .collect()
     }
     inst.set_global_callback("ArtistLayout", "fit-count", |args| {
-        let names = extract_names(args.first());
         let avail = match args.get(1) {
             Some(Value::Number(n)) => *n as f32,
             _ => 0.0,
@@ -573,13 +585,14 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
             Some(Value::Number(n)) => *n as i32,
             _ => 400,
         };
-        Value::Number(
-            fonts::fit_artist_count(names.iter().map(String::as_str), avail, size, weight) as f64,
-        )
+        Value::Number(fonts::fit_artist_count(
+            &extract_widths(args.first(), size, weight),
+            avail,
+            size,
+        ) as f64)
     })
     .unwrap();
     inst.set_global_callback("ArtistLayout", "full-width", |args| {
-        let names = extract_names(args.first());
         let size = match args.get(1) {
             Some(Value::Number(n)) => *n as f32,
             _ => 14.0,
@@ -588,11 +601,11 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
             Some(Value::Number(n)) => *n as i32,
             _ => 400,
         };
-        Value::Number(f64::from(fonts::artists_full_width(
-            names.iter().map(String::as_str),
+        Value::Number(f64::from(fonts::artists_full_width(&extract_widths(
+            args.first(),
             size,
             weight,
-        )))
+        ))))
     })
     .unwrap();
     inst.set_global_callback("ArtistLayout", "chip-width", |args| {
@@ -719,17 +732,21 @@ fn main() {
         set(&inst, "logged-in", Value::Bool(true));
         let artists = model(vec![
             st(&[("id", n(10.0)), ("text", s("Mori Calliope"))]),
-            st(&[("id", n(20.0)), ("text", s("常闇トワ"))]),
+            st(&[
+                ("id", n(20.0)),
+                ("text", s("常闇トワ")),
+                ("join-phrase", s(" feat. ")),
+            ]),
         ]);
         set(&inst, "has-track", Value::Bool(true));
         set(&inst, "np-title", s("Duet"));
-        set(&inst, "np-artist", s("Mori Calliope, 常闇トワ"));
+        set(&inst, "np-artist", s("Mori Calliope feat. 常闇トワ"));
         set(&inst, "np-artists", artists.clone());
         set(&inst, "np-album", s("VA compilation"));
         set(&inst, "page", n(1.0));
         if let Value::Model(rows) = tracks() {
             if let Some(Value::Struct(mut row)) = rows.row_data(0) {
-                row.set_field("artist".into(), s("Mori Calliope, 常闇トワ"));
+                row.set_field("artist".into(), s("Mori Calliope feat. 常闇トワ"));
                 row.set_field("artists".into(), artists);
                 set(&inst, "tracks", model(vec![Value::Struct(row)]));
             }
@@ -746,7 +763,7 @@ fn main() {
             Value::Void
         })
         .unwrap();
-        for x in [570.0, 655.0] {
+        for x in [570.0, 640.0, 685.0] {
             let position = slint::LogicalPosition::new(x, 267.0);
             let button = slint::platform::PointerEventButton::Left;
             window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });

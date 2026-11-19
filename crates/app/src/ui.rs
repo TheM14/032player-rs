@@ -2282,6 +2282,7 @@ pub(crate) fn artist_refs(artists: &[client_core::ArtistRef]) -> ModelRc<CreditP
             .map(|a| CreditPart {
                 id: int(a.id),
                 text: a.name.as_str().into(),
+                join_phrase: a.separator().into(),
             })
             .collect::<Vec<_>>(),
     ))
@@ -2306,6 +2307,7 @@ fn track_row(t: TrackItem, index: usize, multi_disc: bool) -> TrackRow {
                 .into_iter()
                 .map(|p| CreditPart {
                     text: p.text.into(),
+                    join_phrase: Default::default(),
                     id: int(p.artist_id),
                 })
                 .collect::<Vec<_>>(),

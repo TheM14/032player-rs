@@ -9,10 +9,19 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ArtistRef {
     pub id: i64,
     pub name: String,
+    // The source text placed before this artist in the display credit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_phrase: Option<String>,
+}
+
+impl ArtistRef {
+    pub fn separator(&self) -> &str {
+        self.join_phrase.as_deref().unwrap_or(", ")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

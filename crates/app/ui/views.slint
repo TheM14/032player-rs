@@ -5,6 +5,7 @@ import { PlayingBars, Field, PrimaryButton, ValueBar, IconButton, IconKind, Icon
 // A name with its server-side identity (also used in credits).
 export struct CreditPart {
     text: string,
+    join-phrase: string,
     id: int,
 }
 
@@ -142,7 +143,8 @@ export component ArtistLinks inherits Rectangle {
         for artist[i] in root.artists: HorizontalLayout {
             spacing: 0px;
             if i < root.shown-count && i > 0: Text {
-                text: " | ";
+                text: artist.join-phrase;
+                font-family: Fonts.family(self.text);
                 font-size: root.font-size;
                 color: Theme.text-faint;
                 vertical-alignment: center;

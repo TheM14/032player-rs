@@ -445,10 +445,12 @@ mod tests {
             api::ArtistRef {
                 id: 1,
                 name: "A".into(),
+                join_phrase: None,
             },
             api::ArtistRef {
                 id: 2,
                 name: "B".into(),
+                join_phrase: None,
             },
         ];
         assert!(q.refresh_artists(&[fresh.clone()]));

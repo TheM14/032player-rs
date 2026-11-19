@@ -141,22 +141,13 @@ pub fn text_width(text: &str, font_size: f32, font_weight: i32) -> f32 {
     em_sum * font_size * weight_scale
 }
 
-/// Total logical width for all artist links joined with `" | "`.
-pub fn artists_full_width<'a, I>(names: I, font_size: f32, font_weight: i32) -> f32
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    let sep_w = text_width(" | ", font_size, 400);
-    let mut total = 0.0_f32;
-    let mut count = 0usize;
-    for name in names {
-        if count > 0 {
-            total += sep_w;
-        }
-        total += text_width(name, font_size, font_weight);
-        count += 1;
+/// Total logical width of artist names and their actual join phrases.
+pub fn artists_full_width(widths: &[f32]) -> f32 {
+    if widths.is_empty() {
+        0.0
+    } else {
+        widths.iter().sum::<f32>() + 2.0
     }
-    if count == 0 { 0.0 } else { total + 2.0 }
 }
 
 /// Width of the `+N` overflow chip for `hidden` collapsed artists.
@@ -171,19 +162,7 @@ pub fn artist_chip_width(hidden: usize, font_size: f32) -> f32 {
 
 /// Returns how many leading artists fit inside `avail_width` (at least 1 when
 /// non-empty) while leaving room for a `+N` overflow chip when truncated.
-pub fn fit_artist_count<'a, I>(
-    names: I,
-    avail_width: f32,
-    font_size: f32,
-    font_weight: i32,
-) -> usize
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    let widths: Vec<f32> = names
-        .into_iter()
-        .map(|s| text_width(s, font_size, font_weight))
-        .collect();
+pub fn fit_artist_count(widths: &[f32], avail_width: f32, font_size: f32) -> usize {
     let n = widths.len();
     if n == 0 {
         return 0;
@@ -191,9 +170,7 @@ where
     if avail_width <= 0.0 {
         return 1;
     }
-    let sep_w = text_width(" | ", font_size, 400);
-    let total: f32 = widths.iter().sum::<f32>() + sep_w * (n - 1) as f32;
-    if total + 2.0 <= avail_width {
+    if artists_full_width(widths) <= avail_width {
         return n;
     }
 
@@ -202,9 +179,6 @@ where
     let mut prefix = 0.0_f32;
     let mut best = 1usize;
     for (i, w) in widths.iter().enumerate().take(n - 1) {
-        if i > 0 {
-            prefix += sep_w;
-        }
         prefix += *w;
         let k = i + 1;
         let rem = n - k;
@@ -256,14 +230,28 @@ mod tests {
             "石動双葉",
             "花柳香子",
         ];
-        assert_eq!(fit_artist_count(Vec::<&str>::new(), 200.0, 14.0, 400), 0);
+        let widths = |names: &[&str]| -> Vec<f32> {
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    text_width(name, 14.0, 400)
+                        + if i == 0 {
+                            0.0
+                        } else {
+                            text_width(", ", 14.0, 400)
+                        }
+                })
+                .collect()
+        };
+        assert_eq!(fit_artist_count(&[], 200.0, 14.0), 0);
         // Wide album artist column (~300px) fits several full names + "+N".
-        let fit_300 = fit_artist_count(nine, 300.0, 14.0, 400);
+        let fit_300 = fit_artist_count(&widths(&nine), 300.0, 14.0);
         assert!((3..=5).contains(&fit_300), "fit_300={fit_300}");
         // Very narrow width still keeps at least the first artist.
-        assert_eq!(fit_artist_count(nine, 40.0, 14.0, 400), 1);
+        assert_eq!(fit_artist_count(&widths(&nine), 40.0, 14.0), 1);
         // 4 artists in 300px should all fit without collapsing.
         let four = ["星見純那", "佐藤日向", "愛城華恋", "小山百代"];
-        assert_eq!(fit_artist_count(four, 300.0, 14.0, 400), 4);
+        assert_eq!(fit_artist_count(&widths(&four), 300.0, 14.0), 4);
     }
 }

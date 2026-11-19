@@ -518,19 +518,22 @@ pub fn track_facts(track: &Track) -> Vec<(String, String)> {
         }
     };
     let join = |artists: &[api::ArtistRef]| {
-        artists
-            .iter()
-            .map(|a| a.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" / ")
+        let mut display = String::new();
+        for (index, artist) in artists.iter().enumerate() {
+            if index > 0 {
+                display.push_str(artist.separator());
+            }
+            display.push_str(&artist.name);
+        }
+        display
     };
     push("标题", track.title.clone());
     push(
         "艺人",
-        if track.artists.is_empty() {
-            track.artist.clone()
-        } else {
+        if track.artist.is_empty() {
             join(&track.artists)
+        } else {
+            track.artist.clone()
         },
     );
     push("专辑", track.album.clone());
@@ -1015,10 +1018,12 @@ mod tests {
             api::ArtistRef {
                 id: 10,
                 name: "Mori Calliope".into(),
+                join_phrase: None,
             },
             api::ArtistRef {
                 id: 20,
                 name: "常闇トワ".into(),
+                join_phrase: None,
             },
         ];
         let t = api::Track {
@@ -1070,6 +1075,7 @@ mod tests {
                 artists: vec![ArtistRef {
                     id: 3,
                     name: "Ayase".into(),
+                    join_phrase: None,
                 }],
             }],
             disc_number: 1,
@@ -1158,6 +1164,7 @@ mod tests {
         let r = |id: i64, name: &str| api::ArtistRef {
             id,
             name: name.into(),
+            join_phrase: None,
         };
         let credit = |role: &str, artists: Vec<api::ArtistRef>| api::TrackCredit {
             role: role.into(),
@@ -1277,6 +1284,7 @@ mod tests {
                 .map(|id| ArtistRef {
                     id,
                     name: String::new(),
+                    join_phrase: None,
                 })
                 .collect(),
             credits: vec![api::TrackCredit {
@@ -1286,6 +1294,7 @@ mod tests {
                     .map(|id| ArtistRef {
                         id,
                         name: String::new(),
+                        join_phrase: None,
                     })
                     .collect(),
             }],
@@ -1348,6 +1357,7 @@ mod tests {
             album_artists: vec![ArtistRef {
                 id: 4,
                 name: "AA".into(),
+                join_phrase: None,
             }],
             duration_millis: 61_000,
             ..Track::default()

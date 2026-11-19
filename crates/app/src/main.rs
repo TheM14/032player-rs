@@ -28,9 +28,18 @@ pub use generated::*;
 
 type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
 
-fn credit_names(artists: &slint::ModelRc<CreditPart>) -> Vec<String> {
+fn credit_widths(artists: &slint::ModelRc<CreditPart>, size: f32, weight: i32) -> Vec<f32> {
     (0..artists.row_count())
-        .filter_map(|i| artists.row_data(i).map(|a| a.text.to_string()))
+        .filter_map(|i| {
+            let artist = artists.row_data(i)?;
+            let name_width = fonts::text_width(&artist.text, size, weight);
+            let separator_width = if i == 0 {
+                0.0
+            } else {
+                fonts::text_width(&artist.join_phrase, size, 400)
+            };
+            Some(name_width + separator_width)
+        })
         .collect()
 }
 
@@ -131,14 +140,13 @@ fn main() -> Result<(), slint::PlatformError> {
     window
         .global::<ArtistLayout>()
         .on_fit_count(|artists, avail, size, weight| {
-            let names = credit_names(&artists);
-            fonts::fit_artist_count(names.iter().map(String::as_str), avail, size, weight) as i32
+            let widths = credit_widths(&artists, size, weight);
+            fonts::fit_artist_count(&widths, avail, size) as i32
         });
     window
         .global::<ArtistLayout>()
         .on_full_width(|artists, size, weight| {
-            let names = credit_names(&artists);
-            fonts::artists_full_width(names.iter().map(String::as_str), size, weight)
+            fonts::artists_full_width(&credit_widths(&artists, size, weight))
         });
     window
         .global::<ArtistLayout>()
