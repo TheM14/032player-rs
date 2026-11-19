@@ -9,7 +9,7 @@ import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
     RoundIconButton,
 } from "controls.slint";
-import { ArtistLinks, CreditPart, AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns } from "views.slint";
+import { ArtistLinks, CreditPart, AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns, ContextMenuEntry, ContextMenuState } from "views.slint";
 import { CardRows, PageHeader } from "library.slint";
 
 // A small row with a cover on the home page (接着听, 最近播放, 主题曲,
@@ -367,8 +367,35 @@ component WorkCardH inherits Rectangle {
     border-radius: 12px;
     background: area.has-hover ? Theme.surface-hover : Theme.surface;
 
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "播放", icon: IconKind.play, what: "play" },
+                { kind: 1 },
+                { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+            ],
+            [],
+        );
+    }
+
     area := TouchArea {
         mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         clicked => {
             root.action("open", 0);
         }
@@ -427,6 +454,11 @@ component WorkCardH inherits Rectangle {
                 }
                 play-area := TouchArea {
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         root.action("play", 0);
                     }
@@ -481,29 +513,6 @@ component WorkCardH inherits Rectangle {
                 color: Theme.text-faint;
                 font-size: 12.5px;
                 overflow: elide;
-            }
-        }
-    }
-
-    ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "播放";
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到队列末尾";
-                activated => {
-                    root.action("last", 0);
-                }
             }
         }
     }
@@ -664,8 +673,51 @@ export component HomeRowView inherits Rectangle {
     background: root.card ? (row-area.has-hover ? Theme.surface-hover : Theme.surface) : row-area.has-hover ? Theme.surface-hover.with-alpha(0.6) : transparent;
     opacity: root.item.dimmed ? 0.55 : 1;
 
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        if !root.mix {
+            root.menu-token = ContextMenuState.show(
+                wx,
+                wy,
+                [
+                    { label: "播放", icon: IconKind.play, what: "play" },
+                    { kind: 1 },
+                    { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                    { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+                    { kind: 1 },
+                    { kind: 2, label: "添加到歌单", icon: IconKind.plus },
+                    {
+                        label: root.item.favorite ? "取消收藏" : "收藏",
+                        icon: root.item.favorite ? IconKind.heart : IconKind.heart-outline,
+                        what: "favorite",
+                        arg: root.item.favorite ? 0 : 1,
+                        accent-icon: root.item.favorite,
+                    },
+                    { kind: 1 },
+                    { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                    { kind: 1, hidden: root.item.album-id <= 0 && root.item.artist-id <= 0 },
+                    { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.item.album-id, hidden: root.item.album-id <= 0 },
+                    { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.item.artist-id, hidden: root.item.artist-id <= 0 },
+                ],
+                root.playlists,
+            );
+        }
+    }
+
     row-area := TouchArea {
         mouse-cursor: root.mix ? pointer : default;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         clicked => {
             if root.mix {
                 root.action("open", 0);
@@ -751,6 +803,11 @@ export component HomeRowView inherits Rectangle {
                 }
                 art-area := TouchArea {
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         root.action("play", 0);
                     }
@@ -822,6 +879,11 @@ export component HomeRowView inherits Rectangle {
                 vertical-alignment: center;
                 link-area := TouchArea {
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         root.action("link", root.item.link-id);
                     }
@@ -858,6 +920,11 @@ export component HomeRowView inherits Rectangle {
             }
             add-area := TouchArea {
                 mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
                 clicked => {
                     root.action("last", 0);
                 }
@@ -870,68 +937,6 @@ export component HomeRowView inherits Rectangle {
                 width: 18px;
                 height: 18px;
                 color: row-area.has-hover ? Theme.text : Theme.text-faint;
-            }
-        }
-    }
-
-    if !root.mix: ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "播放";
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到队列末尾";
-                activated => {
-                    root.action("last", 0);
-                }
-            }
-            Menu {
-                title: "添加到歌单";
-                MenuItem {
-                    title: "新建歌单…";
-                    activated => {
-                        root.action("new-playlist", 0);
-                    }
-                }
-                for p in root.playlists: MenuItem {
-                    title: p.name;
-                    activated => {
-                        root.action("add", p.id);
-                    }
-                }
-            }
-            MenuItem {
-                title: root.item.favorite ? "取消收藏" : "收藏";
-                activated => {
-                    root.action("favorite", root.item.favorite ? 0 : 1);
-                }
-            }
-            MenuItem {
-                title: "相似歌曲";
-                activated => {
-                    root.action("similar", 0);
-                }
-            }
-            if root.item.album-id > 0: MenuItem {
-                title: "转到专辑";
-                activated => {
-                    root.action("album", root.item.album-id);
-                }
-            }
-            if root.item.artist-id > 0: MenuItem {
-                title: "转到艺人";
-                activated => {
-                    root.action("artists", root.item.artist-id);
-                }
             }
         }
     }

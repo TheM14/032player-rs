@@ -107,6 +107,7 @@ export component ArtistLinks inherits Rectangle {
     in property <int> font-weight: 400;
     in property <color> text-color: Theme.text-dim;
     callback open(int);
+    callback right-clicked(length, length);
     property <int> raw-fit: root.artists.length == 0 ? 0 : ArtistLayout.fit-count(root.artists, root.width, root.font-size, root.font-weight);
     property <int> shown-count: root.artists.length == 0 ? 0 : clamp(root.raw-fit <= 0 ? root.artists.length : root.raw-fit, 1, root.artists.length);
     property <int> hidden-count: max(0, root.artists.length - root.shown-count);
@@ -163,6 +164,11 @@ export component ArtistLinks inherits Rectangle {
                 link := TouchArea {
                     enabled: artist.id > 0;
                     mouse-cursor: artist.id > 0 ? pointer : default;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.right-clicked(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => { root.open(artist.id); }
                 }
             }
@@ -250,6 +256,11 @@ export component ArtistLinks inherits Rectangle {
                         }
                     }
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.right-clicked(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         hover-open.running = false;
                         hover-close.running = false;
@@ -290,16 +301,6 @@ export struct AlbumRow {
 // `tag`: a label after the title (use on a work, history state, 新发现),
 // `note`: replaces the album column (history), `disabled`: the file is
 // missing, `blocked`: 不再推荐 (daily mixes).
-component TrackMenuItem inherits Rectangle {
-    in property <string> text;
-    callback triggered();
-    height: 34px;
-    border-radius: 5px;
-    background: area.has-hover ? Theme.surface-hover : transparent;
-    Text { x: 12px; width: parent.width - 24px; height: 100%; text: root.text; color: Theme.text; vertical-alignment: center; overflow: elide; }
-    area := TouchArea { mouse-cursor: pointer; clicked => { root.triggered(); } }
-}
-
 export struct TieupWork {
     id: int,
     title: string,
@@ -452,6 +453,342 @@ export struct PlaylistChoice {
     name: string,
 }
 
+export struct ContextMenuEntry {
+    // 0: action item, 1: divider, 2: playlist submenu trigger
+    kind: int,
+    label: string,
+    icon: IconKind,
+    what: string,
+    arg: int,
+    hidden: bool,
+    disabled: bool,
+    accent-icon: bool,
+    danger: bool,
+}
+
+export global ContextMenuState {
+    in-out property <bool> open: false;
+    in-out property <length> anchor-x: 0px;
+    in-out property <length> anchor-y: 0px;
+    in-out property <[ContextMenuEntry]> entries: [];
+    in-out property <[PlaylistChoice]> playlists: [];
+    in-out property <int> next-token: 0;
+    in-out property <int> active-token: 0;
+    in-out property <int> fired-token: 0;
+    in-out property <string> fired-what: "";
+    in-out property <int> fired-arg: 0;
+
+    public function show(x: length, y: length, entries: [ContextMenuEntry], playlists: [PlaylistChoice]) -> int {
+        self.next-token += 1;
+        self.active-token = self.next-token;
+        self.anchor-x = x;
+        self.anchor-y = y;
+        self.entries = entries;
+        self.playlists = playlists;
+        self.open = true;
+        return self.active-token;
+    }
+
+    public function trigger(what: string, arg: int) {
+        self.open = false;
+        self.fired-what = what;
+        self.fired-arg = arg;
+        self.fired-token = self.active-token;
+    }
+
+    public function close() {
+        self.open = false;
+    }
+}
+
+component ContextMenuRow inherits Rectangle {
+    in property <string> label;
+    in property <IconKind> icon;
+    in property <bool> has-icon: true;
+    in property <bool> enabled: true;
+    in property <bool> accent-icon;
+    in property <bool> danger;
+    in property <bool> submenu;
+    in property <bool> active;
+    callback hovered(bool, length);
+    callback triggered(length);
+
+    height: 32px;
+    border-radius: 6px;
+    background: (root.enabled && (area.has-hover || root.active))
+        ? (Theme.dark ? #ffffff0d : #0000000a)
+        : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        if root.has-icon: Rectangle {
+            width: 15px;
+            Icon {
+                kind: root.icon;
+                width: 15px;
+                height: 15px;
+                color: root.danger ? Theme.danger
+                    : root.accent-icon ? Theme.accent
+                    : (area.has-hover || root.active) && root.enabled ? Theme.text
+                    : Theme.text-dim;
+            }
+        }
+        Text {
+            text: root.label;
+            font-family: Fonts.family(self.text);
+            color: root.danger ? Theme.danger : Theme.text;
+            font-size: 13.5px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.submenu: Rectangle {
+            width: 14px;
+            Icon {
+                kind: IconKind.chevron-right;
+                width: 14px;
+                height: 14px;
+                color: (area.has-hover || root.active) ? Theme.text : Theme.text-faint;
+            }
+        }
+    }
+
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        changed has-hover => {
+            root.hovered(self.has-hover, root.absolute-position.y);
+        }
+        clicked => {
+            root.triggered(root.absolute-position.y);
+        }
+    }
+}
+
+export component ContextMenuOverlay inherits Rectangle {
+    width: 100%;
+    height: 100%;
+
+    property <int> token: ContextMenuState.active-token;
+    property <bool> sub-open: false;
+    property <bool> sub-row-hovered: false;
+    property <bool> sub-box-hovered: false;
+    property <bool> sub-new-hovered: false;
+    property <int> sub-list-hovered: -1;
+    property <bool> sub-pointer-inside: root.sub-box-hovered || root.sub-new-hovered || root.sub-list-hovered >= 0;
+    property <length> sub-anchor-y: 0px;
+
+    changed token => {
+        root.sub-open = false;
+        root.sub-row-hovered = false;
+        root.sub-box-hovered = false;
+        root.sub-new-hovered = false;
+        root.sub-list-hovered = -1;
+        sub-close-timer.running = false;
+    }
+
+    changed sub-open => {
+        if !self.sub-open {
+            root.sub-box-hovered = false;
+            root.sub-new-hovered = false;
+            root.sub-list-hovered = -1;
+        }
+    }
+
+    changed sub-pointer-inside => {
+        if self.sub-pointer-inside {
+            sub-close-timer.running = false;
+        } else if !root.sub-row-hovered {
+            sub-close-timer.running = true;
+        }
+    }
+
+    sub-close-timer := Timer {
+        running: false;
+        interval: 160ms;
+        triggered => {
+            self.running = false;
+            if !root.sub-row-hovered && !root.sub-pointer-inside {
+                root.sub-open = false;
+            }
+        }
+    }
+
+    // Backdrop: click or scroll outside closes the menu.
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                ContextMenuState.close();
+            }
+        }
+        scroll-event(e) => {
+            ContextMenuState.close();
+            return EventResult.reject;
+        }
+    }
+
+    property <length> menu-w: 222px;
+    property <length> menu-h: min(max(44px, Shell.window-height - 16px), menu-col.preferred-height);
+    property <length> menu-x: clamp(ContextMenuState.anchor-x, 8px, max(8px, Shell.window-width - root.menu-w - 8px));
+    property <length> menu-y: clamp(ContextMenuState.anchor-y, 8px, max(8px, Shell.window-height - root.menu-h - 8px));
+
+    main-panel := Rectangle {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: root.menu-w;
+        height: root.menu-h;
+        background: Theme.popover;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.popover-border;
+        drop-shadow-blur: 28px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: Theme.dark ? #00000090 : #00000024;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        menu-col := VerticalLayout {
+            padding: 6px;
+            spacing: 0px;
+            for entry in ContextMenuState.entries: Rectangle {
+                visible: !entry.hidden;
+                height: entry.hidden ? 0px : entry.kind == 1 ? 7px : 32px;
+                clip: entry.hidden;
+                if !entry.hidden && entry.kind == 1: Rectangle {
+                    x: 6px;
+                    y: 3px;
+                    width: parent.width - 12px;
+                    height: 1px;
+                    background: Theme.popover-border;
+                }
+                if !entry.hidden && entry.kind != 1: ContextMenuRow {
+                    width: 100%;
+                    height: 100%;
+                    label: entry.label;
+                    icon: entry.icon;
+                    enabled: !entry.disabled;
+                    accent-icon: entry.accent-icon;
+                    danger: entry.danger;
+                    submenu: entry.kind == 2;
+                    active: entry.kind == 2 && root.sub-open;
+                    hovered(h, abs-y) => {
+                        if entry.kind == 2 {
+                            root.sub-row-hovered = h;
+                            if h {
+                                sub-close-timer.running = false;
+                                root.sub-anchor-y = abs-y - main-panel.absolute-position.y;
+                                root.sub-open = true;
+                            } else if !root.sub-pointer-inside {
+                                sub-close-timer.running = true;
+                            }
+                        } else if h {
+                            root.sub-row-hovered = false;
+                            if !root.sub-pointer-inside {
+                                root.sub-open = false;
+                                sub-close-timer.running = false;
+                            }
+                        }
+                    }
+                    triggered(abs-y) => {
+                        if entry.kind == 2 {
+                            sub-close-timer.running = false;
+                            root.sub-anchor-y = abs-y - main-panel.absolute-position.y;
+                            root.sub-open = !root.sub-open;
+                        } else {
+                            ContextMenuState.trigger(entry.what, entry.arg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    property <length> sub-w: 214px;
+    property <length> sub-list-h: min(256px, ContextMenuState.playlists.length * 32px);
+    property <length> sub-h: min(max(44px, Shell.window-height - 16px), 12px + 32px + (ContextMenuState.playlists.length > 0 ? 7px + root.sub-list-h : 0px));
+    property <length> sub-x: (root.menu-x + root.menu-w + 4px + root.sub-w + 8px <= Shell.window-width)
+        ? (root.menu-x + root.menu-w + 4px)
+        : max(8px, root.menu-x - root.sub-w - 4px);
+    property <length> sub-y: clamp(root.menu-y + root.sub-anchor-y - 6px, 8px, max(8px, Shell.window-height - root.sub-h - 8px));
+
+    if root.sub-open: Rectangle {
+        x: root.sub-x;
+        y: root.sub-y;
+        width: root.sub-w;
+        height: root.sub-h;
+        background: Theme.popover;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.popover-border;
+        drop-shadow-blur: 28px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: Theme.dark ? #00000090 : #00000024;
+
+        sub-area := TouchArea {
+            width: 100%;
+            height: 100%;
+            changed has-hover => {
+                root.sub-box-hovered = self.has-hover;
+            }
+        }
+
+        VerticalLayout {
+            padding: 6px;
+            spacing: 0px;
+            ContextMenuRow {
+                label: "新建歌单…";
+                icon: IconKind.plus;
+                accent-icon: true;
+                hovered(h, _y) => {
+                    root.sub-new-hovered = h;
+                }
+                triggered(_y) => {
+                    ContextMenuState.trigger("new-playlist", 0);
+                }
+            }
+            if ContextMenuState.playlists.length > 0: Rectangle {
+                height: 7px;
+                Rectangle {
+                    x: 6px;
+                    y: 3px;
+                    width: parent.width - 12px;
+                    height: 1px;
+                    background: Theme.popover-border;
+                }
+            }
+            if ContextMenuState.playlists.length > 0: ScrollView {
+                height: root.sub-list-h;
+                VerticalLayout {
+                    alignment: start;
+                    for p[i] in ContextMenuState.playlists: ContextMenuRow {
+                        label: p.name;
+                        icon: IconKind.note;
+                        hovered(h, _y) => {
+                            if h {
+                                root.sub-list-hovered = i;
+                            } else if root.sub-list-hovered == i {
+                                root.sub-list-hovered = -1;
+                            }
+                        }
+                        triggered(_y) => {
+                            ContextMenuState.trigger("add", p.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component LoginView inherits Rectangle {
     in-out property <string> server;
     in-out property <string> api-token;
@@ -565,9 +902,50 @@ export component CardView inherits Rectangle {
     width: root.size;
     height: card-col.preferred-height;
 
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "播放", icon: IconKind.play, what: "play" },
+                { label: "随机播放", icon: IconKind.shuffle, what: "shuffle" },
+                { kind: 1 },
+                { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+                { kind: 1, hidden: root.kind == 4 },
+                { kind: 2, label: "添加到歌单", icon: IconKind.plus, hidden: root.kind == 2 || root.kind == 4 },
+                {
+                    label: root.card.favorite ? "取消收藏" : "收藏",
+                    icon: root.card.favorite ? IconKind.heart : IconKind.heart-outline,
+                    what: "favorite",
+                    arg: root.card.favorite ? 0 : 1,
+                    accent-icon: root.card.favorite,
+                    hidden: root.kind >= 2,
+                },
+                { kind: 1, hidden: !(root.kind == 0 && root.card.artist-id > 0) },
+                { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.card.artist-id, hidden: !(root.kind == 0 && root.card.artist-id > 0) },
+                { label: "删除歌单", icon: IconKind.trash, what: "delete", danger: true, hidden: root.kind != 2 },
+            ],
+            root.playlists,
+        );
+    }
+
     // Let the artist links and overflow chip receive clicks first.
     area := TouchArea {
         mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         clicked => {
             root.action(root.over-play ? "play" : "open", 0);
         }
@@ -720,6 +1098,7 @@ export component CardView inherits Rectangle {
                 font-size: 13px;
                 max-width: root.size;
                 open(id) => { root.action("artist", id); }
+                right-clicked(wx, wy) => { root.open-menu(wx, wy); }
             }
         }
 
@@ -759,68 +1138,6 @@ export component CardView inherits Rectangle {
             overflow: elide;
             width: root.size;
             horizontal-alignment: root.center-meta ? center : left;
-        }
-    }
-
-    ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "播放";
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "随机播放";
-                activated => {
-                    root.action("shuffle", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到队列末尾";
-                activated => {
-                    root.action("last", 0);
-                }
-            }
-            if root.kind != 2 && root.kind != 4: Menu {
-                title: "添加到歌单";
-                MenuItem {
-                    title: "新建歌单…";
-                    activated => {
-                        root.action("new-playlist", 0);
-                    }
-                }
-                for p in root.playlists: MenuItem {
-                    title: p.name;
-                    activated => {
-                        root.action("add", p.id);
-                    }
-                }
-            }
-            if root.kind < 2: MenuItem {
-                title: root.card.favorite ? "取消收藏" : "收藏";
-                activated => {
-                    root.action("favorite", root.card.favorite ? 0 : 1);
-                }
-            }
-            if root.kind == 0 && root.card.artist-id > 0: MenuItem {
-                title: "转到艺人";
-                activated => {
-                    root.action("artists", root.card.artist-id);
-                }
-            }
-            if root.kind == 2: MenuItem {
-                title: "删除歌单";
-                activated => {
-                    root.action("delete", 0);
-                }
-            }
         }
     }
 }
@@ -916,6 +1233,51 @@ export component TrackRowView inherits Rectangle {
     property <bool> roomy: root.mode == 1 || root.mode == 2;
     height: root.two-line ? 64px : root.roomy ? 58px : 50px;
 
+    // TouchAreas consume right clicks, so each interactive child forwards
+    // them explicitly to the shared row menu.
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "播放", icon: IconKind.play, what: "play", disabled: root.track.disabled },
+                { label: "下一首播放", icon: IconKind.queue, what: "next", disabled: root.track.disabled },
+                { label: "添加到播放队列末尾", icon: IconKind.list-plus, what: "last", disabled: root.track.disabled },
+                { kind: 1 },
+                { kind: 2, label: "添加到歌单", icon: IconKind.plus },
+                {
+                    label: root.track.favorite ? "取消收藏" : "收藏",
+                    icon: root.track.favorite ? IconKind.heart : IconKind.heart-outline,
+                    what: "favorite",
+                    arg: root.track.favorite ? 0 : 1,
+                    accent-icon: root.track.favorite,
+                },
+                { kind: 1 },
+                { label: "同名演奏版本", icon: IconKind.versions, what: "versions", hidden: root.track.version-count <= 1 },
+                { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                { label: "查看信息", icon: IconKind.info, what: "info" },
+                { kind: 1, hidden: !(root.track.album-id > 0 || root.track.artist-id > 0 || root.track.artists.length > 0 || root.mode == 2) },
+                { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.track.album-id, hidden: root.track.album-id <= 0 },
+                { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.track.artist-id, hidden: root.track.artist-id <= 0 && root.track.artists.length == 0 },
+                { label: "从歌单移除", icon: IconKind.trash, what: "remove", danger: true, hidden: root.mode != 2 },
+            ],
+            root.playlists,
+        );
+    }
+    function row-menu(e: PointerEvent, x: length, y: length) {
+        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+            root.open-menu(root.absolute-position.x + x, root.absolute-position.y + y);
+        }
+    }
+
     // Hover / current row (accent wash) and the rule under the row.
     Rectangle {
         x: root.pad - 14px;
@@ -924,165 +1286,6 @@ export component TrackRowView inherits Rectangle {
         background: root.dragging ? Theme.accent-dim
             : root.playing ? @linear-gradient(90deg, Theme.accent-dim 0%, Theme.accent-dim.with-alpha(0) 100%)
             : row-area.has-hover ? Theme.surface-hover : transparent;
-    }
-    if !root.playing: Rectangle {
-        x: root.pad;
-        y: root.height - 1px;
-        width: root.width - 2 * root.pad;
-        height: 1px;
-        background: Theme.border;
-    }
-
-    // TouchAreas consume right clicks, so each interactive child forwards
-    // them explicitly to the shared row menu.
-    property <length> menu-x;
-    property <length> menu-y;
-    function row-menu(e: PointerEvent, x: length, y: length) {
-        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
-            root.menu-x = x;
-            root.menu-y = y;
-            track-popup.show();
-        }
-    }
-    function menu-action(action: string, arg: int) {
-        track-popup.close();
-        playlist-popup.close();
-        root.action(action, arg);
-    }
-    // Slint sizes a popup once when it is shown and a plain click inside
-    // closes it, so the playlist list is a second popup opened in place
-    // of the main menu instead of a page swapped inside it.
-    track-popup := PopupWindow {
-        x: root.menu-x;
-        y: root.menu-y;
-        width: 240px;
-        height: 12px + (9 + (root.mode == 2 ? 1 : 0) + (root.track.version-count > 1 ? 1 : 0)) * 34px;
-        Rectangle {
-            background: Theme.raised;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: 6px;
-                VerticalLayout {
-                    TrackMenuItem { text: "播放"; triggered => { root.menu-action("play", 0); } }
-                    TrackMenuItem { text: "下一首播放"; triggered => { root.menu-action("next", 0); } }
-                    TrackMenuItem { text: "添加到播放队列末尾"; triggered => { root.menu-action("last", 0); } }
-                    TrackMenuItem { text: "添加到歌单 ›"; triggered => { track-popup.close(); playlist-popup.show(); } }
-                    TrackMenuItem { text: root.track.favorite ? "取消收藏" : "收藏"; triggered => { root.menu-action("favorite", root.track.favorite ? 0 : 1); } }
-                    if root.track.version-count > 1: TrackMenuItem { text: "同名演奏版本"; triggered => { root.menu-action("versions", 0); } }
-                    TrackMenuItem { text: "相似歌曲"; triggered => { root.menu-action("similar", 0); } }
-                    TrackMenuItem { text: "查看信息"; triggered => { root.menu-action("info", 0); } }
-                    TrackMenuItem { text: "转到专辑"; triggered => { root.menu-action("album", root.track.album-id); } }
-                    TrackMenuItem { text: "转到艺人"; triggered => { root.menu-action("artists", root.track.artist-id); } }
-                    if root.mode == 2: TrackMenuItem { text: "从歌单移除"; triggered => { root.menu-action("remove", 0); } }
-                }
-            }
-        }
-    }
-    // Clicks on the scroll bar must not close the list.
-    playlist-popup := PopupWindow {
-        x: root.menu-x;
-        y: root.menu-y;
-        width: 240px;
-        height: min(380px, 12px + (2 + root.playlists.length) * 34px);
-        close-policy: close-on-click-outside;
-        Rectangle {
-            background: Theme.raised;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout {
-                padding: 6px;
-                TrackMenuItem { text: "‹ 返回"; triggered => { playlist-popup.close(); track-popup.show(); } }
-                TrackMenuItem { text: "新建歌单…"; triggered => { root.menu-action("new-playlist", 0); } }
-                if root.playlists.length > 0: ScrollView {
-                    VerticalLayout {
-                        alignment: start;
-                        for p in root.playlists: TrackMenuItem { text: p.name; triggered => { root.menu-action("add", p.id); } }
-                    }
-                }
-            }
-        }
-    }
-    track-menu := ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "播放";
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到播放队列末尾";
-                activated => {
-                    root.action("last", 0);
-                }
-            }
-            Menu {
-                title: "添加到歌单";
-                MenuItem {
-                    title: "新建歌单…";
-                    activated => {
-                        root.action("new-playlist", 0);
-                    }
-                }
-                for p in root.playlists: MenuItem {
-                    title: p.name;
-                    activated => {
-                        root.action("add", p.id);
-                    }
-                }
-            }
-            MenuItem {
-                title: root.track.favorite ? "取消收藏" : "收藏";
-                activated => {
-                    root.action("favorite", root.track.favorite ? 0 : 1);
-                }
-            }
-            if root.track.version-count > 1: MenuItem {
-                title: "同名演奏版本";
-                activated => {
-                    root.action("versions", 0);
-                }
-            }
-            MenuItem {
-                title: "相似歌曲";
-                activated => {
-                    root.action("similar", 0);
-                }
-            }
-            MenuItem {
-                title: "查看信息";
-                activated => {
-                    root.action("info", 0);
-                }
-            }
-            if root.track.album-id > 0: MenuItem {
-                title: "转到专辑";
-                activated => {
-                    root.action("album", root.track.album-id);
-                }
-            }
-            if root.track.artist-id > 0: MenuItem {
-                title: "转到艺人";
-                activated => {
-                    root.action("artists", root.track.artist-id);
-                }
-            }
-            if root.mode == 2: MenuItem {
-                title: "从歌单移除";
-                activated => {
-                    root.action("remove", 0);
-                }
-            }
-        }
 
         row-area := TouchArea {
             double-clicked => {
@@ -1109,6 +1312,13 @@ export component TrackRowView inherits Rectangle {
                 }
             }
         }
+    }
+    if !root.playing: Rectangle {
+        x: root.pad;
+        y: root.height - 1px;
+        width: root.width - 2 * root.pad;
+        height: 1px;
+        background: Theme.border;
     }
 
     HorizontalLayout {
@@ -1337,6 +1547,7 @@ export component TrackRowView inherits Rectangle {
             artists: root.track.artists;
             fallback: root.track.artist;
             open(id) => { root.action("artist", id); }
+            right-clicked(wx, wy) => { root.open-menu(wx, wy); }
         }
         if root.mode != 1: album-col := Rectangle {
             width: root.album-w;

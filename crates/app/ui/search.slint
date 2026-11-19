@@ -3,7 +3,7 @@ import {
     GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, SearchField, Tab,
 } from "controls.slint";
 import {
-    AlbumRow, ArtistLayout, ArtistLinks, CardGrid, CreditPart, PlaylistChoice, TrackList, TrackRow,
+    AlbumRow, ArtistLayout, ArtistLinks, CardGrid, ContextMenuEntry, ContextMenuState, CreditPart, PlaylistChoice, TrackList, TrackRow,
 } from "views.slint";
 
 // Best-match hero card (`kind`: 0 artist, 1 album, 2 track, 3 composer).
@@ -129,8 +129,51 @@ component SearchCompactCardView inherits Rectangle {
     border-radius: 8px;
     background: card-area.has-hover ? Theme.surface-hover : transparent;
 
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                {
+                    label: root.kind == 1 ? "打开专辑" : "打开艺人",
+                    icon: root.kind == 1 ? IconKind.disc : IconKind.person,
+                    what: "open",
+                },
+                { kind: 1 },
+                { label: "播放", icon: IconKind.play, what: "play" },
+                { label: "随机播放", icon: IconKind.shuffle, what: "shuffle" },
+                { kind: 1 },
+                { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+                { kind: 1 },
+                { kind: 2, label: "添加到歌单", icon: IconKind.plus, hidden: root.kind != 1 },
+                {
+                    label: root.item.favorite ? "取消收藏" : "收藏",
+                    icon: root.item.favorite ? IconKind.heart : IconKind.heart-outline,
+                    what: "favorite",
+                    arg: root.item.favorite ? 0 : 1,
+                    accent-icon: root.item.favorite,
+                },
+            ],
+            root.playlists,
+        );
+    }
+
     card-area := TouchArea {
         mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         clicked => {
             root.action("open", 0);
         }
@@ -189,62 +232,6 @@ component SearchCompactCardView inherits Rectangle {
             }
         }
     }
-
-    ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: root.kind == 1 ? "打开专辑" : "打开艺人";
-                activated => {
-                    root.action("open", 0);
-                }
-            }
-            MenuItem {
-                title: "播放";
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "随机播放";
-                activated => {
-                    root.action("shuffle", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到队列末尾";
-                activated => {
-                    root.action("last", 0);
-                }
-            }
-            if root.kind == 1: Menu {
-                title: "添加到歌单";
-                MenuItem {
-                    title: "新建歌单…";
-                    activated => {
-                        root.action("new-playlist", 0);
-                    }
-                }
-                for p in root.playlists: MenuItem {
-                    title: p.name;
-                    activated => {
-                        root.action("add", p.id);
-                    }
-                }
-            }
-            MenuItem {
-                title: root.item.favorite ? "取消收藏" : "收藏";
-                activated => {
-                    root.action("favorite", root.item.favorite ? 0 : 1);
-                }
-            }
-        }
-    }
 }
 
 component SearchPreviewTrackView inherits Rectangle {
@@ -258,7 +245,49 @@ component SearchPreviewTrackView inherits Rectangle {
     background: row-area.has-hover ? Theme.surface-hover : transparent;
     opacity: root.track.disabled ? 0.5 : 1.0;
 
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "播放", icon: IconKind.play, what: "play", disabled: root.track.disabled },
+                { label: "下一首播放", icon: IconKind.queue, what: "next", disabled: root.track.disabled },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last", disabled: root.track.disabled },
+                { kind: 1 },
+                { kind: 2, label: "添加到歌单", icon: IconKind.plus },
+                {
+                    label: root.track.favorite ? "取消收藏" : "收藏",
+                    icon: root.track.favorite ? IconKind.heart : IconKind.heart-outline,
+                    what: "favorite",
+                    arg: root.track.favorite ? 0 : 1,
+                    accent-icon: root.track.favorite,
+                },
+                { kind: 1 },
+                { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                { label: "其他版本", icon: IconKind.versions, what: "versions" },
+                { label: "查看信息", icon: IconKind.info, what: "info" },
+                { kind: 1, hidden: root.track.album-id <= 0 && root.track.artist-id <= 0 && root.track.artists.length == 0 },
+                { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.track.album-id, hidden: root.track.album-id <= 0 },
+                { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.track.artist-id, hidden: root.track.artist-id <= 0 && root.track.artists.length == 0 },
+            ],
+            root.playlists,
+        );
+    }
+
     row-area := TouchArea {
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
         double-clicked => {
             if !root.track.disabled {
                 root.action("play", 0);
@@ -305,6 +334,11 @@ component SearchPreviewTrackView inherits Rectangle {
                 art-area := TouchArea {
                     enabled: !root.track.disabled;
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         root.action("play", 0);
                     }
@@ -336,6 +370,9 @@ component SearchPreviewTrackView inherits Rectangle {
                     open(id) => {
                         root.action("artist", id);
                     }
+                    right-clicked(wx, wy) => {
+                        root.open-menu(wx, wy);
+                    }
                 }
                 if root.track.album != "": Text {
                     text: " · ";
@@ -355,6 +392,11 @@ component SearchPreviewTrackView inherits Rectangle {
                     album-area := TouchArea {
                         enabled: root.track.album-id > 0;
                         mouse-cursor: root.track.album-id > 0 ? pointer : default;
+                        pointer-event(e) => {
+                            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
                         clicked => {
                             root.action("album", root.track.album-id);
                         }
@@ -385,85 +427,13 @@ component SearchPreviewTrackView inherits Rectangle {
             play-area := TouchArea {
                 enabled: !root.track.disabled;
                 mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
                 clicked => {
                     root.action("play", 0);
-                }
-            }
-        }
-    }
-
-    ContextMenuArea {
-        Menu {
-            MenuItem {
-                title: "播放";
-                enabled: !root.track.disabled;
-                activated => {
-                    root.action("play", 0);
-                }
-            }
-            MenuItem {
-                title: "下一首播放";
-                enabled: !root.track.disabled;
-                activated => {
-                    root.action("next", 0);
-                }
-            }
-            MenuItem {
-                title: "添加到队列末尾";
-                enabled: !root.track.disabled;
-                activated => {
-                    root.action("last", 0);
-                }
-            }
-            Menu {
-                title: "添加到歌单";
-                MenuItem {
-                    title: "新建歌单…";
-                    activated => {
-                        root.action("new-playlist", 0);
-                    }
-                }
-                for p in root.playlists: MenuItem {
-                    title: p.name;
-                    activated => {
-                        root.action("add", p.id);
-                    }
-                }
-            }
-            MenuItem {
-                title: root.track.favorite ? "取消收藏" : "收藏";
-                activated => {
-                    root.action("favorite", root.track.favorite ? 0 : 1);
-                }
-            }
-            MenuItem {
-                title: "相似歌曲";
-                activated => {
-                    root.action("similar", 0);
-                }
-            }
-            MenuItem {
-                title: "其他版本";
-                activated => {
-                    root.action("versions", 0);
-                }
-            }
-            MenuItem {
-                title: "查看信息";
-                activated => {
-                    root.action("info", 0);
-                }
-            }
-            if root.track.album-id > 0: MenuItem {
-                title: "转到专辑";
-                activated => {
-                    root.action("album", root.track.album-id);
-                }
-            }
-            if root.track.artist-id > 0 || root.track.artists.length > 0: MenuItem {
-                title: "转到艺人";
-                activated => {
-                    root.action("artists", root.track.artist-id);
                 }
             }
         }
@@ -491,6 +461,64 @@ export component SearchPage inherits VerticalLayout {
     property <int> album-grid-rows: SearchState.albums.length == 0 ? 0 : floor((SearchState.albums.length + root.grid-cols - 1) / root.grid-cols);
     property <int> composer-grid-rows: SearchState.composers.length == 0 ? 0 : floor((SearchState.composers.length + root.grid-cols - 1) / root.grid-cols);
     property <bool> has-any-results: SearchState.artists-total + SearchState.albums-total + SearchState.tracks-total + SearchState.composers-total > 0;
+
+    property <int> best-menu-token: 0;
+    property <int> best-menu-fired: ContextMenuState.fired-token;
+    changed best-menu-fired => {
+        if self.best-menu-fired > 0 && self.best-menu-fired == root.best-menu-token {
+            root.best-menu-token = 0;
+            if ContextMenuState.fired-what == "open-best" {
+                SearchState.open-best();
+            } else {
+                SearchState.best-action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+            }
+        }
+    }
+    function open-best-menu(wx: length, wy: length) {
+        root.best-menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                {
+                    label: SearchState.best-match.kind == 1 ? "打开专辑" : "打开艺人",
+                    icon: SearchState.best-match.kind == 1 ? IconKind.disc : IconKind.person,
+                    what: "open-best",
+                    hidden: SearchState.best-match.kind == 2,
+                },
+                { kind: 1, hidden: SearchState.best-match.kind == 2 },
+                { label: "播放", icon: IconKind.play, what: "play" },
+                { label: "随机播放", icon: IconKind.shuffle, what: "shuffle", hidden: SearchState.best-match.kind == 2 },
+                { kind: 1 },
+                { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+                { kind: 1 },
+                {
+                    kind: 2,
+                    label: "添加到歌单",
+                    icon: IconKind.plus,
+                    hidden: !(SearchState.best-match.kind == 1 || SearchState.best-match.kind == 2),
+                },
+                {
+                    label: SearchState.best-match.favorite ? "取消收藏" : "收藏",
+                    icon: SearchState.best-match.favorite ? IconKind.heart : IconKind.heart-outline,
+                    what: "favorite",
+                    arg: SearchState.best-match.favorite ? 0 : 1,
+                    accent-icon: SearchState.best-match.favorite,
+                },
+                { kind: 1, hidden: SearchState.best-match.kind != 2 },
+                {
+                    label: "打开所在专辑",
+                    icon: IconKind.disc,
+                    what: "album",
+                    arg: SearchState.best-match.album-id,
+                    hidden: !(SearchState.best-match.kind == 2 && SearchState.best-match.album-id > 0),
+                },
+                { label: "相似歌曲", icon: IconKind.layers, what: "similar", hidden: SearchState.best-match.kind != 2 },
+                { label: "查看信息", icon: IconKind.info, what: "info", hidden: SearchState.best-match.kind != 2 },
+            ],
+            root.playlists,
+        );
+    }
 
     function tab-label(base: string, count: int) -> string {
         return count > 0 ? base + " " + count : base;
@@ -757,6 +785,11 @@ export component SearchPage inherits VerticalLayout {
 
                 best-area := TouchArea {
                     mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-best-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
                     clicked => {
                         SearchState.open-best();
                     }
@@ -835,80 +868,6 @@ export component SearchPage inherits VerticalLayout {
                                 clicked => {
                                     SearchState.best-action("album", SearchState.best-match.album-id);
                                 }
-                            }
-                        }
-                    }
-                }
-
-                ContextMenuArea {
-                    Menu {
-                        if SearchState.best-match.kind != 2: MenuItem {
-                            title: SearchState.best-match.kind == 1 ? "打开专辑" : "打开艺人";
-                            activated => {
-                                SearchState.open-best();
-                            }
-                        }
-                        MenuItem {
-                            title: "播放";
-                            activated => {
-                                SearchState.best-action("play", 0);
-                            }
-                        }
-                        if SearchState.best-match.kind != 2: MenuItem {
-                            title: "随机播放";
-                            activated => {
-                                SearchState.best-action("shuffle", 0);
-                            }
-                        }
-                        MenuItem {
-                            title: "下一首播放";
-                            activated => {
-                                SearchState.best-action("next", 0);
-                            }
-                        }
-                        MenuItem {
-                            title: "添加到队列末尾";
-                            activated => {
-                                SearchState.best-action("last", 0);
-                            }
-                        }
-                        if SearchState.best-match.kind == 1 || SearchState.best-match.kind == 2: Menu {
-                            title: "添加到歌单";
-                            MenuItem {
-                                title: "新建歌单…";
-                                activated => {
-                                    SearchState.best-action("new-playlist", 0);
-                                }
-                            }
-                            for p in root.playlists: MenuItem {
-                                title: p.name;
-                                activated => {
-                                    SearchState.best-action("add", p.id);
-                                }
-                            }
-                        }
-                        if SearchState.best-match.kind == 2 && SearchState.best-match.album-id > 0: MenuItem {
-                            title: "打开所在专辑";
-                            activated => {
-                                SearchState.best-action("album", SearchState.best-match.album-id);
-                            }
-                        }
-                        if SearchState.best-match.kind == 2: MenuItem {
-                            title: "相似歌曲";
-                            activated => {
-                                SearchState.best-action("similar", 0);
-                            }
-                        }
-                        if SearchState.best-match.kind == 2: MenuItem {
-                            title: "查看信息";
-                            activated => {
-                                SearchState.best-action("info", 0);
-                            }
-                        }
-                        MenuItem {
-                            title: SearchState.best-match.favorite ? "取消收藏" : "收藏";
-                            activated => {
-                                SearchState.best-action("favorite", SearchState.best-match.favorite ? 0 : 1);
                             }
                         }
                     }

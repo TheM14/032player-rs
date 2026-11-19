@@ -3,6 +3,7 @@ import { Palette, ScrollView } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ArtistLinks,
     ArtistLayout, LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
+    ContextMenuOverlay, ContextMenuState,
 } from "views.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, ArtistHeader, PromptDialog,
@@ -522,7 +523,16 @@ export component AppWindow inherits Window {
 
     in property <[ShortcutRow]> shortcuts;
     in-out property <int> recording-shortcut: -1;
-    changed page => { root.recording-shortcut = -1; }
+    changed page => {
+        ContextMenuState.close();
+        root.recording-shortcut = -1;
+    }
+    changed dialog => {
+        ContextMenuState.close();
+    }
+    changed full-open => {
+        ContextMenuState.close();
+    }
     callback shortcut-key(KeyEvent) -> bool;
     callback capture-shortcut(KeyEvent) -> bool;
     callback clear-shortcut(int);
@@ -592,6 +602,10 @@ export component AppWindow inherits Window {
             return reject;
         }
         key-pressed(e) => {
+            if ContextMenuState.open && e.text == Key.Escape {
+                ContextMenuState.close();
+                return accept;
+            }
             if (root.dialog == 6 || root.dialog == 7) && e.text == Key.Escape {
                 root.dialog = 0;
                 return accept;
@@ -2439,6 +2453,8 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    if ContextMenuState.open: ContextMenuOverlay { }
 
     if root.dialog == 1 || root.dialog == 2: PromptDialog {
         title: root.dialog == 1 ? "新建歌单" : "编辑歌单";

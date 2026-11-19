@@ -787,9 +787,10 @@ fn album_artist_regression(
         ],
         "Album card links, hover popup, cover, title and play button"
     );
+    hits.borrow_mut().clear();
     click(110.0, 465.0, PointerEventButton::Right);
     render(window, size, &format!("{out}/album-artist-menu.png"));
-    click(170.0, 678.0, left);
+    click(170.0, 700.0, left);
     assert_eq!(
         hits.borrow_mut().pop(),
         Some((0, "artists".into(), 0, 5)),
