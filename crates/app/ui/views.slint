@@ -562,10 +562,16 @@ export component CardView inherits Rectangle {
         && area.mouse-x <= root.img-x + root.img-w - 12px
         && area.mouse-y >= root.img-y + root.img-h - 52px
         && area.mouse-y <= root.img-y + root.img-h - 12px;
-    // The artist of an album card is a link (Electron `albumArtists` row).
-    property <bool> artist-link: root.kind == 0 && root.card.artist-id > 0 && root.card.artist != "";
     width: root.size;
     height: card-col.preferred-height;
+
+    // Let the artist links and overflow chip receive clicks first.
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.action(root.over-play ? "play" : "open", 0);
+        }
+    }
 
     card-col := VerticalLayout {
         spacing: 0px;
@@ -710,7 +716,7 @@ export component CardView inherits Rectangle {
             ArtistLinks {
                 fallback: root.card.artist;
                 artists: root.kind == 0 ? root.card.artists : [];
-                visible: root.card.artist != "";
+                visible: root.card.artist != "" || self.artists.length > 0;
                 font-size: 13px;
                 max-width: root.size;
                 open(id) => { root.action("artist", id); }
@@ -816,15 +822,7 @@ export component CardView inherits Rectangle {
                 }
             }
         }
-
-        area := TouchArea {
-            mouse-cursor: pointer;
-            clicked => {
-                root.action(root.over-play ? "play" : "open", 0);
-            }
-        }
     }
-
 }
 
 // Virtualized grid of cards; the rows come from a Rust model that chunks

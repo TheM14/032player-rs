@@ -146,6 +146,22 @@ fn model(values: Vec<Value>) -> Value {
     Value::Model(ModelRc::new(VecModel::from(values)))
 }
 
+fn sample_artist_refs(names: &[&str]) -> Value {
+    model(
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                st(&[
+                    ("id", n(5.0 + i as f64)),
+                    ("text", s(name)),
+                    ("join-phrase", s(" / ")),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn album_rows(columns: usize) -> Value {
     album_rows_n(columns, 24)
 }
@@ -195,9 +211,19 @@ fn album_rows_n(columns: usize, count: usize) -> Value {
             let mut card = Struct::default();
             card.set_field("id".into(), Value::Number(i as f64));
             card.set_field("title".into(), s(title));
-            card.set_field("artist".into(), s(artist));
             card.set_field("year".into(), s(year));
-            card.set_field("artist-id".into(), Value::Number(5.0));
+            let artists: &[&str] = match artist {
+                "" => &[],
+                "Various Artists" => &["Mori Calliope", "常闇トワ", "星街すいせい", "AZKi"],
+                "麻枝准 / 戸越まごめ" => &["麻枝准", "戸越まごめ"],
+                _ => &[artist],
+            };
+            card.set_field(
+                "artist-id".into(),
+                n(if artists.is_empty() { 0.0 } else { 5.0 }),
+            );
+            card.set_field("artists".into(), sample_artist_refs(artists));
+            card.set_field("artist".into(), s(&artists.join(" / ")));
             card.set_field("favorite".into(), Value::Bool(i % 3 == 0));
             card.set_field(
                 "badge".into(),
@@ -697,6 +723,145 @@ fn scroll_regression(def: &slint_interpreter::ComponentDefinition, window: &Mini
     println!("scroll restoration bindings passed");
 }
 
+fn album_artist_regression(
+    def: &slint_interpreter::ComponentDefinition,
+    window: &MinimalSoftwareWindow,
+    out: &str,
+) {
+    let size = PhysicalSize::new(1280, 800);
+    let inst = create(def);
+    inst.show().unwrap();
+    set(&inst, "logged-in", Value::Bool(true));
+    set(&inst, "page", n(0.0));
+    set(&inst, "album-rows", album_rows_n(4, 8));
+
+    use slint::LogicalPosition;
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let move_to = |x, y| {
+        let position = LogicalPosition::new(x, y);
+        window.dispatch_event(WindowEvent::PointerMoved { position });
+        position
+    };
+    let click = |x, y, button| {
+        let position = move_to(x, y);
+        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+    };
+    let left = PointerEventButton::Left;
+    let hits = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = hits.clone();
+    inst.set_callback("card-action", move |args| {
+        if let [
+            Value::Number(grid),
+            Value::String(action),
+            Value::Number(id),
+            Value::Number(arg),
+        ] = args
+        {
+            recorded
+                .borrow_mut()
+                .push((*grid as i32, action.to_string(), *id as i32, *arg as i32));
+        }
+        Value::Void
+    })
+    .unwrap();
+
+    render(window, size, &format!("{out}/album-artist-links.png"));
+    click(590.0, 465.0, left);
+    click(677.0, 465.0, left);
+    move_to(729.0, 465.0);
+    render(window, size, &format!("{out}/album-artist-hover.png"));
+    click(690.0, 593.0, left);
+    click(110.0, 250.0, left);
+    click(114.0, 441.0, left);
+    click(272.0, 385.0, left);
+    assert_eq!(
+        hits.borrow().as_slice(),
+        &[
+            (0, "artist".into(), 2, 5),
+            (0, "artist".into(), 2, 6),
+            (0, "artist".into(), 2, 7),
+            (0, "open".into(), 0, 0),
+            (0, "open".into(), 0, 0),
+            (0, "play".into(), 0, 0),
+        ],
+        "Album card links, hover popup, cover, title and play button"
+    );
+    click(110.0, 465.0, PointerEventButton::Right);
+    render(window, size, &format!("{out}/album-artist-menu.png"));
+    click(170.0, 678.0, left);
+    assert_eq!(
+        hits.borrow_mut().pop(),
+        Some((0, "artists".into(), 0, 5)),
+        "Right-click on a name must open the album card context menu"
+    );
+    hits.borrow_mut().clear();
+
+    let routes = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = routes.clone();
+    inst.set_callback("navigate", move |args| {
+        if let [Value::Number(page), Value::Number(id)] = args {
+            recorded.borrow_mut().push((*page as i32, *id as i32));
+        }
+        Value::Void
+    })
+    .unwrap();
+    set(&inst, "has-home", Value::Bool(true));
+    set_g(&inst, "Home", "loading", Value::Bool(false));
+    set_g(&inst, "Home", "tab-labels", strings(&["最新入库"]));
+    set_g(&inst, "Home", "tab-ids", model(vec![n(0.0)]));
+    set(&inst, "page", n(20.0));
+    set_g(
+        &inst,
+        "Home",
+        "pane",
+        st(&[
+            ("album-id", n(3.0)),
+            ("title", s("A collaboration")),
+            ("artist", s("Mori Calliope / 常闇トワ")),
+            (
+                "artists",
+                sample_artist_refs(&["Mori Calliope", "常闇トワ"]),
+            ),
+            ("cover", Value::Image(cover(7))),
+        ]),
+    );
+    set_g(&inst, "Home", "recent-albums", recent_rows(3, 3));
+    set_g(
+        &inst,
+        "Home",
+        "years",
+        model(vec![st(&[
+            ("year", n(2020.0)),
+            ("count", n(1.0)),
+            ("height", n(100.0)),
+        ])]),
+    );
+    set_g(&inst, "Home", "year", n(2020.0));
+    set_g(&inst, "Home", "year-total", n(1.0));
+    set_g(&inst, "Home", "chronicle", album_rows_n(1, 1));
+    let home_size = PhysicalSize::new(1280, 1320);
+    render(window, home_size, &format!("{out}/home-artist-links.png"));
+    click(389.0, 168.0, left);
+    click(496.0, 168.0, left);
+    assert_eq!(*routes.borrow(), vec![(11, 5), (11, 6)], "Spotlight links");
+
+    click(836.0, 579.0, left);
+    move_to(1216.0, 579.0);
+    render(window, home_size, &format!("{out}/home-artist-hover.png"));
+    click(1200.0, 675.0, left);
+    click(116.0, 1179.0, left);
+    assert_eq!(
+        hits.borrow().as_slice(),
+        &[
+            (11, "artist".into(), 0, 5),
+            (11, "artist".into(), 2, 6),
+            (12, "artist".into(), 0, 5),
+        ],
+        "Home recent and chronicle card links and hover popup"
+    );
+}
+
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp".into());
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/app/ui/app.slint");
@@ -777,6 +942,11 @@ fn main() {
             vec![10, 20],
             "Each name must dispatch its own artist ID"
         );
+        return;
+    }
+
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("album-artists") {
+        album_artist_regression(&def, &window, &out);
         return;
     }
 
@@ -1663,6 +1833,7 @@ fn main() {
             ("title", s("BanG Dream! It's MyGO!!!!! ORIGINAL SOUNDTRACK")),
             ("artist", s("MyGO!!!!!")),
             ("artist-id", n(5.0)),
+            ("artists", sample_artist_refs(&["MyGO!!!!!"])),
             ("facts", s("2023 · 24 首 · 2 Disc · 1:20:20")),
             ("spec", s("FLAC / 24bit / 96kHz")),
             ("note", s("上次播放 3 天前")),
