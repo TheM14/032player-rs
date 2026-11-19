@@ -2684,6 +2684,9 @@ pub fn apply(event: Event) {
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
+        Event::LyricsReset => {
+            w.set_lyrics_reset_seq(w.get_lyrics_reset_seq().wrapping_add(1));
+        }
         Event::Notice(text) => {
             ui.clear_search_loading_on_notice(w, &text);
             ui.notice(text);

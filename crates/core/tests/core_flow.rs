@@ -448,3 +448,47 @@ async fn pause_and_play_fade_without_touching_volume() {
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn previous_restart_resets_lyrics() {
+    let server = server().await;
+    let engine = Arc::new(FakeEngine::default());
+    let data_dir = std::env::temp_dir().join(format!("032player-prev-{}", std::process::id()));
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let config = CoreConfig {
+        data_dir,
+        secrets: Arc::new(MemorySecrets::default()),
+        settings: Settings::default(),
+    };
+    let core = client_core::start(engine, config, move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let events = Events(rx);
+
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    events.wait("login", |e| matches!(e, Event::LoggedIn { .. }));
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    events.wait(
+        "lyrics",
+        |e| matches!(e, Event::Lyrics { lines, synced: true, .. } if lines.len() == 2),
+    );
+    core.engine_event(EngineEvent::FileLoaded { path: None });
+    core.engine_event(EngineEvent::TimePos(12.0));
+    events.wait("second line", |e| *e == Event::LyricsActive(Some(1)));
+
+    // Clicking Previous past 10s seeks to 0 and resets lyrics scroll/follow.
+    core.send(Command::Previous);
+    events.wait("first line", |e| *e == Event::LyricsActive(Some(0)));
+    events.wait("lyrics reset", |e| *e == Event::LyricsReset);
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+}

@@ -667,6 +667,88 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
 
 /// Verifies the public offset bindings used by Rust's back history. The
 /// second half also covers a virtual list created only when its data arrives.
+fn lyrics_return_regression(
+    def: &slint_interpreter::ComponentDefinition,
+    window: &MinimalSoftwareWindow,
+    out: &str,
+) {
+    use slint::LogicalPosition;
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let inst = create(def);
+    inst.show().unwrap();
+    let narrow = PhysicalSize::new(1280, 800);
+    set(&inst, "logged-in", Value::Bool(true));
+    set(&inst, "has-track", Value::Bool(true));
+    set(&inst, "np-title", s("夜に駆ける"));
+    set(&inst, "np-artist", s("YOASOBI"));
+    set(&inst, "np-album", s("THE BOOK"));
+    set(&inst, "np-quality", s("FLAC / 24bit / 48kHz"));
+    set(&inst, "np-cover", Value::Image(cover(3)));
+    set(&inst, "full-cover", Value::Image(cover(3)));
+    set(&inst, "lyrics", lyrics());
+    set(&inst, "lyrics-synced", Value::Bool(true));
+    set(&inst, "lyrics-active", n(2.0));
+    set(&inst, "lyrics-source", s("LRCLIB"));
+    set(&inst, "lyrics-can-search", Value::Bool(true));
+    set(&inst, "lyrics-can-translate", Value::Bool(true));
+
+    // Narrow full-screen lyrics tab: wheel scroll shows the return pill.
+    set(&inst, "full-open", Value::Bool(true));
+    set(&inst, "full-tab", n(2.0));
+    render(window, narrow, &format!("{out}/lyrics-return-before.png"));
+    window.dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(860.0, 360.0),
+        delta_x: 0.0,
+        delta_y: -120.0,
+    });
+    render(window, narrow, &format!("{out}/lyrics-return-narrow.png"));
+
+    // Wide full-screen 3-column layout: pill stays visible across resize.
+    let wide = PhysicalSize::new(1920, 1080);
+    render(window, wide, &format!("{out}/lyrics-return-wide.png"));
+
+    // Clicking the return pill hides it (returns to active line).
+    // At 1920x1080, lyrics column spans x ~ 710..1420 (center ~ 1065), y = 100 + 12 + 15 = 127.
+    window.dispatch_event(WindowEvent::PointerMoved {
+        position: LogicalPosition::new(1065.0, 127.0),
+    });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position: LogicalPosition::new(1065.0, 127.0),
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position: LogicalPosition::new(1065.0, 127.0),
+        button: PointerEventButton::Left,
+    });
+    // Advance past the 160ms opacity fade-out and 380ms scroll animation.
+    slint::platform::update_timers_and_animations();
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    render(window, wide, &format!("{out}/lyrics-return-clicked.png"));
+
+    // Right sidebar lyrics tab (wide > 1280): wheel scroll shows the return pill there too.
+    let sidebar_size = PhysicalSize::new(1600, 900);
+    set(&inst, "full-open", Value::Bool(false));
+    set(&inst, "panel-open", Value::Bool(true));
+    set(&inst, "panel-queue-tab", Value::Bool(false));
+    render(
+        window,
+        sidebar_size,
+        &format!("{out}/lyrics-return-sidebar-init.png"),
+    );
+    window.dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(1420.0, 520.0),
+        delta_x: 0.0,
+        delta_y: -120.0,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    render(
+        window,
+        sidebar_size,
+        &format!("{out}/lyrics-return-sidebar.png"),
+    );
+}
+
 fn scroll_regression(def: &slint_interpreter::ComponentDefinition, window: &MinimalSoftwareWindow) {
     fn offset(inst: &ComponentInstance) -> f64 {
         match inst.get_property("content-scroll-y").unwrap() {
@@ -948,6 +1030,11 @@ fn main() {
 
     if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("album-artists") {
         album_artist_regression(&def, &window, &out);
+        return;
+    }
+
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("lyrics-return") {
+        lyrics_return_regression(&def, &window, &out);
         return;
     }
 

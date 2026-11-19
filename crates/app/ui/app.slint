@@ -439,6 +439,7 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-translation-shown;
     in property <bool> lyrics-translating;
     in property <int> lyrics-offset;
+    in property <int> lyrics-reset-seq: 0;
     // Right panel (settings `rightPanel`): 歌词 | 队列 tabs under the
     // current track (D2). `panel-queue`, `panel-lyrics`,
     // `panel-lyrics-first` and `panel-split` belong to the old stacked
@@ -2227,6 +2228,7 @@ export component AppWindow inherits Window {
                 translation-shown: root.lyrics-translation-shown;
                 translating: root.lyrics-translating;
                 offset-ms: root.lyrics-offset;
+                reset-seq: root.lyrics-reset-seq;
                 seek-line(i) => {
                     root.lyrics-seek(i);
                 }
@@ -2410,6 +2412,7 @@ export component AppWindow inherits Window {
             translation-shown: root.lyrics-translation-shown;
             translating: root.lyrics-translating;
             offset-ms: root.lyrics-offset;
+            reset-seq: root.lyrics-reset-seq;
             seek-line(i) => {
                 root.lyrics-seek(i);
             }

@@ -2182,7 +2182,8 @@ export component LyricsTools inherits HorizontalLayout {
 }
 
 // Lyrics of the current track: synced lines follow playback (scrolling by
-// hand pauses that for a few seconds), clicking a synced line seeks to it.
+// hand pauses auto-follow until the user clicks the return pill, clicks a
+// line, or restarts/changes the track), clicking a synced line seeks to it.
 // `stage`: the full-screen lyrics column (left aligned, 44 / 34px);
 // `large`: the full-screen lyrics tab (centered); otherwise the right
 // panel. The tools sit at the bottom unless `show-tools` is off (the
@@ -2199,6 +2200,7 @@ export component LyricsPanel inherits Rectangle {
     in property <bool> translation-shown;
     in property <bool> translating;
     in property <int> offset-ms;
+    in property <int> reset-seq: 0;
     callback seek-line(int);
     // search, clear, translate; offset (ms)
     callback tool(string);
@@ -2210,6 +2212,7 @@ export component LyricsPanel inherits Rectangle {
     in property <color> fade: transparent;
     in property <bool> fades;
     in property <length> side-padding: 24px;
+    property <bool> following: true;
     property <bool> centered: root.large && !root.stage;
     property <length> line-size: root.stage ? 34px : root.large ? 26px : 17px;
     property <length> active-size: root.stage ? 44px : root.large ? 30px : 20px;
@@ -2231,35 +2234,53 @@ export component LyricsPanel inherits Rectangle {
         }
 
         // Synced lyrics: the active line stays at 42% of the height unless
-        // the user scrolled in the last 4 seconds.
+        // the user scrolled away.
         if root.lines.length > 0 && root.synced: synced-flick := Flickable {
             vertical-stretch: 1;
             // Not from the content (its padding follows this height).
             min-height: 0px;
             max-height: 100000px;
             preferred-height: 0px;
-            property <bool> follow: true;
             // Top of the active line in the column.
             property <length> target;
+            property <bool> follow-state: root.following;
+            property <int> active-line: root.active;
+            property <int> reset-seq: root.reset-seq;
             function recenter() {
                 self.content-y = -max(0px, min(self.target - self.height * 0.42, self.content-height - self.height));
             }
             content-height: synced-col.preferred-height;
-            flicked => {
-                self.follow = false;
-                resume.restart();
+            init => {
+                root.following = true;
             }
-            resume := Timer {
-                interval: 4s;
-                running: false;
-                triggered => {
-                    self.running = false;
-                    synced-flick.follow = true;
-                    synced-flick.recenter();
+            flicked => {
+                root.following = false;
+            }
+            changed follow-state => {
+                if self.follow-state {
+                    if root.active < 0 {
+                        self.target = 0px;
+                    }
+                    self.recenter();
                 }
             }
+            changed active-line => {
+                if self.active-line < 0 {
+                    self.target = 0px;
+                    if root.following {
+                        self.recenter();
+                    }
+                }
+            }
+            changed reset-seq => {
+                root.following = true;
+                if root.active < 0 {
+                    self.target = 0px;
+                }
+                self.recenter();
+            }
             changed height => {
-                if self.follow {
+                if root.following {
                     self.recenter();
                 }
             }
@@ -2277,7 +2298,7 @@ export component LyricsPanel inherits Rectangle {
                     function track() {
                         if self.on {
                             synced-flick.target = self.y;
-                            if synced-flick.follow {
+                            if root.following {
                                 synced-flick.recenter();
                             }
                         }
@@ -2324,6 +2345,9 @@ export component LyricsPanel inherits Rectangle {
                     line-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
+                            root.following = true;
+                            synced-flick.target = parent.y;
+                            synced-flick.recenter();
                             root.seek-line(i);
                         }
                     }
@@ -2335,6 +2359,10 @@ export component LyricsPanel inherits Rectangle {
         if root.lines.length > 0 && !root.synced: plain-flick := Flickable {
             vertical-stretch: 1;
             content-height: plain-col.preferred-height;
+            property <int> reset-seq: root.reset-seq;
+            changed reset-seq => {
+                self.content-y = 0px;
+            }
             plain-col := VerticalLayout {
                 width: plain-flick.width;
                 padding-left: root.side-padding;
@@ -2398,6 +2426,42 @@ export component LyricsPanel inherits Rectangle {
         y: root.height - self.height - (root.has-track && root.show-tools ? 46px : 0px);
         height: min(64px, root.height * 0.14);
         background: @linear-gradient(0deg, root.fade 0%, root.fade.with-alpha(0) 100%);
+    }
+
+    // Floating return pill shown when the user manually scrolled synced lyrics.
+    if root.lines.length > 0 && root.synced: Rectangle {
+        visible: self.opacity > 0.01;
+        opacity: root.following ? 0 : 1;
+        animate opacity { duration: 160ms; }
+        x: (parent.width - self.width) / 2;
+        y: 12px;
+        height: 30px;
+        width: return-label.preferred-width + 30px;
+        border-radius: 15px;
+        border-width: 1px;
+        border-color: return-area.has-hover ? Theme.accent : Theme.popover-border;
+        background: return-area.has-hover
+            ? (Theme.dark ? #2e2e3af8 : #ffffff)
+            : Theme.popover.with-alpha(0.92);
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000040;
+        return-label := Text {
+            text: "回到当前歌词";
+            font-family: Fonts.family(self.text);
+            color: return-area.has-hover ? Theme.accent-text : Theme.text;
+            font-size: 12.5px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        return-area := TouchArea {
+            enabled: !root.following;
+            mouse-cursor: pointer;
+            clicked => {
+                root.following = true;
+            }
+        }
     }
 }
 

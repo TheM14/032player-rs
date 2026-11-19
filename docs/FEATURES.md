@@ -99,7 +99,7 @@
 | 功能 | 参考 | 里程碑 | 完成 |
 |------|------|--------|------|
 | 获取 `/tracks/{id}/lyrics`（来源由服务端决定，显示 `sourceName` / 匹配信息） | `ctrl` `getLyrics`、`features/lyrics/api/lyrics-api.ts` | M0（逐行）/ M3 | [x] 显示 `sourceName` |
-| 同步滚动、点击跳转、非同步歌词 | `features/lyrics/synchronized-lyrics.tsx` | M3 | [x] 手动滚动后 4 秒恢复居中 |
+| 同步滚动、点击跳转、非同步歌词 | `features/lyrics/synchronized-lyrics.tsx` | M3 | [x] 手动滚动暂停跟随并显示「回到当前歌词」，点击或切歌/上一首回顶恢复 |
 | 逐字卡拉 OK | `features/lyrics/synchronized-karaoke-lyrics.tsx`、`split-word-cue.ts` | M3 | - 不做：032 歌词只有逐行时间 |
 | 搜索 `/lyrics/search`、预览 `/lyrics/remote/{source}/{id}`、确定 `PUT .../lyrics/source`、清除 `DELETE` | `features/lyrics/components/lyrics-search-form.tsx` | M3 | [x] |
 | 翻译 `POST /tracks/{id}/lyrics/translation {targetLanguage}`；`translation_disabled` 时刷新能力位 | `features/lyrics/api/lyric-translate.ts` | M3 | [x] `translation_disabled` 后本次会话隐藏翻译 |

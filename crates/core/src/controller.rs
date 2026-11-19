@@ -664,6 +664,8 @@ pub enum Event {
         source: Option<String>,
     },
     LyricsActive(Option<usize>),
+    /// Lyrics scroll should return to the start (for example restarting via Previous).
+    LyricsReset,
     /// State of the lyrics toolbar.
     LyricsTools(LyricsTools),
     /// Online lyrics search results, best first.
@@ -1633,7 +1635,7 @@ impl Core {
                 }
                 if self.position_ms > RESTART_THRESHOLD_MS && !self.idle {
                     // Like mediaPrevious: a seek in the same session, not a new play.
-                    self.seek(0);
+                    self.restart_current();
                 } else {
                     let step = self.queue.manual_previous(self.settings.repeat);
                     self.step(step, true);
@@ -1908,13 +1910,18 @@ impl Core {
         })
     }
 
+    fn restart_current(&mut self) {
+        self.seek(0);
+        self.emit(Event::LyricsReset);
+    }
+
     /// Applies a queue move: play the target, restart it when it is the
     /// entry already playing, or stop at the start of the queue.
     fn step(&mut self, step: Option<Step>, user_navigated: bool) {
         match step {
             None => {}
             Some(Step::Play(pos)) if Some(pos) == self.queue.position() && !self.idle => {
-                self.seek(0);
+                self.restart_current();
             }
             Some(Step::Play(pos)) if self.stops_at_track_change() => {
                 // "End of track" stops at the next change of track, skips included.
