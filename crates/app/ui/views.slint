@@ -1661,6 +1661,8 @@ export component TrackRowView inherits Rectangle {
 // Track list with a column header. `mode` as in `TrackRowView`.
 export component TrackList inherits Rectangle {
     in property <[TrackRow]> rows;
+    in property <int> first-row: 0;
+    in property <int> row-count: root.rows.length;
     in-out property <length> scroll-y;
     in property <int> mode;
     in property <int> playing-id: -1;
@@ -1718,26 +1720,27 @@ export component TrackList inherits Rectangle {
         if root.rows.length > 0 && !(root.mode == 1 && root.multi-disc): ListView {
             vertical-stretch: 1;
             content-y <=> root.scroll-y;
-            for track[i] in root.rows: TrackRowView {
-                track: track;
+            for row[i] in root.row-count: TrackRowView {
+                property <int> row-index: root.first-row + i;
+                track: root.rows[self.row-index];
                 mode: root.mode;
-                playing: track.id == root.playing-id;
+                playing: self.track.id == root.playing-id;
                 playlists: root.playlists;
                 pad: root.pad;
                 title-w: root.title-w;
                 artist-w: root.artist-w;
                 album-w: root.album-w;
-                drop-mark: root.drag-from < 0 || root.drop-at != i || root.drop-at == root.drag-from ? 0 : root.drop-at < root.drag-from ? -1 : 1;
+                drop-mark: root.drag-from < 0 || root.drop-at != self.row-index || root.drop-at == root.drag-from ? 0 : root.drop-at < root.drag-from ? -1 : 1;
                 action(what, arg) => {
-                    root.action(what, track.index, arg);
+                    root.action(what, self.track.index, arg);
                 }
                 drag(offset) => {
-                    root.drag-from = i;
-                    root.drop-at = max(0, min(root.rows.length - 1, i + offset));
+                    root.drag-from = self.row-index;
+                    root.drop-at = max(0, min(root.rows.length - 1, self.row-index + offset));
                 }
                 drop => {
                     if root.drop-at >= 0 && root.drop-at != root.drag-from {
-                        root.action("move", track.index, root.drop-at);
+                        root.action("move", self.track.index, root.drop-at);
                     }
                     root.drag-from = -1;
                     root.drop-at = -1;

@@ -1840,7 +1840,7 @@ fn main() {
     set(
         &inst,
         "artist-credit-summary",
-        s("作词 2 首 · 作曲 1 首 · 编曲 1 首 · 制作 1 首"),
+        s("作词 16 首 · 作曲 8 首 · 编曲 7 首 · 制作 7 首"),
     );
     let Value::Model(credit_tracks) = tracks() else {
         unreachable!("sample tracks are a model");
@@ -1849,14 +1849,13 @@ fn main() {
         &inst,
         "artist-credits",
         model(
-            ["作词 · 作曲", "作词", "编曲 · 制作"]
-                .iter()
-                .enumerate()
-                .map(|(i, label)| {
+            (0..23)
+                .map(|i| {
+                    let labels = ["作词 · 作曲", "作词", "编曲 · 制作"];
                     let Some(Value::Struct(mut row)) = credit_tracks.row_data(i) else {
                         unreachable!("sample track row");
                     };
-                    row.set_field("tag".into(), s(label));
+                    row.set_field("tag".into(), s(labels[i % labels.len()]));
                     row.set_field("tag-accent".into(), Value::Bool(true));
                     Value::Struct(row)
                 })
@@ -1868,11 +1867,11 @@ fn main() {
         "artist-credit-roles",
         model(
             [
-                ("", "全部", 3.0),
-                ("lyricist", "作词", 2.0),
-                ("composer", "作曲", 1.0),
-                ("arranger", "编曲", 1.0),
-                ("producer", "制作", 1.0),
+                ("", "全部", 23.0),
+                ("lyricist", "作词", 16.0),
+                ("composer", "作曲", 8.0),
+                ("arranger", "编曲", 7.0),
+                ("producer", "制作", 7.0),
             ]
             .into_iter()
             .map(|(key, label, count)| {
@@ -1915,6 +1914,46 @@ fn main() {
         PhysicalSize::new(960, 1000),
         &format!("{out}/artist-credits.png"),
     );
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("track-pages") {
+        use slint::LogicalPosition;
+        use slint::platform::{PointerEventButton, WindowEvent};
+
+        let clicked_row = Rc::new(std::cell::Cell::new(None));
+        let recorded = clicked_row.clone();
+        inst.set_callback("track-action", move |args| {
+            if let [
+                Value::Number(list),
+                Value::String(action),
+                Value::Number(index),
+                _,
+            ] = args
+                && action == "favorite"
+            {
+                recorded.set(Some((*list, *index)));
+            }
+            Value::Void
+        })
+        .unwrap();
+
+        let click = |x, y| {
+            let position = LogicalPosition::new(x, y);
+            let button = PointerEventButton::Left;
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed { position, button });
+            window.dispatch_event(WindowEvent::PointerReleased { position, button });
+            settle(&window);
+        };
+        // First row on page two must target row 10 in the complete model.
+        click(742.0, 238.0);
+        render(
+            &window,
+            PhysicalSize::new(960, 1000),
+            &format!("{out}/artist-credits-page-2.png"),
+        );
+        click(835.0, 333.0);
+        assert_eq!(clicked_row.get(), Some((14.0, 10.0)));
+        return;
+    }
     set(&inst, "artist-pure-credit", Value::Bool(false));
     set(&inst, "artist-credit-summary", s(""));
     set(&inst, "artist-credits", model(Vec::new()));

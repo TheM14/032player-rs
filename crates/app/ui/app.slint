@@ -182,8 +182,48 @@ component ArtistFacts inherits VerticalLayout {
     }
 }
 
-// Backstage credited tracks on the artist page, with per-role filter tabs.
-component ArtistCreditsSection inherits VerticalLayout {
+component TrackPager inherits HorizontalLayout {
+    in property <int> total;
+    in-out property <int> page: 0;
+    out property <int> first: root.page * 10;
+    out property <int> count: max(0, min(10, root.total - root.first));
+    property <int> pages: max(1, ceil(root.total / 10));
+    callback turn();
+
+    changed pages => {
+        root.page = min(root.page, root.pages - 1);
+    }
+
+    alignment: end;
+    spacing: 6px;
+    if root.pages > 1: GhostButton {
+        text: "上一页";
+        y: (parent.height - self.height) / 2;
+        enabled: root.page > 0;
+        clicked => {
+            root.page -= 1;
+            root.turn();
+        }
+    }
+    if root.pages > 1: Text {
+        text: (root.page + 1) + " / " + root.pages;
+        color: Theme.text-dim;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+    if root.pages > 1: GhostButton {
+        text: "下一页";
+        y: (parent.height - self.height) / 2;
+        enabled: root.page + 1 < root.pages;
+        clicked => {
+            root.page += 1;
+            root.turn();
+        }
+    }
+}
+
+// Paged artist track section, with optional backstage role tabs.
+component ArtistTracksSection inherits VerticalLayout {
     in property <string> title: "幕后参与曲目";
     in property <[CreditRoleTab]> roles;
     in property <string> active-role;
@@ -194,6 +234,10 @@ component ArtistCreditsSection inherits VerticalLayout {
     callback role-selected(string);
     callback play-all(bool);
     callback track-action(string, int, int);
+
+    changed active-role => {
+        pager.page = 0;
+    }
 
     HorizontalLayout {
         padding-left: Shell.pad;
@@ -214,6 +258,9 @@ component ArtistCreditsSection inherits VerticalLayout {
             font-size: 13px;
             vertical-alignment: center;
             horizontal-stretch: 1;
+        }
+        pager := TrackPager {
+            total: root.tracks.length;
         }
         IconButton {
             kind: IconKind.play;
@@ -252,16 +299,16 @@ component ArtistCreditsSection inherits VerticalLayout {
         }
     }
 
-    for track in root.tracks: TrackRowView {
-        track: track;
+    for row[i] in pager.count: TrackRowView {
+        track: root.tracks[pager.first + i];
         mode: 0;
-        playing: track.id == root.playing-id;
+        playing: self.track.id == root.playing-id;
         playlists: root.playlists;
         title-w: root.flex * 0.42;
         artist-w: root.flex * 0.24;
         album-w: root.flex * 0.34;
         action(what, arg) => {
-            root.track-action(what, track.index, arg);
+            root.track-action(what, self.track.index, arg);
         }
     }
 }
@@ -1309,6 +1356,7 @@ export component AppWindow inherits Window {
                             show-years: true;
                             changed(q) => {
                                 root.content-scroll-y = 0px;
+                                favorites-pager.page = 0;
                                 root.q-fav-tracks = q;
                                 root.query-changed(5, q);
                             }
@@ -1336,10 +1384,19 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    favorites-pager := TrackPager {
+                        visible: root.fav-tab == 0 && root.fav-tracks.length > 10;
+                        height: self.visible ? 36px : 0px;
+                        padding-right: Shell.pad;
+                        total: root.fav-tracks.length;
+                        turn => { root.content-scroll-y = 0px; }
+                    }
                     if root.fav-tab == 0: TrackList {
                         vertical-stretch: 1;
                         scroll-y <=> root.content-scroll-y;
                         rows: root.fav-tracks;
+                        first-row: favorites-pager.first;
+                        row-count: favorites-pager.count;
                         mode: 0;
                         loading: root.fav-loading;
                         empty-text: "还没有收藏的曲目";
@@ -1550,7 +1607,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        if root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistCreditsSection {
+                        if root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistTracksSection {
                             title: "幕后作品曲目";
                             roles: root.artist-credit-roles;
                             active-role: root.artist-credit-role;
@@ -1636,10 +1693,26 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                        if root.artist-favs.length > 0: Rectangle {
+                            height: 12px;
+                        }
+                        if root.artist-favs.length > 0: ArtistTracksSection {
+                            title: "收藏的歌曲";
+                            tracks: root.artist-favs;
+                            playing-id: root.playing-id;
+                            playlists: root.playlist-choices;
+                            flex: artist-flick.flex;
+                            play-all(shuffle) => {
+                                root.play-list(12, shuffle);
+                            }
+                            track-action(what, idx, arg) => {
+                                root.track-action(12, what, idx, arg);
+                            }
+                        }
                         if !root.artist-pure-credit && root.artist-credit-roles.length > 0: Rectangle {
                             height: 12px;
                         }
-                        if !root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistCreditsSection {
+                        if !root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistTracksSection {
                             title: "幕后参与曲目";
                             roles: root.artist-credit-roles;
                             active-role: root.artist-credit-role;
@@ -1655,65 +1728,6 @@ export component AppWindow inherits Window {
                             }
                             track-action(what, idx, arg) => {
                                 root.track-action(14, what, idx, arg);
-                            }
-                        }
-                        // Electron `FAVORITE_SONGS`. The gap above sits
-                        // outside the header so the actions centre on the
-                        // title (same header as the release groups).
-                        if root.artist-favs.length > 0: Rectangle {
-                            height: 12px;
-                        }
-                        if root.artist-favs.length > 0: HorizontalLayout {
-                            padding-left: Shell.pad;
-                            padding-right: Shell.pad;
-                            height: 52px;
-                            spacing: 10px;
-                            Text {
-                                text: "收藏的歌曲";
-                                color: Theme.text;
-                                font-size: Shell.tier == 2 ? 26px : 22px;
-                                font-weight: 780;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: root.artist-favs.length;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-faint;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            // Like the release groups: play / shuffle just
-                            // these favorites (track list 12).
-                            IconButton {
-                                kind: IconKind.play;
-                                size: 30px;
-                                icon-size: 14px;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.play-list(12, false);
-                                }
-                            }
-                            GhostButton {
-                                text: "随机播放";
-                                has-icon: true;
-                                icon: IconKind.shuffle;
-                                y: (parent.height - self.height) / 2;
-                                clicked => {
-                                    root.play-list(12, true);
-                                }
-                            }
-                        }
-                        for track in root.artist-favs: TrackRowView {
-                            track: track;
-                            mode: 0;
-                            playing: track.id == root.playing-id;
-                            playlists: root.playlist-choices;
-                            title-w: artist-flick.flex * 0.42;
-                            artist-w: artist-flick.flex * 0.24;
-                            album-w: artist-flick.flex * 0.34;
-                            action(what, arg) => {
-                                root.track-action(12, what, track.index, arg);
                             }
                         }
                     }
