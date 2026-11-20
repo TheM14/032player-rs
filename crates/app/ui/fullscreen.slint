@@ -9,8 +9,8 @@ import { PillTab, SourceBadge, QualityTag } from "nowplaying.slint";
 //
 // Wide (>= 1700): three columns - the cover, title and tags on the left,
 // the lyrics in the middle (always shown, tools in their header row) and
-// "接下来播放 / 相关歌曲" tabs on the right. Narrower: the cover column and
-// the three tabs (up next / related / lyrics) as before.
+// a dedicated "接下来播放" surface card on the right. Narrower: the cover
+// column and two tabs (up next / lyrics).
 //
 // The panes are the children: they are placed with the geometry this
 // component exposes (`lyrics-*`, `side-*`, `tools-*`; `pane-*` for the
@@ -28,8 +28,7 @@ export component FullScreenPlayer inherits Rectangle {
     in property <bool> asio-fallback;
     in property <bool> bit-perfect;
     in property <string> lyrics-source;
-    // 0 up next, 1 related, 2 lyrics (narrow layout; wide shows the
-    // lyrics anyway and treats 2 as up next).
+    // 0 up next, 2 lyrics (narrow layout; wide always shows both).
     in property <int> tab;
     callback tab-selected(int);
     callback close();
@@ -52,7 +51,7 @@ export component FullScreenPlayer inherits Rectangle {
     out property <length> side-x: root.width - 60px - root.side-w;
     out property <length> lyrics-w: max(200px, root.side-x - 60px - root.lyrics-x);
     out property <length> lyrics-h: root.height - root.lyrics-y - 40px;
-    out property <length> side-y: 90px + 52px;
+    out property <length> side-y: 100px;
     out property <length> side-h: root.height - root.side-y - 40px;
     // Lyrics tools in the header row of the lyrics column.
     out property <length> tools-x: root.lyrics-x + lyrics-head.preferred-width + 16px;
@@ -98,7 +97,7 @@ export component FullScreenPlayer inherits Rectangle {
     // the left column (narrow).
     Rectangle {
         x: root.wide ? root.pad-x : root.pad;
-        y: root.wide ? 110px : root.pad;
+        y: root.wide ? 100px : root.pad;
         width: root.wide ? root.wide-cover : root.col-w;
         height: root.height - self.y - 40px;
         VerticalLayout {
@@ -245,32 +244,8 @@ export component FullScreenPlayer inherits Rectangle {
             text: root.lyrics-source;
         }
     }
-    if root.wide: HorizontalLayout {
-        x: root.side-x;
-        y: 90px;
-        width: root.side-w;
-        height: 34px;
-        spacing: 4px;
-        alignment: start;
-        PillTab {
-            text: "接下来播放";
-            on-stage: true;
-            selected: root.tab != 1;
-            clicked => {
-                root.tab-selected(0);
-            }
-        }
-        PillTab {
-            text: "相关歌曲";
-            on-stage: true;
-            selected: root.tab == 1;
-            clicked => {
-                root.tab-selected(1);
-            }
-        }
-    }
-
-    // Narrow: the three tabs over the pane.
+    // Narrow: two tabs (up next / lyrics) over the pane. Wide shows both
+    // side by side with the queue card rendering its own header.
     if !root.wide: HorizontalLayout {
         x: root.pane-x;
         y: root.pad - 4px;
@@ -278,12 +253,20 @@ export component FullScreenPlayer inherits Rectangle {
         height: 34px;
         alignment: center;
         spacing: 4px;
-        for t[i] in ["接下来播放", "相关歌曲", "歌词"]: PillTab {
-            text: t;
+        PillTab {
+            text: "接下来播放";
             on-stage: true;
-            selected: root.tab == i;
+            selected: root.tab != 2;
             clicked => {
-                root.tab-selected(i);
+                root.tab-selected(0);
+            }
+        }
+        PillTab {
+            text: "歌词";
+            on-stage: true;
+            selected: root.tab == 2;
+            clicked => {
+                root.tab-selected(2);
             }
         }
     }

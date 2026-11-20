@@ -860,6 +860,7 @@ fn shell(inst: &ComponentInstance) {
     set(inst, "queue", queue());
     set(inst, "queue-total", n(11.0));
     set(inst, "queue-current", n(0.0));
+    set(inst, "queue-position", n(0.0));
     set(inst, "lyrics", lyrics());
     set(inst, "lyrics-synced", Value::Bool(true));
     set(inst, "lyrics-active", n(2.0));

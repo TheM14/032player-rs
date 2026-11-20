@@ -39,7 +39,7 @@
 | Auto DJ | `features/player/auto-dj/` | - | - 不做 |
 | 均衡器 / 压缩器、ReplayGain | `settings/components/playback/eq-settings.tsx`、`mpv-settings.tsx` | - | - 不做（2026-11-06） |
 | 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [ ] |
-| 全屏播放器（原图封面不带 `size`，`size=0` 会被拒；页签歌词 / 接下来播放 / 相关歌曲，不做可视化和配置弹窗） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [x] |
+| 全屏播放器（原图封面不带 `size`，`size=0` 会被拒；宽屏三栏显示封面、歌词和队列，窄屏在接下来播放 / 歌词之间切换，不做可视化和配置弹窗） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [x] |
 
 ## 播放上报（apiRevision 3）
 

@@ -749,6 +749,84 @@ fn lyrics_return_regression(
     );
 }
 
+fn fullscreen_queue_regression(
+    def: &slint_interpreter::ComponentDefinition,
+    window: &MinimalSoftwareWindow,
+    out: &str,
+) {
+    use slint::LogicalPosition;
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let inst = create(def);
+    inst.show().unwrap();
+    set(&inst, "logged-in", Value::Bool(true));
+    set(&inst, "full-open", Value::Bool(true));
+    set(&inst, "queue", queue());
+    set(&inst, "queue-total", n(12.0));
+    set(&inst, "queue-current", n(1.0));
+    set(&inst, "queue-position", n(1.0));
+
+    let actions = Rc::new(std::cell::RefCell::new(Vec::new()));
+    for name in [
+        "play-queue-item",
+        "remove-queue-item",
+        "move-queue-item",
+        "queue-search-changed",
+    ] {
+        let actions = actions.clone();
+        inst.set_callback(name, move |args| {
+            actions.borrow_mut().push((name, args.to_vec()));
+            Value::Void
+        })
+        .unwrap();
+    }
+
+    let size = PhysicalSize::new(1280, 800);
+    render(window, size, &format!("{out}/queue-interactions.png"));
+    let move_to = |position| window.dispatch_event(WindowEvent::PointerMoved { position });
+    let press = |position| {
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        })
+    };
+    let release = |position| {
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        })
+    };
+    let click = |x, y| {
+        let position = LogicalPosition::new(x, y);
+        move_to(position);
+        press(position);
+        release(position);
+    };
+
+    click(654.0, 183.0);
+    click(1195.0, 311.0);
+    let from = LogicalPosition::new(750.0, 375.0);
+    let to = LogicalPosition::new(750.0, 439.0);
+    move_to(from);
+    press(from);
+    move_to(to);
+    release(to);
+    set(&inst, "queue-search", s("YOASOBI"));
+    settle(window);
+    click(1097.0, 123.0);
+    assert_eq!(
+        actions.borrow().as_slice(),
+        &[
+            ("play-queue-item", vec![n(1.0)]),
+            ("remove-queue-item", vec![n(3.0)]),
+            ("move-queue-item", vec![n(4.0), n(4.0)]),
+            ("queue-search-changed", vec![s("")]),
+        ],
+        "Full-screen queue actions must use the clicked entry and clear the filter"
+    );
+    assert_eq!(inst.get_property("queue-search").unwrap(), s(""));
+}
+
 fn scroll_regression(def: &slint_interpreter::ComponentDefinition, window: &MinimalSoftwareWindow) {
     fn offset(inst: &ComponentInstance) -> f64 {
         match inst.get_property("content-scroll-y").unwrap() {
@@ -1038,6 +1116,11 @@ fn main() {
         return;
     }
 
+    if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("full-queue") {
+        fullscreen_queue_regression(&def, &window, &out);
+        return;
+    }
+
     // Login.
     let inst = create(&def);
     inst.show().unwrap();
@@ -1224,20 +1307,18 @@ fn main() {
     set(&inst, "notice", s(""));
     set(&inst, "queue", queue());
     set(&inst, "queue-total", Value::Number(12.0));
-    set(&inst, "queue-current", Value::Number(1.0));
-    // Queue and lyrics stacked in the right panel.
-    set(&inst, "panel-queue", Value::Bool(true));
+    set(&inst, "queue-current", n(1.0));
+    set(&inst, "queue-position", n(1.0));
+    // Open the regular sidebar's queue tab at the overlay breakpoint.
+    set(&inst, "panel-queue-tab", Value::Bool(true));
+    set(&inst, "overlay-open", Value::Bool(true));
     set(&inst, "shuffle", Value::Bool(true));
     set(&inst, "repeat", Value::Number(2.0));
     set(&inst, "sleep-active", Value::Bool(true));
     set(&inst, "sleep-label", s("29:41"));
     render(&window, size, &format!("{out}/queue.png"));
-    set(&inst, "panel-lyrics-first", Value::Bool(true));
-    set(&inst, "panel-split", Value::Number(0.35));
-    render(&window, size, &format!("{out}/queue-lyrics-first.png"));
-    set(&inst, "panel-lyrics-first", Value::Bool(false));
-    set(&inst, "panel-split", Value::Number(0.5));
-    set(&inst, "panel-queue", Value::Bool(false));
+    set(&inst, "panel-queue-tab", Value::Bool(false));
+    set(&inst, "overlay-open", Value::Bool(false));
 
     // Library pages.
     set(&inst, "panel-open", Value::Bool(false));
@@ -2220,19 +2301,17 @@ fn main() {
     set(&inst, "lyrics-offset", n(150.0));
     render(&window, size, &format!("{out}/lyrics.png"));
 
-    // Full-screen player: lyrics, up next and related tabs.
+    // Full-screen player: lyrics and up next tabs.
     set(&inst, "full-cover", Value::Image(cover(3)));
     set(&inst, "full-open", Value::Bool(true));
     set(&inst, "full-tab", n(2.0));
     render(&window, size, &format!("{out}/full-lyrics.png"));
     set(&inst, "full-tab", n(0.0));
     render(&window, size, &format!("{out}/full-queue.png"));
-    set(&inst, "full-related", tracks());
-    set(&inst, "full-tab", n(1.0));
     render(
         &window,
         PhysicalSize::new(1000, 640),
-        &format!("{out}/full-related-small.png"),
+        &format!("{out}/full-queue-small.png"),
     );
     set(&inst, "full-open", Value::Bool(false));
     set_g(&inst, "LyricsSearch", "name", s("夜に駆ける"));

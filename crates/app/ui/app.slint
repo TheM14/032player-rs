@@ -361,6 +361,7 @@ export component AppWindow inherits Window {
     // Queue (play order).
     in property <[QueueRow]> queue;
     in property <int> queue-current: -1;
+    in property <int> queue-position: -1;
     // Entries in the whole queue (`queue` holds the search matches).
     in property <int> queue-total;
     in-out property <string> queue-search;
@@ -407,9 +408,8 @@ export component AppWindow inherits Window {
     callback open-now-album();
     callback open-now-artist(int);
 
-    // Full-screen player: tab 0 up next, 1 related, 2 lyrics. Rust loads
-    // the original cover (at `full-cover-side`) and the related songs
-    // (track list 11) on `full-changed`.
+    // Full-screen player: tab 0 up next, 2 lyrics. Rust loads the original
+    // cover at `full-cover-side` on `full-changed`.
     in-out property <bool> full-open;
     in-out property <int> full-tab;
     in property <image> full-cover;
@@ -2340,18 +2340,19 @@ export component AppWindow inherits Window {
             root.full-changed();
         }
 
-        // Up next: the right column (wide) or the first tab.
-        if full.wide ? root.full-tab != 1 : root.full-tab == 0: QueuePanel {
+        // Up next: dedicated right surface card (wide) or first tab (narrow).
+        if full.wide || root.full-tab != 2: QueuePanel {
             x: full.wide ? full.side-x : full.pane-x;
             y: full.wide ? full.side-y : full.pane-y;
             width: full.wide ? full.side-w : full.pane-width;
             height: full.wide ? full.side-h : full.pane-height;
-            background: transparent;
+            stage: true;
+            stage-head: full.wide;
             show-title: false;
-            side-padding: 12px;
             rows: root.queue;
             total: root.queue-total;
             current: root.queue-current;
+            position: root.queue-position;
             search <=> root.queue-search;
             search-changed(text) => {
                 root.queue-search-changed(text);
@@ -2372,24 +2373,8 @@ export component AppWindow inherits Window {
                 root.clear-queue();
             }
         }
-        if root.full-tab == 1: TrackList {
-            x: full.wide ? full.side-x : full.pane-x;
-            y: full.wide ? full.side-y : full.pane-y;
-            width: full.wide ? full.side-w : full.pane-width;
-            height: full.wide ? full.side-h : full.pane-height;
-            pad: 0px;
-            rows: root.full-related;
-            mode: 1;
-            playing-id: root.playing-id;
-            playlists: root.playlist-choices;
-            loading: root.full-related-loading;
-            empty-text: root.has-track ? "没有相关歌曲" : "";
-            action(what, i, arg) => {
-                root.track-action(11, what, i, arg);
-            }
-        }
         // Lyrics: the middle column (wide, tools in its header) or the
-        // third tab (centered, tools at the bottom).
+        // lyrics tab (centered, tools at the bottom).
         if full.wide || root.full-tab == 2: LyricsPanel {
             x: full.wide ? full.lyrics-x - 8px : full.pane-x;
             y: full.wide ? full.lyrics-y : full.pane-y;

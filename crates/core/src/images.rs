@@ -148,8 +148,8 @@ impl Images {
 /// Decodes and resamples to exactly `width` x `height`, scaled to cover
 /// the box and center-cropped (what `ImageFit.cover` shows). The UI draws
 /// the result 1:1 (its boxes are snapped to physical pixels), so this is
-/// the only resampling step: use a sharp filter (Catmull-Rom) rather than
-/// the renderer's bilinear one, also when a small source has to grow.
+/// the only resampling step: use Lanczos3 for downscaling and Catmull-Rom
+/// for upscaling instead of relying on the renderer's bilinear filter.
 /// A zero side keeps the decoded size.
 pub fn decode(bytes: &[u8], width: u32, height: u32) -> Result<Rgba, String> {
     decode_fit(bytes, width, height, ArtworkFit::Cover)
@@ -165,8 +165,12 @@ pub fn decode_fit(bytes: &[u8], width: u32, height: u32, fit: ArtworkFit) -> Res
             ArtworkFit::Contain => fitted_size(image.width(), image.height(), width, height),
         };
         if target_w > 0 && target_h > 0 && (image.width(), image.height()) != (target_w, target_h) {
-            image =
-                image.resize_to_fill(target_w, target_h, image::imageops::FilterType::CatmullRom);
+            let filter = if image.width() >= target_w && image.height() >= target_h {
+                image::imageops::FilterType::Lanczos3
+            } else {
+                image::imageops::FilterType::CatmullRom
+            };
+            image = image.resize_to_fill(target_w, target_h, filter);
         }
     }
     let rgba = image.into_rgba8();

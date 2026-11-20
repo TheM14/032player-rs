@@ -73,8 +73,8 @@ const PAGE_TRACKS: i32 = 1;
 const PAGE_PLAYLISTS: i32 = 4;
 const PAGE_DETAIL: i32 = 10;
 
-/// Queue thumbnails (logical px).
-const QUEUE_COVER: f32 = 40.0;
+/// Queue thumbnails (logical px; matches the 48px full-screen stage cover).
+const QUEUE_COVER: f32 = 48.0;
 /// Player bar cover (logical px).
 const NP_COVER: f32 = 56.0;
 /// Playlist artwork upload limit of the server.
@@ -1360,6 +1360,7 @@ impl Ui {
         }
         w.set_queue_total(i32::try_from(items.len()).unwrap_or(i32::MAX));
         w.set_queue_current(row_index(current_row));
+        w.set_queue_position(row_index(*current));
     }
 
     /// Remembers the window size and position; a maximized window keeps
@@ -1452,8 +1453,7 @@ impl Ui {
     }
 
     /// Full-screen player opened, closed, resized, switched tabs or the
-    /// track changed: the original cover at the shown size and, on the
-    /// related tab, the current track's similar songs.
+    /// track changed: the original cover at the shown size.
     fn full_changed(&self, w: &AppWindow) {
         if !w.get_full_open() {
             // Free the large image; it is reloaded (byte cache) on reopen.
@@ -1461,11 +1461,11 @@ impl Ui {
             w.set_full_cover(Image::default());
             return;
         }
-        let (artwork, track_id) = self
+        let artwork = self
             .now
             .borrow()
             .as_ref()
-            .map(|n| (n.artwork.clone(), n.track_id))
+            .map(|n| n.artwork.clone())
             .unwrap_or_default();
         let side = w.get_full_cover_side();
         let px = physical_box(side, side, self.scale(w));
@@ -1494,12 +1494,6 @@ impl Ui {
                 None => w.set_full_cover(Image::default()),
             }
             *self.full_cover_key.borrow_mut() = key;
-        }
-        if w.get_full_tab() == 1 && track_id > 0 && self.related_for.get() != track_id {
-            self.related_for.set(track_id);
-            self.related.set_vec(Vec::new());
-            w.set_full_related_loading(true);
-            self.send(Command::LoadRelated(track_id));
         }
     }
 
