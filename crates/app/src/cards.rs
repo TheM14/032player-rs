@@ -93,6 +93,7 @@ impl From<AlbumItem> for Card {
             artists: a.artists,
             favorite: a.favorite,
             badge: badge.into(),
+            note: a.note,
             disc_count: a.disc_count,
             ..Self::default()
         }

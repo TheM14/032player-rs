@@ -170,6 +170,25 @@ pub struct ArtistDetail {
     pub tracks_total: i64,
 }
 
+/// One backstage role count returned by `GET /artists/{id}/credits`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CreditRoleCount {
+    pub role: String,
+    pub count: i64,
+}
+
+/// Answer of `GET /artists/{id}/credits`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArtistCreditsPage {
+    pub items: Vec<Track>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+    pub roles: Vec<CreditRoleCount>,
+}
+
 /// `GET /albums/{id}`: embeds at most 500 tracks.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

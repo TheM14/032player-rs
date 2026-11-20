@@ -7,8 +7,8 @@ import {
 } from "views.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, ArtistHeader, PromptDialog,
-    ConfirmDialog, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow, AlbumInspector,
-    InfoDialog,
+    ConfirmDialog, ReleaseGroupRow, CreditRoleTab, AlbumWorkRow, WorkUseRow, PersonRow, FactRow,
+    AlbumInspector, InfoDialog,
 } from "library.slint";
 import { SettingsView, ShortcutRow } from "settings.slint";
 import { FullScreenPlayer } from "fullscreen.slint";
@@ -25,7 +25,7 @@ import {
 } from "search.slint";
 
 export { Fonts, Playback, CastState, CastRoomRow, ArtistLayout }
-export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
+export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, CreditRoleTab, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult,
@@ -178,6 +178,90 @@ component ArtistFacts inherits VerticalLayout {
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+        }
+    }
+}
+
+// Backstage credited tracks on the artist page, with per-role filter tabs.
+component ArtistCreditsSection inherits VerticalLayout {
+    in property <string> title: "幕后参与曲目";
+    in property <[CreditRoleTab]> roles;
+    in property <string> active-role;
+    in property <[TrackRow]> tracks;
+    in property <int> playing-id;
+    in property <[PlaylistChoice]> playlists;
+    in property <length> flex;
+    callback role-selected(string);
+    callback play-all(bool);
+    callback track-action(string, int, int);
+
+    HorizontalLayout {
+        padding-left: Shell.pad;
+        padding-right: Shell.pad;
+        height: 52px;
+        spacing: 10px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Shell.tier == 2 ? 26px : 22px;
+            font-weight: 780;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.tracks.length;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        IconButton {
+            kind: IconKind.play;
+            size: 30px;
+            icon-size: 14px;
+            y: (parent.height - self.height) / 2;
+            enabled: root.tracks.length > 0;
+            clicked => {
+                root.play-all(false);
+            }
+        }
+        GhostButton {
+            text: "随机播放";
+            has-icon: true;
+            icon: IconKind.shuffle;
+            y: (parent.height - self.height) / 2;
+            enabled: root.tracks.length > 0;
+            clicked => {
+                root.play-all(true);
+            }
+        }
+    }
+
+    if root.roles.length > 0: HorizontalLayout {
+        padding-left: Shell.pad;
+        padding-right: Shell.pad;
+        padding-bottom: 10px;
+        spacing: 8px;
+        alignment: start;
+        for r in root.roles: Tab {
+            text: r.label + " (" + r.count + ")";
+            selected: r.key == root.active-role;
+            clicked => {
+                root.role-selected(r.key);
+            }
+        }
+    }
+
+    for track in root.tracks: TrackRowView {
+        track: track;
+        mode: 0;
+        playing: track.id == root.playing-id;
+        playlists: root.playlists;
+        title-w: root.flex * 0.42;
+        artist-w: root.flex * 0.24;
+        album-w: root.flex * 0.34;
+        action(what, arg) => {
+            root.track-action(what, track.index, arg);
         }
     }
 }
@@ -343,6 +427,16 @@ export component AppWindow inherits Window {
     in property <[ReleaseGroupRow]> artist-groups;
     // "收藏的歌曲" of the artist (track list 12).
     in property <[TrackRow]> artist-favs;
+    // Backstage credited tracks of the artist (track list 14).
+    in property <[CreditRoleTab]> artist-credit-roles;
+    in property <string> artist-credit-role;
+    in property <[TrackRow]> artist-credits;
+    in property <bool> artist-pure-credit;
+    in property <string> artist-credit-summary;
+    callback artist-credit-role-changed(string);
+    // Role filter on page 24 ("艺术家"): "" (all), "credit", "lyricist", "composer", "arranger", "producer".
+    in-out property <string> artist-dir-role: "";
+    callback artist-dir-role-changed(string);
     in property <string> artist-about;
     // Artist info column. Only rows the server actually filled.
     in property <[FactRow]> artist-facts;
@@ -1037,6 +1131,61 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.page == 24 && root.browse: HorizontalLayout {
+                        padding-left: Shell.pad;
+                        padding-right: Shell.pad;
+                        padding-bottom: 10px;
+                        spacing: 8px;
+                        alignment: start;
+                        Tab {
+                            text: "全部";
+                            selected: root.artist-dir-role == "";
+                            clicked => {
+                                root.artist-dir-role = "";
+                                root.artist-dir-role-changed("");
+                            }
+                        }
+                        Tab {
+                            text: "全部幕后";
+                            selected: root.artist-dir-role == "credit";
+                            clicked => {
+                                root.artist-dir-role = "credit";
+                                root.artist-dir-role-changed("credit");
+                            }
+                        }
+                        Tab {
+                            text: "作词";
+                            selected: root.artist-dir-role == "lyricist";
+                            clicked => {
+                                root.artist-dir-role = "lyricist";
+                                root.artist-dir-role-changed("lyricist");
+                            }
+                        }
+                        Tab {
+                            text: "作曲";
+                            selected: root.artist-dir-role == "composer";
+                            clicked => {
+                                root.artist-dir-role = "composer";
+                                root.artist-dir-role-changed("composer");
+                            }
+                        }
+                        Tab {
+                            text: "编曲";
+                            selected: root.artist-dir-role == "arranger";
+                            clicked => {
+                                root.artist-dir-role = "arranger";
+                                root.artist-dir-role-changed("arranger");
+                            }
+                        }
+                        Tab {
+                            text: "制作";
+                            selected: root.artist-dir-role == "producer";
+                            clicked => {
+                                root.artist-dir-role = "producer";
+                                root.artist-dir-role-changed("producer");
+                            }
+                        }
+                    }
                     CardGrid {
                         vertical-stretch: 1;
                         scroll-y <=> root.content-scroll-y;
@@ -1358,6 +1507,7 @@ export component AppWindow inherits Window {
                             loading: root.detail-loading;
                             playlists: root.playlist-choices;
                             favorite-count: root.artist-favs.length;
+                            credit-summary: root.artist-credit-summary;
                             action(what, arg) => {
                                 root.detail-action(what, arg);
                             }
@@ -1398,6 +1548,24 @@ export component AppWindow inherits Window {
                                     width: min(320px, parent.width);
                                     facts: root.artist-facts;
                                 }
+                            }
+                        }
+                        if root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistCreditsSection {
+                            title: "幕后作品曲目";
+                            roles: root.artist-credit-roles;
+                            active-role: root.artist-credit-role;
+                            tracks: root.artist-credits;
+                            playing-id: root.playing-id;
+                            playlists: root.playlist-choices;
+                            flex: artist-flick.flex;
+                            role-selected(role) => {
+                                root.artist-credit-role-changed(role);
+                            }
+                            play-all(shuffle) => {
+                                root.play-list(14, shuffle);
+                            }
+                            track-action(what, idx, arg) => {
+                                root.track-action(14, what, idx, arg);
                             }
                         }
                         for g[gi] in root.artist-groups: group := VerticalLayout {
@@ -1466,6 +1634,27 @@ export component AppWindow inherits Window {
                                 action(what, id, arg) => {
                                     root.card-action(g.grid, what, id, arg);
                                 }
+                            }
+                        }
+                        if !root.artist-pure-credit && root.artist-credit-roles.length > 0: Rectangle {
+                            height: 12px;
+                        }
+                        if !root.artist-pure-credit && root.artist-credit-roles.length > 0: ArtistCreditsSection {
+                            title: "幕后参与曲目";
+                            roles: root.artist-credit-roles;
+                            active-role: root.artist-credit-role;
+                            tracks: root.artist-credits;
+                            playing-id: root.playing-id;
+                            playlists: root.playlist-choices;
+                            flex: artist-flick.flex;
+                            role-selected(role) => {
+                                root.artist-credit-role-changed(role);
+                            }
+                            play-all(shuffle) => {
+                                root.play-list(14, shuffle);
+                            }
+                            track-action(what, idx, arg) => {
+                                root.track-action(14, what, idx, arg);
                             }
                         }
                         // Electron `FAVORITE_SONGS`. The gap above sits

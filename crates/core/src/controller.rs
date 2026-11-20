@@ -131,6 +131,11 @@ pub enum Command {
     /// Answered with [`Event::Detail`].
     OpenAlbum(i64),
     OpenArtist(i64),
+    /// Filter the open artist's backstage credited tracks by role ("" = all).
+    FilterArtistCredits {
+        artist_id: i64,
+        role: String,
+    },
     OpenPlaylist(i64),
     /// Tracks similar to a list row.
     OpenSimilar(TrackList, usize),
@@ -732,6 +737,12 @@ pub enum Event {
         artist_id: i64,
         tracks: Vec<TrackItem>,
     },
+    /// The open artist's backstage credited songs (`TrackList::ArtistCredits`).
+    ArtistCredits {
+        artist_id: i64,
+        active_role: String,
+        tracks: Vec<TrackItem>,
+    },
     /// Songs similar to `track_id` (`TrackList::Related`).
     Related {
         track_id: i64,
@@ -902,7 +913,12 @@ enum Loaded {
     FavoriteArtists(Vec<ArtistItem>),
     Playlists(Vec<Playlist>),
     /// The view, its tracks and their tags.
-    Detail(Box<DetailView>, Vec<Track>, Vec<String>),
+    Detail(
+        Box<DetailView>,
+        Vec<Track>,
+        Vec<String>,
+        Option<ArtistCredits>,
+    ),
     SearchPreview(Box<SearchPreviewData>),
     SearchCategoryPage {
         category: SearchCategory,
@@ -1169,6 +1185,11 @@ fn unauthorized(client: &Client, e: &api::ApiError) -> Option<Internal> {
     })
 }
 
+struct ArtistCredits {
+    artist_id: i64,
+    tracks: Vec<Track>,
+}
+
 struct Core {
     engine: Arc<dyn Engine>,
     config: CoreConfig,
@@ -1252,6 +1273,10 @@ struct Core {
     fade: fade::Fader,
     /// Album ids per release group of the open artist page.
     artist_groups: Option<(i64, Vec<Vec<i64>>)>,
+    /// Index of the "幕后参与" release group on the open artist page.
+    artist_credit_group: Option<(i64, usize)>,
+    /// All backstage credited tracks of the open artist page.
+    artist_credit_all: Option<ArtistCredits>,
     /// Playback goes to this Sonos room instead of the engine.
     cast: Option<cast::Cast>,
     /// Bumped per attached room; messages of older rooms are dropped.
@@ -1325,6 +1350,8 @@ impl Core {
             playing_sources: PlayingSources::default(),
             fade: fade::Fader::default(),
             artist_groups: None,
+            artist_credit_group: None,
+            artist_credit_all: None,
             cast: None,
             cast_generation: 0,
             cast_rooms: Vec::new(),
@@ -1511,6 +1538,9 @@ impl Core {
             }
             Command::OpenAlbum(id) => self.open_detail(DetailKey::Album(id)),
             Command::OpenArtist(id) => self.open_detail(DetailKey::Artist(id)),
+            Command::FilterArtistCredits { artist_id, role } => {
+                self.filter_artist_credits(artist_id, &role);
+            }
             Command::OpenPlaylist(id) => self.open_detail(DetailKey::Playlist(id)),
             Command::OpenSimilar(list, index) => {
                 let id = self
@@ -2737,6 +2767,9 @@ impl Core {
                 if let Some(id) = deleted {
                     if self.open_detail == Some(DetailKey::Playlist(id)) {
                         self.open_detail = None;
+                        self.artist_groups = None;
+                        self.artist_credit_group = None;
+                        self.artist_credit_all = None;
                     }
                     self.emit(Event::PlaylistDeleted(id));
                 }
@@ -2927,6 +2960,9 @@ impl Core {
         self.favorite_artists = None;
         self.playlists.clear();
         self.open_detail = None;
+        self.artist_groups = None;
+        self.artist_credit_group = None;
+        self.artist_credit_all = None;
 
         let server = library.client.base_url().to_owned();
         let secrets = self.config.secrets.clone();

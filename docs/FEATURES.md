@@ -67,6 +67,7 @@
 | 筛选：收藏、艺人、年份区间 | `features/shared/components/list-filters.tsx` | M2 | [x] 收藏走收藏页；艺人筛选原从艺人页「更多」进入，v0.2.3 去掉该按钮后暂无入口 |
 | 专辑详情（`trackCount` 超出嵌入曲目时用 `/tracks?album=` 分页补齐）、专辑音质汇总 | `ctrl` `getAlbumDetail` | M2 | [x] |
 | 艺人详情、作品集、热门歌曲 | `ctrl` `getAlbumArtistDetail` / `artistDiscography` / `getTopSongs` | M2 | [x] 热门歌曲不显示（v0.2.3） |
+| 幕后人员：艺术家列表按作词 / 作曲 / 编曲 / 制作筛选；艺人详情按职责查看和播放署名曲目 | Electron `artistDiscography` 保留幕后专辑；详情扩展对照服务端 `GET /artists/{id}/credits` | M4 | [x] |
 | 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [x] 曲目页签可播放 / 随机播放整个列表 |
 | 搜索 | `ctrl` `search` | M2 | [x] |
 | 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [x] |

@@ -26,6 +26,13 @@ export struct ReleaseGroupRow {
     rows: [AlbumRow],
 }
 
+// One backstage role filter tab on the artist page ("全部", "作词", "作曲", ...).
+export struct CreditRoleTab {
+    key: string,
+    label: string,
+    count: int,
+}
+
 // A use of a work on the album: "OP · ED" and the track title.
 export struct WorkUseRow {
     label: string,
@@ -774,6 +781,7 @@ export component ArtistHeader inherits Rectangle {
     in property <DetailInfo> info;
     in property <image> cover;
     in property <bool> loading;
+    in property <string> credit-summary;
     in property <[PlaylistChoice]> playlists;
     in property <int> favorite-count;
     // play, shuffle, next, last, favorite, add, new-playlist, play-favorites.
@@ -787,7 +795,7 @@ export component ArtistHeader inherits Rectangle {
     // stretching the group out to the page edges.
     property <length> text-max: Shell.tier == 2 ? 480px : Shell.tier == 1 ? 400px : 300px;
     property <length> room: max(140px, root.width - 2 * Shell.pad - root.art - root.gap);
-    property <length> text-w: min(root.text-max, root.room, max(name-measure.preferred-width, sub-measure.preferred-width, action-row.preferred-width));
+    property <length> text-w: min(root.text-max, root.room, max(name-measure.preferred-width, sub-measure.preferred-width, credit-measure.preferred-width, action-row.preferred-width));
 
     // Natural widths, so `text-w` does not depend on the column it sizes.
     name-measure := Text {
@@ -804,6 +812,13 @@ export component ArtistHeader inherits Rectangle {
         font-family: Fonts.family(self.text);
         font-size: Shell.tier == 2 ? 20px : 17px;
         font-weight: 500;
+    }
+
+    credit-measure := Text {
+        visible: false;
+        text: root.credit-summary;
+        font-family: Fonts.family(self.text);
+        font-size: 13px;
     }
 
     VerticalLayout {
@@ -874,6 +889,14 @@ export component ArtistHeader inherits Rectangle {
                         color: Theme.text;
                         overflow: elide;
                     }
+                }
+                if root.credit-summary != "": Text {
+                    text: root.credit-summary;
+                    width: parent.width;
+                    font-family: Fonts.family(self.text);
+                    font-size: 13px;
+                    color: Theme.text-dim;
+                    wrap: word-wrap;
                 }
                 Rectangle {
                     height: 18px;

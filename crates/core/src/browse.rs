@@ -81,6 +81,9 @@ pub struct ArtistFilter {
     /// lyricists, arrangers, producers) instead of album artists only
     /// (Electron 「艺术家」 / 「专辑艺术家」).
     pub all_roles: bool,
+    /// Explicit server role filter (`credit`, `lyricist`, `composer`, ...);
+    /// overrides `all_roles` when set.
+    pub role: Option<api::ArtistRole>,
 }
 
 impl Default for ArtistFilter {
@@ -90,6 +93,7 @@ impl Default for ArtistFilter {
             order: SortOrder::Asc,
             search: String::new(),
             all_roles: false,
+            role: None,
         }
     }
 }
@@ -136,6 +140,8 @@ pub enum TrackList {
     Related,
     /// The open artist's favorite songs (artist page).
     ArtistFavorites,
+    /// The open artist's backstage credited songs (artist page, filtered by role).
+    ArtistCredits,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -158,6 +164,8 @@ pub struct AlbumItem {
     pub added_at: String,
     pub disc_count: i32,
     pub track_count: i64,
+    /// Optional third-line annotation on album cards (e.g. "作词 · 作曲 · 2 首").
+    pub note: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -274,6 +282,7 @@ pub struct AlbumView {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArtistView {
     pub id: i64,
+    pub requested_id: i64,
     pub name: String,
     pub image: String,
     pub album_count: i64,
@@ -289,6 +298,20 @@ pub struct ArtistView {
     pub releases: Vec<AlbumItem>,
     /// Top tracks are the most played (else the first in album order).
     pub top_tracks_popular: bool,
+    /// Backstage role filter tabs ("全部", "作词", "作曲", ...).
+    pub credit_roles: Vec<ArtistCreditRole>,
+    /// True when the artist only has backstage credits (no own/collab/appearance releases).
+    pub is_pure_credit: bool,
+}
+
+/// One role filter tab on the artist detail page ("全部", "作词", "作曲", ...).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArtistCreditRole {
+    /// Role key: "" for all backstage tracks, or "lyricist" / "composer" / "arranger" / "producer".
+    pub key: String,
+    /// Display label ("全部", "作词", ...).
+    pub label: String,
+    pub count: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -350,6 +373,7 @@ pub fn album_item(album: &Album) -> AlbumItem {
         added_at: album.added_at.clone(),
         disc_count: album.disc_count,
         track_count: album.track_count,
+        note: String::new(),
     }
 }
 
@@ -440,6 +464,110 @@ const CREDIT_ROLES: [(&str, &str); 4] = [
     ("arranger", "编曲"),
     ("producer", "制作"),
 ];
+
+/// Chinese label of a backstage credit role key.
+fn credit_role_label(role: &str) -> &'static str {
+    CREDIT_ROLES
+        .iter()
+        .find(|(k, _)| *k == role)
+        .map_or("", |(_, label)| *label)
+}
+
+/// Backstage role keys credited to `artist_id` on `track`, in canonical order.
+pub(crate) fn track_role_keys_for_artist(track: &Track, artist_id: i64) -> Vec<&'static str> {
+    if artist_id <= 0 {
+        return Vec::new();
+    }
+    let mut keys = Vec::new();
+    for (role, _) in CREDIT_ROLES {
+        if track
+            .credits
+            .iter()
+            .any(|c| c.role == role && c.artists.iter().any(|a| a.id == artist_id))
+        {
+            keys.push(role);
+        }
+    }
+    keys
+}
+
+/// Backstage role labels credited to `artist_id` on `track`, in canonical order.
+fn track_roles_for_artist(track: &Track, artist_id: i64) -> Vec<&'static str> {
+    track_role_keys_for_artist(track, artist_id)
+        .into_iter()
+        .map(credit_role_label)
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Track row for an artist's backstage credits list: `tag` carries the
+/// artist's specific roles on this track (e.g. "作词 · 作曲").
+pub(crate) fn artist_credit_track_item(track: &Track, artist_id: i64) -> TrackItem {
+    let mut item = track_item(track);
+    item.tag = track_roles_for_artist(track, artist_id).join(" · ");
+    item
+}
+
+/// Builds role filter tabs ("全部", "作词", "作曲", ...) from server role counts.
+pub(crate) fn artist_credit_roles(
+    counts: &[api::CreditRoleCount],
+    total_tracks: usize,
+) -> Vec<ArtistCreditRole> {
+    let mut tabs = Vec::new();
+    for (key, label) in CREDIT_ROLES {
+        if let Some(c) = counts.iter().find(|c| c.role == key && c.count > 0) {
+            tabs.push(ArtistCreditRole {
+                key: key.to_owned(),
+                label: label.to_owned(),
+                count: c.count,
+            });
+        }
+    }
+    if tabs.is_empty() && total_tracks == 0 {
+        return Vec::new();
+    }
+    let total = i64::try_from(total_tracks).unwrap_or(i64::MAX);
+    tabs.insert(
+        0,
+        ArtistCreditRole {
+            key: String::new(),
+            label: "全部".to_owned(),
+            count: total,
+        },
+    );
+    tabs
+}
+
+/// Annotates `relation == "credit"` albums with the artist's roles and credited
+/// track count on each album (e.g. "作词 · 作曲 · 2 首").
+pub(crate) fn annotate_credit_albums(
+    releases: &mut [AlbumItem],
+    artist_id: i64,
+    credit_tracks: &[Track],
+) {
+    if credit_tracks.is_empty() {
+        return;
+    }
+    for album in releases.iter_mut().filter(|a| a.relation == "credit") {
+        let mut role_labels: Vec<&'static str> = Vec::new();
+        let mut count = 0usize;
+        for t in credit_tracks.iter().filter(|t| t.album_id == album.id) {
+            count += 1;
+            for label in track_roles_for_artist(t, artist_id) {
+                if !role_labels.contains(&label) {
+                    role_labels.push(label);
+                }
+            }
+        }
+        if count > 0 {
+            album.note = if role_labels.is_empty() {
+                format!("{count} 首")
+            } else {
+                format!("{} · {count} 首", role_labels.join(" · "))
+            };
+        }
+    }
+}
 
 /// Names credited with `role` (artist records first, else the file tag).
 fn role_names<'a>(track: &'a Track, role: &str) -> Vec<(&'a str, i64)> {
@@ -1272,6 +1400,74 @@ mod tests {
                 ("幕后参与", vec![3]),
             ]
         );
+    }
+
+    #[test]
+    fn artist_credit_roles_and_album_notes() {
+        let r = |id: i64, name: &str| api::ArtistRef {
+            id,
+            name: name.into(),
+            join_phrase: None,
+        };
+        let credit = |role: &str, artists: Vec<api::ArtistRef>| api::TrackCredit {
+            role: role.into(),
+            artists,
+        };
+        let tracks = vec![
+            Track {
+                id: 1,
+                album_id: 10,
+                title: "Song A".into(),
+                credits: vec![
+                    credit("lyricist", vec![r(50, "畑 亜貴")]),
+                    credit("composer", vec![r(50, "畑 亜貴")]),
+                ],
+                ..Track::default()
+            },
+            Track {
+                id: 2,
+                album_id: 10,
+                title: "Song B".into(),
+                credits: vec![credit("lyricist", vec![r(50, "畑 亜貴")])],
+                ..Track::default()
+            },
+        ];
+        assert_eq!(track_roles_for_artist(&tracks[0], 50), vec!["作词", "作曲"]);
+        assert_eq!(artist_credit_track_item(&tracks[0], 50).tag, "作词 · 作曲");
+
+        let tabs = artist_credit_roles(
+            &[
+                api::CreditRoleCount {
+                    role: "composer".into(),
+                    count: 1,
+                },
+                api::CreditRoleCount {
+                    role: "lyricist".into(),
+                    count: 2,
+                },
+            ],
+            2,
+        );
+        let summary: Vec<(&str, &str, i64)> = tabs
+            .iter()
+            .map(|t| (t.key.as_str(), t.label.as_str(), t.count))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("", "全部", 2),
+                ("lyricist", "作词", 2),
+                ("composer", "作曲", 1)
+            ]
+        );
+
+        let mut releases = vec![AlbumItem {
+            id: 10,
+            relation: "credit".into(),
+            ..AlbumItem::default()
+        }];
+        annotate_credit_albums(&mut releases, 50, &tracks);
+        assert_eq!(releases[0].note, "作词 · 作曲 · 2 首");
     }
 
     #[test]

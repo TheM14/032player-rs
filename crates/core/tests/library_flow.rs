@@ -504,6 +504,77 @@ async fn artist_pages_share_one_favorites_fetch_until_a_favorite_changes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn artist_credit_playback_respects_the_role_filter_and_release_group() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/artists/6"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "artist": { "id": 7, "name": "词曲作者", "mergedFrom": 6 },
+            "releases": [{ "id": 11, "title": "个人发行", "relation": "own" }],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums"))
+        .and(query_param("artist", "7"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![json!({"id": 10, "title": "幕后参与"})], 1)),
+        )
+        .mount(&server)
+        .await;
+    let credited = |id, title, album, role| {
+        let mut song = track(id, title);
+        song["albumId"] = json!(album);
+        song["credits"] = json!([{ "role": role, "artists": [{ "id": 7, "name": "词曲作者" }] }]);
+        song
+    };
+    let credits = [
+        credited(1, "幕后专辑的作词", 10, "lyricist"),
+        credited(2, "个人发行的作曲", 11, "composer"),
+    ];
+    for (offset, song) in credits.into_iter().enumerate() {
+        Mock::given(method("GET"))
+            .and(path("/api/v1/artists/6/credits"))
+            .and(query_param("offset", offset.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [song], "total": 2, "limit": 1, "offset": offset,
+                "roles": [{ "role": "lyricist", "count": 1 }, { "role": "composer", "count": 1 }],
+            })))
+            .mount(&server)
+            .await;
+    }
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::OpenArtist(6));
+    let Event::Detail {
+        view: DetailView::Artist(artist),
+        ..
+    } = h.wait("artist detail", |e| matches!(e, Event::Detail { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!((artist.requested_id, artist.id), (6, 7));
+    assert_eq!(artist.releases[1].note, "作词 · 1 首");
+    h.wait(
+        "all credits",
+        |e| matches!(e, Event::ArtistCredits { artist_id: 7, tracks, .. } if tracks.len() == 2),
+    );
+    h.send(Command::FilterArtistCredits {
+        artist_id: 7,
+        role: "composer".into(),
+    });
+    h.wait("composer credits", |e| {
+        matches!(e, Event::ArtistCredits { active_role, tracks, .. }
+            if active_role == "composer" && tracks.len() == 1 && tracks[0].tag == "作曲")
+    });
+    h.send(Command::Play(TrackSource::List(TrackList::ArtistCredits)));
+    assert_eq!(h.queue_titles(), ["个人发行的作曲"]);
+    h.send(Command::Play(TrackSource::ArtistGroup(7, 1)));
+    assert_eq!(h.queue_titles(), ["幕后专辑的作词"]);
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn album_detail_search_and_similar() {
     let server = server().await;
     Mock::given(path("/api/v1/tracks/2/similar"))

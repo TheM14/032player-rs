@@ -1326,6 +1326,9 @@ fn main() {
     set(&inst, "artist-total", Value::Number(321.0));
     set(&inst, "page", Value::Number(3.0));
     render(&window, size, &format!("{out}/artists.png"));
+    set(&inst, "page", n(24.0));
+    set(&inst, "artist-dir-role", s("composer"));
+    render(&window, size, &format!("{out}/artists-by-role.png"));
     set(&inst, "playlist-rows", album_rows(5));
     set(&inst, "playlist-count", Value::Number(24.0));
     set(&inst, "page", Value::Number(4.0));
@@ -1834,6 +1837,50 @@ fn main() {
         detail(1.0, "Keina Suda", "須田景凪", "", "", ""),
     );
     set(&inst, "artist-favs", tracks());
+    set(
+        &inst,
+        "artist-credit-summary",
+        s("作词 2 首 · 作曲 1 首 · 编曲 1 首 · 制作 1 首"),
+    );
+    let Value::Model(credit_tracks) = tracks() else {
+        unreachable!("sample tracks are a model");
+    };
+    set(
+        &inst,
+        "artist-credits",
+        model(
+            ["作词 · 作曲", "作词", "编曲 · 制作"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    let Some(Value::Struct(mut row)) = credit_tracks.row_data(i) else {
+                        unreachable!("sample track row");
+                    };
+                    row.set_field("tag".into(), s(label));
+                    row.set_field("tag-accent".into(), Value::Bool(true));
+                    Value::Struct(row)
+                })
+                .collect(),
+        ),
+    );
+    set(
+        &inst,
+        "artist-credit-roles",
+        model(
+            [
+                ("", "全部", 3.0),
+                ("lyricist", "作词", 2.0),
+                ("composer", "作曲", 1.0),
+                ("arranger", "编曲", 1.0),
+                ("producer", "制作", 1.0),
+            ]
+            .into_iter()
+            .map(|(key, label, count)| {
+                st(&[("key", s(key)), ("label", s(label)), ("count", n(count))])
+            })
+            .collect(),
+        ),
+    );
     render(
         &window,
         PhysicalSize::new(1280, 2200),
@@ -1848,6 +1895,30 @@ fn main() {
         &format!("{out}/artist-light.png"),
     );
     set(&inst, "theme-mode", Value::Number(1.0));
+    set(&inst, "artist-pure-credit", Value::Bool(true));
+    set(&inst, "artist-about", s(""));
+    set(&inst, "artist-facts", model(Vec::new()));
+    set(&inst, "artist-favs", model(Vec::new()));
+    set(
+        &inst,
+        "artist-groups",
+        model(vec![st(&[
+            ("title", s("幕后参与")),
+            ("count", n(2.0)),
+            ("grid", n(0.0)),
+            ("rows", album_rows_n(5, 2)),
+        ])]),
+    );
+    set(&inst, "detail", detail(1.0, "畑 亜貴", "", "", "", ""));
+    render(
+        &window,
+        PhysicalSize::new(960, 1000),
+        &format!("{out}/artist-credits.png"),
+    );
+    set(&inst, "artist-pure-credit", Value::Bool(false));
+    set(&inst, "artist-credit-summary", s(""));
+    set(&inst, "artist-credits", model(Vec::new()));
+    set(&inst, "artist-credit-roles", model(Vec::new()));
     set(
         &inst,
         "detail",

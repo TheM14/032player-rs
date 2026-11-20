@@ -264,6 +264,11 @@ pub enum ArtistRole {
     #[default]
     Album,
     All,
+    Credit,
+    Lyricist,
+    Composer,
+    Arranger,
+    Producer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -288,6 +293,11 @@ impl ArtistListQuery {
             match self.role {
                 ArtistRole::Album => "album",
                 ArtistRole::All => "all",
+                ArtistRole::Credit => "credit",
+                ArtistRole::Lyricist => "lyricist",
+                ArtistRole::Composer => "composer",
+                ArtistRole::Arranger => "arranger",
+                ArtistRole::Producer => "producer",
             },
         );
         if !browse {

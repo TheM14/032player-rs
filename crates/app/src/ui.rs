@@ -267,6 +267,8 @@ struct Ui {
     related: Rc<VecModel<TrackRow>>,
     /// "收藏的歌曲" of the open artist page.
     artist_favs: Rc<VecModel<TrackRow>>,
+    artist_credits: Rc<VecModel<TrackRow>>,
+    artist_dir_role: RefCell<Option<client_core::ArtistRole>>,
     /// Track the related songs were requested for (0: none).
     related_for: Cell<i64>,
     /// The original cover in the full-screen player.
@@ -379,6 +381,7 @@ impl Ui {
             TrackList::History => &self.played,
             TrackList::Related => &self.related,
             TrackList::ArtistFavorites => &self.artist_favs,
+            TrackList::ArtistCredits => &self.artist_credits,
             TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
         })
     }
@@ -513,6 +516,11 @@ impl Ui {
         w.set_album_multi_disc(false);
         self.detail_tracks.set_vec(Vec::new());
         self.artist_favs.set_vec(Vec::new());
+        self.artist_credits.set_vec(Vec::new());
+        w.set_artist_credit_roles(ModelRc::default());
+        w.set_artist_credit_role(SharedString::new());
+        w.set_artist_pure_credit(false);
+        w.set_artist_credit_summary(SharedString::new());
         for grid in RELEASE_GRIDS {
             self.grids[grid].clear();
         }
@@ -596,11 +604,17 @@ impl Ui {
                 });
             }
             2 | 6 | 7 => {
+                let role = if target == 7 {
+                    *self.artist_dir_role.borrow()
+                } else {
+                    None
+                };
                 let filter = ArtistFilter {
                     sort: artist_sorts(browse).get(q.sort).unwrap_or(ArtistSort::Name),
                     order: order(q.desc),
                     search,
                     all_roles: target == 7,
+                    role,
                 };
                 if target == 6 {
                     w.set_fav_loading(true);
@@ -1088,7 +1102,7 @@ impl Ui {
         // Only the page on screen.
         let matches = match (&view, self.route.get()) {
             (DetailView::Album(a), Route::Album(id)) => a.id == id,
-            (DetailView::Artist(a), Route::Artist(id)) => a.id == id,
+            (DetailView::Artist(a), Route::Artist(id)) => a.requested_id == id,
             (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
             (DetailView::Similar { .. }, Route::Similar(..)) => true,
             (DetailView::Versions { .. }, Route::Versions(..)) => true,
@@ -1203,6 +1217,17 @@ impl Ui {
                     })
                     .collect();
                 w.set_artist_groups(ModelRc::new(VecModel::from(groups)));
+                w.set_artist_pure_credit(a.is_pure_credit);
+                w.set_artist_credit_roles(ModelRc::new(VecModel::from(
+                    a.credit_roles
+                        .iter()
+                        .map(|r| crate::CreditRoleTab {
+                            key: r.key.as_str().into(),
+                            label: r.label.as_str().into(),
+                            count: int(r.count),
+                        })
+                        .collect::<Vec<_>>(),
+                )));
                 let mut about = a.biography.trim().to_owned();
                 if !about.is_empty() && !a.biography_source.is_empty() {
                     about.push_str(&format!("\n\n来源：{}", a.biography_source));
@@ -1222,6 +1247,15 @@ impl Ui {
                 if a.track_count > 0 {
                     meta.push(format!("{} 首", a.track_count));
                 }
+                w.set_artist_credit_summary(
+                    a.credit_roles
+                        .iter()
+                        .filter(|r| !r.key.is_empty())
+                        .map(|r| format!("{} {} 首", r.label, r.count))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                        .into(),
+                );
                 (
                     DetailInfo {
                         kind: 1,
@@ -1556,6 +1590,7 @@ impl Ui {
                     &self.pane_tracks,
                     &self.related,
                     &self.artist_favs,
+                    &self.artist_credits,
                 ] {
                     for i in 0..model.row_count() {
                         if let Some(mut row) = model.row_data(i)
@@ -1697,6 +1732,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         pane_tracks: new_tracks(),
         related: new_tracks(),
         artist_favs: new_tracks(),
+        artist_credits: new_tracks(),
+        artist_dir_role: RefCell::new(None),
         related_for: Cell::new(0),
         full_cover_key: RefCell::default(),
         home_mixes: Rc::new(VecModel::default()),
@@ -1755,6 +1792,33 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_queue(ModelRc::from(ui.queue.clone()));
     window.set_full_related(ModelRc::from(ui.related.clone()));
     window.set_artist_favs(ModelRc::from(ui.artist_favs.clone()));
+    window.set_artist_credits(ModelRc::from(ui.artist_credits.clone()));
+    window.on_artist_credit_role_changed(|role| {
+        with_ui(|ui, _| {
+            if let Some(DetailView::Artist(a)) = ui.detail.borrow().as_ref() {
+                ui.send(Command::FilterArtistCredits {
+                    artist_id: a.id,
+                    role: role.to_string(),
+                });
+            }
+        });
+    });
+    window.on_artist_dir_role_changed(|role| {
+        with_ui(|ui, w| {
+            let parsed = match role.as_str() {
+                "credit" => Some(client_core::ArtistRole::Credit),
+                "lyricist" => Some(client_core::ArtistRole::Lyricist),
+                "composer" => Some(client_core::ArtistRole::Composer),
+                "arranger" => Some(client_core::ArtistRole::Arranger),
+                "producer" => Some(client_core::ArtistRole::Producer),
+                _ => None,
+            };
+            *ui.artist_dir_role.borrow_mut() = parsed;
+            ui.sent.borrow_mut().remove(&7);
+            w.set_content_scroll_y(0.0);
+            ui.query(w, 7, w.get_q_all_artists());
+        });
+    });
     window.on_full_changed(|| with_ui(|ui, w| ui.full_changed(w)));
     window.on_open_update(|| {
         with_ui(|ui, _| {
@@ -2594,8 +2658,29 @@ pub fn apply(event: Event) {
             w.set_dialog(6);
         }
         Event::ArtistFavorites { artist_id, tracks } => {
-            if ui.route.get() == Route::Artist(artist_id) {
+            if matches!(ui.detail.borrow().as_ref(), Some(DetailView::Artist(a))
+                if a.id == artist_id && ui.route.get() == Route::Artist(a.requested_id))
+            {
                 ui.artist_favs.set_vec(track_rows(tracks, 0));
+            }
+        }
+        Event::ArtistCredits {
+            artist_id,
+            active_role,
+            tracks,
+        } => {
+            if matches!(ui.detail.borrow().as_ref(), Some(DetailView::Artist(a))
+                if a.id == artist_id && ui.route.get() == Route::Artist(a.requested_id))
+            {
+                let rows: Vec<TrackRow> = track_rows(tracks, 0)
+                    .into_iter()
+                    .map(|mut row| {
+                        row.tag_accent = !row.tag.is_empty();
+                        row
+                    })
+                    .collect();
+                ui.artist_credits.set_vec(rows);
+                w.set_artist_credit_role(active_role.into());
             }
         }
         Event::Related { track_id, tracks } => {

@@ -13,7 +13,8 @@ use serde::de::DeserializeOwned;
 
 use super::m032::SourceKey;
 use super::{
-    Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, SearchPreviewData, Target, TrackSource,
+    ArtistCredits, Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, SearchPreviewData,
+    Target, TrackSource,
 };
 use crate::browse::{
     self, AlbumFilter, ArtistFilter, DetailView, TrackFilter, TrackList, album_item, artist_item,
@@ -321,11 +322,11 @@ impl Core {
         }
         let random = browse && filter.sort == api::ArtistSort::Random;
         let query = ArtistListQuery {
-            role: if filter.all_roles {
+            role: filter.role.unwrap_or(if filter.all_roles {
                 api::ArtistRole::All
             } else {
                 api::ArtistRole::Album
-            },
+            }),
             favorite: favorites,
             search: Some(filter.search.trim().to_owned()).filter(|s| !s.is_empty()),
             sort: Some(filter.sort),
@@ -391,6 +392,10 @@ impl Core {
             return;
         };
         self.open_detail = Some(key);
+        self.artist_groups = None;
+        self.artist_credit_group = None;
+        self.artist_credit_all = None;
+        self.set_list(TrackList::ArtistCredits, Vec::new());
         let seq = self.next_seq(Target::Detail);
         let similar_title = match key {
             DetailKey::Similar(id) | DetailKey::Versions(id) => self
@@ -413,6 +418,7 @@ impl Core {
             .is_some_and(|l| l.capabilities.has(api::Feature::Browse));
         let mixes_known = self.home.as_ref().and_then(|h| h.mixes()).cloned();
         tokio::spawn(async move {
+            let mut artist_credits_data = None;
             let result: Result<(DetailView, Vec<Track>, Vec<String>), ApiError> = async {
                 Ok(match key {
                     DetailKey::Album(id) => {
@@ -423,9 +429,30 @@ impl Core {
                     DetailKey::Artist(id) => {
                         let mut q = Query::new();
                         q.push("artist", id);
-                        let (detail, matching) =
-                            tokio::join!(client.artist(id), client.get_all::<Album>("/albums", &q));
+                        let (detail, matching, credits) = tokio::join!(
+                            client.artist(id),
+                            client.get_all::<Album>("/albums", &q),
+                            client.artist_credits(id, None)
+                        );
                         let detail = detail?;
+                        let matching = if detail.artist.id == id {
+                            matching?
+                        } else {
+                            let mut q = Query::new();
+                            q.push("artist", detail.artist.id);
+                            client.get_all::<Album>("/albums", &q).await?
+                        };
+                        // Older servers may not expose /artists/{id}/credits.
+                        let (credit_tracks, role_counts, credits_available) = match credits {
+                            Ok((tracks, roles)) => (tracks, roles, true),
+                            Err(e) if e.is_unauthorized() => return Err(e),
+                            Err(e) => {
+                                if !matches!(e.status(), Some(404 | 405 | 501)) {
+                                    tracing::warn!(%e, "could not load artist credits");
+                                }
+                                (Vec::new(), Vec::new(), false)
+                            }
+                        };
                         // /albums?artist= matches any role: albums only reached
                         // through credits stay visible as relation "credit".
                         let mut releases: Vec<_> = detail
@@ -437,15 +464,29 @@ impl Core {
                             })
                             .collect();
                         let seen: HashSet<i64> = releases.iter().map(|a| a.id).collect();
-                        releases.extend(matching?.iter().filter(|a| !seen.contains(&a.id)).map(
+                        releases.extend(matching.iter().filter(|a| !seen.contains(&a.id)).map(
                             |a| browse::AlbumItem {
                                 relation: "credit".into(),
                                 ..album_item(a)
                             },
                         ));
                         let a = &detail.artist;
+                        let canonical_id = a.id;
+                        browse::annotate_credit_albums(&mut releases, canonical_id, &credit_tracks);
+                        let credit_roles =
+                            browse::artist_credit_roles(&role_counts, credit_tracks.len());
+                        let is_pure_credit = !credit_tracks.is_empty()
+                            && detail.tracks_total == 0
+                            && !releases.iter().any(|r| r.relation != "credit");
+                        if credits_available {
+                            artist_credits_data = Some(ArtistCredits {
+                                artist_id: canonical_id,
+                                tracks: credit_tracks,
+                            });
+                        }
                         let view = browse::ArtistView {
                             id: a.id,
+                            requested_id: id,
                             name: a.name.clone(),
                             image: a.image_url.clone(),
                             album_count: a.album_count,
@@ -458,6 +499,8 @@ impl Core {
                             aliases: a.aliases.clone(),
                             releases,
                             top_tracks_popular: detail.top_tracks_are_popular,
+                            credit_roles,
+                            is_pure_credit,
                         };
                         (DetailView::Artist(view), detail.top_tracks, Vec::new())
                     }
@@ -574,7 +617,7 @@ impl Core {
                 Ok((view, tracks, tags)) => Internal::Loaded(
                     Target::Detail,
                     seq,
-                    Loaded::Detail(Box::new(view), tracks, tags),
+                    Loaded::Detail(Box::new(view), tracks, tags, artist_credits_data),
                 ),
                 Err(e) => Self::failed(&client, "加载详情", e),
             };
@@ -784,7 +827,7 @@ impl Core {
                 ));
                 self.emit_playlists();
             }
-            Loaded::Detail(view, tracks, tags) => {
+            Loaded::Detail(view, tracks, tags, artist_credits) => {
                 let view = *view;
                 let mut items: Vec<_> = tracks.iter().map(track_item).collect();
                 for (item, tag) in items.iter_mut().zip(tags) {
@@ -798,16 +841,29 @@ impl Core {
                     _ => None,
                 };
                 self.set_list(TrackList::Detail, tracks);
-                self.artist_groups = match &view {
-                    DetailView::Artist(a) => Some((
-                        a.id,
-                        browse::release_groups(&a.releases)
+                let (artist_groups, artist_credit_group) = match &view {
+                    DetailView::Artist(a) => {
+                        let groups = browse::release_groups(&a.releases);
+                        let credit_idx = groups
                             .iter()
-                            .map(|g| g.items.iter().map(|i| i.id).collect())
-                            .collect(),
-                    )),
-                    _ => None,
+                            .position(|g| g.items[0].relation == "credit")
+                            .map(|idx| (a.id, idx));
+                        (
+                            Some((
+                                a.id,
+                                groups
+                                    .iter()
+                                    .map(|g| g.items.iter().map(|i| i.id).collect())
+                                    .collect(),
+                            )),
+                            credit_idx,
+                        )
+                    }
+                    _ => (None, None),
                 };
+                self.artist_groups = artist_groups;
+                self.artist_credit_group = artist_credit_group;
+                self.artist_credit_all = artist_credits;
                 if let DetailView::Artist(a) = &view {
                     self.load_artist_favorites(a.id);
                 }
@@ -815,6 +871,9 @@ impl Core {
                     view,
                     tracks: items,
                 });
+                if let Some(credits) = &self.artist_credit_all {
+                    self.filter_artist_credits(credits.artist_id, "");
+                }
             }
             Loaded::AlbumWorks(album_id, works) => {
                 let tieups = crate::m032::track_tieups(&works);
@@ -893,6 +952,35 @@ impl Core {
             }
             home => self.home_loaded(home),
         }
+    }
+
+    /// Filters the open artist's backstage credited tracks by role ("" = all)
+    /// and updates `TrackList::ArtistCredits` so playback matches the active tab.
+    pub(super) fn filter_artist_credits(&mut self, artist_id: i64, role: &str) {
+        let Some(credits) = &self.artist_credit_all else {
+            return;
+        };
+        if credits.artist_id != artist_id {
+            return;
+        }
+        let filtered: Vec<Track> = credits
+            .tracks
+            .iter()
+            .filter(|t| {
+                role.is_empty() || browse::track_role_keys_for_artist(t, artist_id).contains(&role)
+            })
+            .cloned()
+            .collect();
+        let items = filtered
+            .iter()
+            .map(|t| browse::artist_credit_track_item(t, artist_id))
+            .collect();
+        self.set_list(TrackList::ArtistCredits, filtered);
+        self.emit(Event::ArtistCredits {
+            artist_id,
+            active_role: role.to_owned(),
+            tracks: items,
+        });
     }
 
     /// The artist page's "收藏的歌曲": favorite tracks crediting the artist
@@ -975,6 +1063,11 @@ impl Core {
                     }
                 }
             }
+            if let Some(credits) = &mut self.artist_credit_all {
+                for track in credits.tracks.iter_mut().filter(|track| track.id == id) {
+                    track.is_favorite = favorite;
+                }
+            }
             self.queue.set_favorite(id, favorite);
             self.schedule_queue_save();
         }
@@ -990,8 +1083,10 @@ impl Core {
                 if let Some(filter) = self.favorite_tracks.clone() {
                     self.query_tracks(true, filter);
                 }
-                if let Some(DetailKey::Artist(id)) = self.open_detail {
-                    self.load_artist_favorites(id);
+                if let Some((id, _)) = self.artist_groups.as_ref()
+                    && matches!(self.open_detail, Some(DetailKey::Artist(_)))
+                {
+                    self.load_artist_favorites(*id);
                 }
             }
             FavoriteKind::Artist => {
@@ -1044,6 +1139,22 @@ impl Core {
             }
             _ => Vec::new(),
         };
+        // Keep playback scoped to the albums shown in the credit release group.
+        if let TrackSource::ArtistGroup(artist, group) = source
+            && self.artist_credit_group == Some((artist, group))
+            && let Some(credits) = &self.artist_credit_all
+            && credits.artist_id == artist
+        {
+            let albums: HashSet<_> = group_albums.into_iter().collect();
+            let tracks = credits
+                .tracks
+                .iter()
+                .filter(|track| albums.contains(&track.album_id))
+                .cloned()
+                .collect();
+            self.fetched(tracks, intent);
+            return;
+        }
         if let (TrackSource::Album(album_id), Intent::AddToPlaylist(playlist_id)) =
             (source, &intent)
         {
@@ -1062,7 +1173,17 @@ impl Core {
             let mut intent = intent;
             let result = match source {
                 TrackSource::Album(id) => client.album(id).await.map(|d| d.tracks),
-                TrackSource::Artist(id) => client.artist_tracks(id, ArtistTrackSort::Album).await,
+                TrackSource::Artist(id) => {
+                    match client.artist_tracks(id, ArtistTrackSort::Album).await {
+                        Ok(tracks) if !tracks.is_empty() => Ok(tracks),
+                        Ok(tracks) => match client.artist_credits(id, None).await {
+                            Ok((credits, _)) => Ok(credits),
+                            Err(e) if matches!(e.status(), Some(404 | 405 | 501)) => Ok(tracks),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    }
+                }
                 TrackSource::Playlist(id) => client.playlist(id).await.map(|d| d.tracks),
                 TrackSource::Work(id) => client.work_tracks(id).await.map(|items| {
                     let tracks = unique_tracks(items);

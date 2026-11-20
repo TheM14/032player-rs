@@ -6,9 +6,9 @@ use url::Url;
 use crate::error::{ApiError, AuthError};
 use crate::query::{AlbumListQuery, ArtistListQuery, Query, TrackListQuery};
 use crate::types::{
-    Album, AlbumDetail, Artist, ArtistDetail, Capabilities, ErrorBody, Items, Lyrics, Page,
-    Playlist, PlaylistArtwork, PlaylistDetail, PlaylistItemResult, SimilarTrack, Track,
-    TrackVersionsResponse,
+    Album, AlbumDetail, Artist, ArtistCreditsPage, ArtistDetail, Capabilities, CreditRoleCount,
+    ErrorBody, Items, Lyrics, Page, Playlist, PlaylistArtwork, PlaylistDetail, PlaylistItemResult,
+    SimilarTrack, Track, TrackVersionsResponse,
 };
 
 /// What can be marked as favorite.
@@ -361,6 +361,35 @@ impl Client {
         );
         self.get_all(&format!("/artists/{artist_id}/tracks"), &q)
             .await
+    }
+
+    /// Backstage credited tracks of an artist (`GET /artists/{id}/credits`),
+    /// optionally filtered by `role` (`lyricist` / `composer` / `arranger` /
+    /// `producer`), together with per-role track counts.
+    pub async fn artist_credits(
+        &self,
+        artist_id: i64,
+        role: Option<&str>,
+    ) -> Result<(Vec<Track>, Vec<CreditRoleCount>), ApiError> {
+        let mut out = Vec::new();
+        let mut roles = Vec::new();
+        let path = format!("/artists/{artist_id}/credits");
+        loop {
+            let mut q = Query::new();
+            if let Some(role) = role.filter(|r| !r.is_empty()) {
+                q.push("role", role);
+            }
+            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), MAX_PAGE_SIZE);
+            let page: ArtistCreditsPage = self.get(&path, &q).await?;
+            if roles.is_empty() && !page.roles.is_empty() {
+                roles = page.roles;
+            }
+            let n = page.items.len();
+            out.extend(page.items);
+            if n == 0 || i64::try_from(out.len()).unwrap_or(i64::MAX) >= page.total {
+                return Ok((out, roles));
+            }
+        }
     }
 
     pub async fn set_favorite(
