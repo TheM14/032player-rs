@@ -364,7 +364,7 @@ fn detail(
     Value::Struct(d)
 }
 
-fn queue() -> Value {
+fn queue(count: usize) -> Value {
     let rows = [
         ("夜に駆ける", "YOASOBI", "4:21"),
         ("晴天", "周杰伦", "4:29"),
@@ -376,7 +376,7 @@ fn queue() -> Value {
         ("だんご大家族", "茶太", "3:38"),
     ];
     model(
-        (0..12)
+        (0..count)
             .map(|i| {
                 let (t, a, d) = rows[i % rows.len()];
                 let mut row = Struct::default();
@@ -761,7 +761,7 @@ fn fullscreen_queue_regression(
     inst.show().unwrap();
     set(&inst, "logged-in", Value::Bool(true));
     set(&inst, "full-open", Value::Bool(true));
-    set(&inst, "queue", queue());
+    set(&inst, "queue", queue(12));
     set(&inst, "queue-total", n(12.0));
     set(&inst, "queue-current", n(1.0));
     set(&inst, "queue-position", n(1.0));
@@ -825,6 +825,49 @@ fn fullscreen_queue_regression(
         "Full-screen queue actions must use the clicked entry and clear the filter"
     );
     assert_eq!(inst.get_property("queue-search").unwrap(), s(""));
+
+    set(&inst, "full-open", Value::Bool(false));
+    render(window, size, &format!("{out}/queue-closed.png"));
+    set(&inst, "queue", queue(40));
+    set(&inst, "queue-total", n(40.0));
+    set(&inst, "queue-current", n(19.0));
+    set(&inst, "queue-position", n(19.0));
+
+    // Pick the cover one row below center, since the current cover isn't clickable.
+    let assert_visible = |uid: f64, message| {
+        actions.borrow_mut().clear();
+        click(654.0, 503.0);
+        assert_eq!(
+            actions.borrow().as_slice(),
+            &[("play-queue-item", vec![n(uid)])],
+            "{message}"
+        );
+    };
+    set(&inst, "full-open", Value::Bool(true));
+    render(window, size, &format!("{out}/queue-located.png"));
+    assert_visible(21.0, "Opening the queue centers the current track");
+
+    window.dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(750.0, 440.0),
+        delta_x: 0.0,
+        delta_y: 192.0,
+    });
+    set(&inst, "queue-current", n(24.0));
+    set(&inst, "queue-position", n(24.0));
+    render(window, size, &format!("{out}/queue-scrolled.png"));
+    assert_visible(18.0, "Changing tracks keeps the manual scroll position");
+
+    set(&inst, "full-tab", n(2.0));
+    render(window, size, &format!("{out}/queue-lyrics-tab.png"));
+    set(&inst, "full-tab", n(0.0));
+    render(window, size, &format!("{out}/queue-tab-located.png"));
+    assert_visible(26.0, "Returning from lyrics centers the new track");
+
+    set(&inst, "full-open", Value::Bool(false));
+    render(window, size, &format!("{out}/queue-closed.png"));
+    set(&inst, "full-open", Value::Bool(true));
+    render(window, size, &format!("{out}/queue-reopened.png"));
+    assert_visible(26.0, "Reopening full-screen centers the current track");
 }
 
 fn scroll_regression(def: &slint_interpreter::ComponentDefinition, window: &MinimalSoftwareWindow) {
@@ -1305,7 +1348,7 @@ fn main() {
     render(&window, size, &format!("{out}/tracks.png"));
 
     set(&inst, "notice", s(""));
-    set(&inst, "queue", queue());
+    set(&inst, "queue", queue(12));
     set(&inst, "queue-total", Value::Number(12.0));
     set(&inst, "queue-current", n(1.0));
     set(&inst, "queue-position", n(1.0));
