@@ -842,6 +842,7 @@ fn shell(inst: &ComponentInstance) {
     set(inst, "np-title", s("F.A.C.E."));
     set(inst, "np-artist", s("キタニタツヤ"));
     set(inst, "np-album", s("DEKAI"));
+    set(inst, "np-year", s("2026"));
     set(inst, "np-quality", s("FLAC 24bit / 48kHz"));
     set(inst, "np-favorite", Value::Bool(true));
     set(inst, "np-cover", Value::Image(art("dekai")));
@@ -1310,6 +1311,17 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
             size,
             &format!("{out}/player-{w}.png"),
         );
+        if w == 1280 {
+            set(&inst, "np-album", s(LONG_ALBUM));
+            shot(
+                &inst,
+                window,
+                &layouts,
+                size,
+                &format!("{out}/player-long-{w}.png"),
+            );
+            set(&inst, "np-album", s("DEKAI"));
+        }
         set(&inst, "full-open", Value::Bool(false));
     }
     if only.is_some() {

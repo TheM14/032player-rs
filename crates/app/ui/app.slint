@@ -528,6 +528,7 @@ export component AppWindow inherits Window {
     in property <string> np-artist;
     in property <[CreditPart]> np-artists;
     in property <string> np-album;
+    in property <string> np-year;
     in property <string> np-quality;
     in property <image> np-cover;
     // The current cover at `np-art-side` (right panel).
@@ -2515,6 +2516,7 @@ export component AppWindow inherits Window {
         artist: root.np-artist;
         artists: root.np-artists;
         album: root.np-album;
+        year: root.np-year;
         quality: root.np-quality;
         exclusive: root.exclusive && CastState.output-id == "";
         exclusive-mode: root.exclusive-mode;

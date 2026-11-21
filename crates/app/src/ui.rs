@@ -2602,6 +2602,7 @@ pub fn apply(event: Event) {
             ui.mark_playing_album(0);
             w.set_has_track(false);
             w.set_playing_id(-1);
+            w.set_np_year("".into());
             w.set_np_favorite(false);
             *ui.now.borrow_mut() = None;
             ui.full_changed(w);
@@ -2614,6 +2615,11 @@ pub fn apply(event: Event) {
             w.set_np_artist(now.artist.as_str().into());
             w.set_np_artists(artist_refs(&now.artists));
             w.set_np_album(now.album.as_str().into());
+            w.set_np_year(if now.year > 0 {
+                now.year.to_string().into()
+            } else {
+                "".into()
+            });
             w.set_np_quality(now.quality.clone().unwrap_or_default().into());
             w.set_np_favorite(now.favorite);
             // Decoded at the player bar size: a large grid cover shrunk

@@ -683,6 +683,7 @@ fn lyrics_return_regression(
     set(&inst, "np-title", s("夜に駆ける"));
     set(&inst, "np-artist", s("YOASOBI"));
     set(&inst, "np-album", s("THE BOOK"));
+    set(&inst, "np-year", s("2021"));
     set(&inst, "np-quality", s("FLAC / 24bit / 48kHz"));
     set(&inst, "np-cover", Value::Image(cover(3)));
     set(&inst, "full-cover", Value::Image(cover(3)));

@@ -70,7 +70,7 @@ impl Engine for FakeEngine {
 
 fn track(id: i64) -> Value {
     json!({
-        "id": id, "title": format!("曲{id}"), "artist": "歌手", "album": "专辑",
+        "id": id, "title": format!("曲{id}"), "artist": "歌手", "album": "专辑", "year": 2024,
         "durationMillis": 240000, "streamUrl": format!("/api/v1/tracks/{id}/stream"),
         "codec": "flac", "bitDepth": 16, "sampleRate": 44100,
     })
@@ -220,6 +220,7 @@ async fn login_play_auto_advance_and_report() {
         unreachable!()
     };
     assert_eq!(now.title, "曲1");
+    assert_eq!(now.year, 2024);
     assert_eq!(now.quality.as_deref(), Some("FLAC / 16bit / 44.1kHz"));
     events.wait(
         "lyrics",

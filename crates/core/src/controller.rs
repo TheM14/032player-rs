@@ -526,6 +526,7 @@ pub struct NowPlaying {
     pub artists: Vec<api::ArtistRef>,
     pub album: String,
     pub album_id: i64,
+    pub year: i32,
     pub favorite: bool,
     pub artwork: String,
     /// Absolute artwork URL (with the media token) for the system media
@@ -1377,6 +1378,7 @@ impl Core {
             artists: crate::browse::track_artists(track).to_vec(),
             album: track.album.clone(),
             album_id: track.album_id,
+            year: track.year,
             favorite: track.is_favorite,
             artwork: track.artwork_url.clone(),
             artwork_url,

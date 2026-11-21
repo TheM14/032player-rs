@@ -22,6 +22,7 @@ export component FullScreenPlayer inherits Rectangle {
     in property <string> artist;
     in property <[CreditPart]> artists;
     in property <string> album;
+    in property <string> year;
     in property <string> quality;
     in property <bool> exclusive;
     in property <int> exclusive-mode;
@@ -147,17 +148,20 @@ export component FullScreenPlayer inherits Rectangle {
                 min-width: 0px;
                 alignment: root.wide ? start : center;
                 spacing: 0px;
-                ArtistLinks {
+                if root.artists.length > 0 || root.artist != "": ArtistLinks {
                     fallback: root.artist;
                     artists: root.artists;
                     text-color: Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
+                    horizontal-stretch: 0;
+                    min-width: ArtistLayout.cap-width(root.artist, root.wide ? 22px : 18px, root.wide ? 180px : 120px);
                     open(id) => { root.open-artist(id); }
                 }
-                if root.album != "": Text {
+                if root.album != "" && (root.artists.length > 0 || root.artist != ""): Text {
                     text: " · ";
                     color: Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
+                    vertical-alignment: center;
                     horizontal-stretch: 0;
                 }
                 if root.album != "": Text {
@@ -165,6 +169,7 @@ export component FullScreenPlayer inherits Rectangle {
                     font-family: Fonts.family(self.text);
                     color: album-area.has-hover ? Theme.text : Theme.text.with-alpha(0.75);
                     font-size: root.wide ? 22px : 18px;
+                    vertical-alignment: center;
                     overflow: elide;
                     min-width: ArtistLayout.cap-width(root.album, root.wide ? 22px : 18px, 140px);
                     album-area := TouchArea {
@@ -173,6 +178,21 @@ export component FullScreenPlayer inherits Rectangle {
                             root.open-album();
                         }
                     }
+                }
+                if root.year != "" && (root.album != "" || root.artists.length > 0 || root.artist != ""): Text {
+                    text: " · ";
+                    color: Theme.text.with-alpha(0.55);
+                    font-size: root.wide ? 22px : 18px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+                if root.year != "": Text {
+                    text: root.year;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text.with-alpha(0.55);
+                    font-size: root.wide ? 22px : 18px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
                 }
             }
             Rectangle {
