@@ -32,7 +32,6 @@ export component PillTab inherits Rectangle {
         }
         if root.count != "": Text {
             text: root.count;
-            font-family: Fonts.family(self.text);
             color: Theme.text-faint;
             font-size: 12px;
             font-weight: 500;
@@ -57,7 +56,6 @@ export component SourceBadge inherits Rectangle {
     border-color: Theme.border;
     badge-text := Text {
         text: root.text;
-        font-family: Fonts.family(self.text);
         color: Theme.text-faint;
         font-size: 11px;
         font-weight: 600;
@@ -75,7 +73,6 @@ export component QualityTag inherits Rectangle {
     background: root.fill;
     q-text := Text {
         text: root.text;
-        font-family: Fonts.family(self.text);
         color: root.text-color;
         font-size: 11.5px;
         font-weight: 600;

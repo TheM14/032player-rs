@@ -1646,7 +1646,6 @@ export component TrackRowView inherits Rectangle {
         }
         Text {
             text: root.track.duration;
-            font-family: Fonts.family(self.text);
             width: TrackColumns.duration;
             color: Theme.text-dim;
             font-size: 14px;
@@ -2300,7 +2299,6 @@ export component QueuePanel inherits Rectangle {
                         // Stage mode swaps duration cleanly to the remove button on hover.
                         if !root.stage: Text {
                             text: row.duration;
-                            font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
                             font-size: 12px;
                             vertical-alignment: center;
@@ -2327,7 +2325,6 @@ export component QueuePanel inherits Rectangle {
                                 width: 100%;
                                 height: 100%;
                                 text: row.duration;
-                                font-family: Fonts.family(self.text);
                                 color: Theme.text-faint;
                                 font-size: 12px;
                                 horizontal-alignment: right;
@@ -3195,7 +3192,6 @@ export component PlayerBar inherits Rectangle {
             spacing: 12px;
             Text {
                 text: seek-bar.dragging ? root.preview-text : root.position-text;
-                font-family: Fonts.family(self.text);
                 width: root.duration-ms >= 3600000 ? 58px : 44px;
                 color: Theme.text-faint;
                 font-size: 12px;
@@ -3216,7 +3212,6 @@ export component PlayerBar inherits Rectangle {
             }
             Text {
                 text: root.buffering ? "缓冲中" : root.duration-text;
-                font-family: Fonts.family(self.text);
                 width: root.duration-ms >= 3600000 ? 58px : 44px;
                 color: Theme.text-faint;
                 font-size: 12px;
