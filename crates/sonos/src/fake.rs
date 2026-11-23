@@ -30,6 +30,8 @@ pub struct State {
     pub mode: String,
     /// Received actions with their main argument (`Seek TRACK_NR 2`).
     pub log: Vec<String>,
+    /// When true, queue mutation actions fail with UPnP error 800.
+    pub fail_queue: bool,
 }
 
 pub struct FakeSpeaker {
@@ -90,6 +92,9 @@ impl Respond for Soap {
         match action.as_str() {
             "RemoveAllTracksFromQueue" => {
                 s.log.push(action.clone());
+                if s.fail_queue {
+                    return fault(800);
+                }
                 s.queue.clear();
                 s.track = 0;
                 reply(&action, &[])
@@ -101,6 +106,9 @@ impl Respond for Soap {
                     .map(str::to_owned)
                     .collect();
                 s.log.push(format!("{action} {}", uris.len()));
+                if s.fail_queue {
+                    return fault(800);
+                }
                 let metas = arg("EnqueuedURIsMetaData");
                 let titles: Vec<String> = parse_didl(&format!("<x>{metas}</x>"))
                     .into_iter()
@@ -115,6 +123,9 @@ impl Respond for Soap {
             "AddURIToQueue" => {
                 let at: usize = arg("DesiredFirstTrackNumberEnqueued").parse().unwrap_or(0);
                 s.log.push(format!("{action} {at}"));
+                if s.fail_queue {
+                    return fault(800);
+                }
                 let title = parse_didl(&arg("EnqueuedURIMetaData"))
                     .first()
                     .map(|e| e.title.clone())

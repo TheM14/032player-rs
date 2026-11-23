@@ -145,6 +145,11 @@ async fn ssdp_search(timeout: Duration) -> BTreeSet<String> {
                     return found;
                 }
             };
+            if !local.is_unspecified()
+                && let Err(e) = socket2::SockRef::from(&socket).set_multicast_if_v4(&local)
+            {
+                tracing::debug!(%local, "ssdp multicast_if: {e}");
+            }
             let target = SocketAddr::from(SSDP_ADDR);
             for _ in 0..3 {
                 if let Err(e) = socket.send_to(request.as_bytes(), target).await {
