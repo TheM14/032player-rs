@@ -391,6 +391,8 @@ pub enum Feature {
     UnifiedSearch,
     /// `GET /browse/artists` supports backstage `role=credit|lyricist|composer|arranger|producer`.
     ArtistCreditRoles,
+    /// `GET /tracks/{id}/similar` similarity recommendations.
+    SimilarTracks,
 }
 
 impl Feature {
@@ -412,8 +414,16 @@ impl Feature {
             Self::WorkSeriesInfo => "workSeriesInfo",
             Self::UnifiedSearch => "unifiedSearch",
             Self::ArtistCreditRoles => "artistCreditRoles",
+            Self::SimilarTracks => "similarTracks",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SimilarityCapabilities {
+    /// `"hybrid"` (acoustic + metadata) or `"metadata"`.
+    pub method: String,
 }
 
 /// `GET /api/v1/capabilities`.
@@ -425,12 +435,21 @@ pub struct Capabilities {
     pub features: HashMap<String, bool>,
     pub playback: PlaybackCapabilities,
     pub transcode: Option<TranscodeCapabilities>,
+    pub similarity: Option<SimilarityCapabilities>,
     pub limits: Limits,
 }
 
 impl Capabilities {
     pub fn has(&self, feature: Feature) -> bool {
         self.features.get(feature.key()).copied().unwrap_or(false)
+    }
+
+    /// Reported similarity method (`"hybrid"` or `"metadata"`), if advertised.
+    pub fn similarity_method(&self) -> Option<&str> {
+        self.similarity
+            .as_ref()
+            .map(|s| s.method.trim())
+            .filter(|m| !m.is_empty())
     }
 
     /// The server can transcode to `format` (`mp3`, `ogg`, `flac`).

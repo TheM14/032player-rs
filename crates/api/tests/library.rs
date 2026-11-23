@@ -241,6 +241,114 @@ async fn similar_tracks_leave_out_the_seed_and_clamp_the_limit() {
     assert_eq!(tracks.iter().map(|t| t.id).collect::<Vec<_>>(), [8]);
 }
 
+#[tokio::test]
+async fn similar_tracks_detailed_sends_diverse_exclude_and_falls_back_on_400() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/7/similar"))
+        .and(query_param("limit", "24"))
+        .and(query_param("diverse", "1"))
+        .and(query_param("exclude", "10,20"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "items": [
+            { "track": track(9, 2), "score": 0.91, "distance": 0.09, "reasons": [" soundsSimilar ", ""] },
+        ]})))
+        .mount(&server)
+        .await;
+    let items = client(&server)
+        .await
+        .similar_tracks_detailed(
+            7,
+            api::SimilarTracksOptions {
+                limit: 24,
+                exclude_ids: &[0, -5, 10, 10, 20],
+                diverse: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].track.id, 9);
+    assert_eq!(items[0].reasons, ["soundsSimilar"]);
+
+    // Older server rejecting exclude/diverse with 400 falls back to ?limit=.
+    let legacy = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/7/similar"))
+        .and(query_param("diverse", "1"))
+        .respond_with(ResponseTemplate::new(400))
+        .with_priority(1)
+        .mount(&legacy)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/7/similar"))
+        .and(query_param("limit", "24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "items": [
+            { "track": track(11, 3), "score": 0.7, "distance": 0.3, "reasons": ["sameArtist"] },
+        ]})))
+        .mount(&legacy)
+        .await;
+    let fallback = client(&legacy)
+        .await
+        .similar_tracks_detailed(
+            7,
+            api::SimilarTracksOptions {
+                limit: 24,
+                exclude_ids: &[10],
+                diverse: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(fallback[0].track.id, 11);
+}
+
+#[tokio::test]
+async fn similar_tracks_detailed_retries_once_on_503() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/7/similar"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/7/similar"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "items": [
+            { "track": track(12, 4), "score": 0.85, "distance": 0.15, "reasons": ["sameWork"] },
+        ]})))
+        .mount(&server)
+        .await;
+    let items = client(&server)
+        .await
+        .similar_tracks_detailed(
+            7,
+            api::SimilarTracksOptions {
+                limit: 12,
+                exclude_ids: &[],
+                diverse: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].track.id, 12);
+}
+
+#[test]
+fn capabilities_parse_similarity_method_and_feature() {
+    let caps: api::Capabilities = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "apiRevision": 3,
+        "features": { "similarTracks": true },
+        "similarity": { "method": "hybrid", "distanceRange": [0, 1] }
+    }))
+    .unwrap();
+    assert!(caps.has(api::Feature::SimilarTracks));
+    assert_eq!(caps.similarity_method(), Some("hybrid"));
+}
+
 #[test]
 fn transcode_urls_pick_an_allowed_bitrate() {
     let c = Client::new("https://m.example.com", API, MEDIA).unwrap();

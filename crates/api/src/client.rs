@@ -13,6 +13,14 @@ use crate::types::{
     SimilarTrack, Track, TrackVersionsResponse,
 };
 
+/// Query options for `GET /api/v1/tracks/{id}/similar`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SimilarTracksOptions<'a> {
+    pub limit: u32,
+    pub exclude_ids: &'a [i64],
+    pub diverse: bool,
+}
+
 /// What can be marked as favorite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FavoriteKind {
@@ -744,18 +752,92 @@ impl Client {
         decode(res).await
     }
 
-    /// Metadata-similar tracks (`limit` 1..=100). The seed track itself is
-    /// left out.
-    pub async fn similar_tracks(&self, track_id: i64, limit: u32) -> Result<Vec<Track>, ApiError> {
+    /// Similar tracks with scores and match reasons (`GET /tracks/{id}/similar`).
+    ///
+    /// Retries once after 1.1 s on HTTP 503 (server similarity concurrency slot
+    /// saturated), and falls back to the legacy `?limit=` query when an older
+    /// server rejects `exclude` or `diverse` with HTTP 400. The seed track
+    /// itself is always excluded.
+    pub async fn similar_tracks_detailed(
+        &self,
+        track_id: i64,
+        opts: SimilarTracksOptions<'_>,
+    ) -> Result<Vec<SimilarTrack>, ApiError> {
+        const MAX_EXCLUDE_IDS: usize = 200;
+        let limit = opts.limit.clamp(1, 100);
         let mut q = Query::new();
-        q.push("limit", limit.clamp(1, 100));
-        let res: Items<SimilarTrack> = self.get(&format!("/tracks/{track_id}/similar"), &q).await?;
+        q.push("limit", limit);
+        if opts.diverse {
+            q.push("diverse", 1);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let clean_exclude: Vec<String> = opts
+            .exclude_ids
+            .iter()
+            .copied()
+            .filter(|&id| id > 0 && seen.insert(id))
+            .take(MAX_EXCLUDE_IDS)
+            .map(|id| id.to_string())
+            .collect();
+        let has_extended = opts.diverse || !clean_exclude.is_empty();
+        if !clean_exclude.is_empty() {
+            q.push("exclude", clean_exclude.join(","));
+        }
+        let path = format!("/tracks/{track_id}/similar");
+        let res = match self.get_similar_with_busy_retry(&path, &q).await {
+            Ok(res) => res,
+            Err(e) if e.status() == Some(400) && has_extended => {
+                let mut fallback = Query::new();
+                fallback.push("limit", limit);
+                self.get_similar_with_busy_retry(&path, &fallback).await?
+            }
+            Err(e) => return Err(e),
+        };
         Ok(res
             .items
             .into_iter()
-            .map(|s| s.track)
-            .filter(|t| t.id != track_id)
+            .filter(|s| s.track.id != track_id)
+            .map(|mut s| {
+                s.distance = s.distance.clamp(0.0, 1.0);
+                s.score = s.score.clamp(0.0, 1.0);
+                s.reasons = s
+                    .reasons
+                    .into_iter()
+                    .map(|r| r.trim().to_owned())
+                    .filter(|r| !r.is_empty())
+                    .collect();
+                s
+            })
             .collect())
+    }
+
+    async fn get_similar_with_busy_retry(
+        &self,
+        path: &str,
+        query: &Query,
+    ) -> Result<Items<SimilarTrack>, ApiError> {
+        match self.get(path, query).await {
+            Err(e) if e.status() == Some(503) => {
+                tokio::time::sleep(Duration::from_millis(1_100)).await;
+                self.get(path, query).await
+            }
+            other => other,
+        }
+    }
+
+    /// Similar tracks (`limit` 1..=100). The seed track itself is left out.
+    pub async fn similar_tracks(&self, track_id: i64, limit: u32) -> Result<Vec<Track>, ApiError> {
+        let items = self
+            .similar_tracks_detailed(
+                track_id,
+                SimilarTracksOptions {
+                    limit,
+                    exclude_ids: &[],
+                    diverse: false,
+                },
+            )
+            .await?;
+        Ok(items.into_iter().map(|s| s.track).collect())
     }
 
     /// `POST /api/v1/playback/events`. Any HTTP status is a result (the
