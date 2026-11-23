@@ -108,6 +108,28 @@ impl Images {
         self.client.image_url(path, None)
     }
 
+    /// Fetches (or reuses) the compressed artwork bytes at `url`.
+    pub(crate) async fn fetch_bytes(&self, url: Url) -> Result<bytes::Bytes, String> {
+        if let Some(bytes) = self.lock().get(&url).cloned() {
+            return Ok(bytes);
+        }
+        let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
+        if let Some(bytes) = self.lock().get(&url).cloned() {
+            return Ok(bytes);
+        }
+        let res = self
+            .client
+            .fetch_media(url.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(format!("HTTP {}", res.status().as_u16()));
+        }
+        let bytes = res.bytes().await.map_err(|e| e.without_url().to_string())?;
+        self.lock().put(url, bytes.clone());
+        Ok(bytes)
+    }
+
     /// Fetches (or reuses) the artwork at `url` and decodes it for a
     /// `width` x `height` box using `fit`.
     pub(crate) async fn load(
@@ -117,24 +139,7 @@ impl Images {
         height: u32,
         fit: ArtworkFit,
     ) -> Result<Rgba, String> {
-        let cached = self.lock().get(&url).cloned();
-        let bytes = match cached {
-            Some(bytes) => bytes,
-            None => {
-                let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
-                let res = self
-                    .client
-                    .fetch_media(url.clone())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if !res.status().is_success() {
-                    return Err(format!("HTTP {}", res.status().as_u16()));
-                }
-                let bytes = res.bytes().await.map_err(|e| e.to_string())?;
-                self.lock().put(url, bytes.clone());
-                bytes
-            }
-        };
+        let bytes = self.fetch_bytes(url).await?;
         tokio::task::spawn_blocking(move || decode_fit(&bytes, width, height, fit))
             .await
             .map_err(|e| e.to_string())?

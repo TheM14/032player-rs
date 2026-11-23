@@ -4023,6 +4023,8 @@ dependencies = [
  "souvlaki",
  "tracing",
  "tray-icon",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -4246,6 +4248,7 @@ version = "0.2.26"
 dependencies = [
  "asio",
  "libmpv2",
+ "libmpv2-sys",
  "reqwest",
  "serde",
  "serde_json",

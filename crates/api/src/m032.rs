@@ -833,7 +833,10 @@ impl Client {
 /// Local poster route of a work: the API route when known, else the
 /// default one (older servers list the remote poster address).
 pub fn work_poster_path(work_id: i64, poster_url: &str) -> String {
-    if poster_url.starts_with('/') {
+    if poster_url.starts_with('/')
+        && !poster_url.starts_with("//")
+        && !poster_url.starts_with("/\\")
+    {
         poster_url.to_owned()
     } else {
         format!("/api/v1/works/{work_id}/poster")

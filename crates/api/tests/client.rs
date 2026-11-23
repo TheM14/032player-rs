@@ -326,6 +326,52 @@ fn media_urls_carry_the_media_token_never_the_api_token() {
         client.artist_image_url(4, None).as_str(),
         "https://music.example.com/api/v1/artists/4/image?mediaToken=m+t%26"
     );
+
+    // Cross-origin and protocol-relative URLs never receive the media token,
+    // and non-HTTP(S) schemes are rejected.
+    let cross = client
+        .media_url(
+            "https://evil.example/poster.jpg?mediaToken=old&x=1",
+            &[("size", "512".into())],
+        )
+        .unwrap();
+    assert_eq!(cross.as_str(), "https://evil.example/poster.jpg?x=1");
+    let proto_rel = client.media_url("//evil.example/poster.jpg", &[]).unwrap();
+    assert_eq!(proto_rel.as_str(), "https://evil.example/poster.jpg");
+    let downgraded = client
+        .media_url("http://music.example.com/api/v1/artwork/9", &[])
+        .unwrap();
+    assert!(!downgraded.as_str().contains("mediaToken"));
+    assert!(client.media_url("file:///etc/passwd", &[]).is_none());
+
+    // Client Debug output redacts both tokens.
+    let dbg = format!("{client:?}");
+    assert!(!dbg.contains(API));
+    assert!(!dbg.contains("m t&"));
+    assert!(dbg.contains("<redacted>"));
+
+    // Log redaction strips mediaToken and Bearer secrets while preserving UTF-8.
+    assert_eq!(
+        api::redact_media_token(
+            "https://music.example.com/api/v1/tracks/5/stream?mediaToken=m+t%26&bitrate=320"
+        ),
+        "https://music.example.com/api/v1/tracks/5/stream?mediaToken=<redacted>&bitrate=320"
+    );
+    assert_eq!(
+        api::redact_media_token("Authorization: Bearer secret-api 曲名"),
+        "Authorization: Bearer <redacted> 曲名"
+    );
+}
+
+#[tokio::test]
+async fn network_errors_do_not_leak_media_token() {
+    let client = Client::new("http://127.0.0.1:1", API, "super-secret-media-token").unwrap();
+    let url = client.stream_url(5);
+    let err = client.fetch_media(url).await.unwrap_err();
+    let display = err.to_string();
+    let debug = format!("{err:?}");
+    assert!(!display.contains("super-secret-media-token"), "{display}");
+    assert!(!debug.contains("super-secret-media-token"), "{debug}");
 }
 
 #[tokio::test]

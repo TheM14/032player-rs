@@ -3,7 +3,16 @@
 当前里程碑的细粒度任务。完成打勾；需要在 Windows 上验证的标 **[Win]**。
 里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
 
-## 当前状态（2026-11-21）
+## 当前状态（2026-11-23）
+
+- [x] P0-1 [asio] 修复 `ACTIVE_CALLBACK` / `CallbackState` 内存安全：新增 `StreamSlot` 禁止并发 ASIO 流，用 `CallbackSlot`（`RwLock<Option<Arc<CallbackState>>>`）消除裸指针 TOCTOU UAF 与 `Box` 别名 UB，移除 250ms 超时强行 `dispose_buffers()`，所有 `extern "C"` 回调包裹 `catch_unwind` 并校验 DMA 缓冲区不重叠。
+- [x] P0-2 [asio / player] 将 `SpscRing` 拆分为 64 字节对齐且 `!Sync` 的 `(SpscProducer, SpscConsumer)`；`AsioPlayer` 通过 `reset_requested` / `reset_acked` 由音频回调独占清环，消除生产侧 `clear()` 与 `sleep(15ms)` 数据竞争。
+- [x] P0-3 [api / player / core / os] 封堵 `mediaToken` 多路径泄露：`reqwest::Error` 统一 `.without_url()`、`api::Client` 手写脱敏 `Debug`、`media_url` 仅同源附加凭据、`work_poster_path` 拒绝 `//` 与 `/\`、`controller` 调试日志与 `mpv.log`（经 `mpv_request_log_messages` + `Event::LogMessage`）落盘前脱敏、SMTC / MPRIS 改为本地临时缓存封面文件并在登出/退出清理。
+- [x] P0-4 [os] `open_url` 仅放行带主机的 `http` / `https` URL，拆出 `open_path(&Path)` 供打开本地日志目录。
+- [x] P0-5 [os] 单实例回环监听增加 128 B / 32 B 读取上限与每实例 128-bit 随机 nonce（原子写入 `instance.port`，Unix `0600`），退出时优雅停线程并清理端口文件。
+- [ ] **[Win]** 验证 P0 改动：ASIO 播放 / 切歌 / 拖动进度 / 采样率切换与停止无崩溃或残留音；系统媒体控件（SMTC）封面正常显示且 `logs/mpv.log` 不含明文 `mediaToken`；设置页「打开日志文件夹」与外部链接正常；双开窗口可唤起已有实例。
+
+### 2026-11-21
 
 - [x] 全屏播放器副标题行末尾显示专辑发行年份（`艺人 · 专辑 · 年份`，年份及前导中点以 `Theme.text.with-alpha(0.55)` 略作弱化，纯静态展示不可点击）；覆盖宽屏与窄屏全屏，空间不足时保持年份完整并优先省略专辑名，无年份时隐藏，无专辑名时自动省略多余中点。主界面右侧栏与播放条不变。
 - [ ] **[Win]** 在全屏宽屏、窄屏与亮暗主题下核对专辑年份显示，验证长专辑名省略时年份保持完整、无年份或无专辑名曲目不出现多余中点。

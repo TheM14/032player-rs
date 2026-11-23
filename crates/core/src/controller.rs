@@ -529,9 +529,9 @@ pub struct NowPlaying {
     pub year: i32,
     pub favorite: bool,
     pub artwork: String,
-    /// Absolute artwork URL (with the media token) for the system media
-    /// controls.
-    pub artwork_url: Option<String>,
+    /// Local cached cover file path for system media controls (never carries
+    /// `mediaToken`). May start as `None` and arrive via [`Event::MediaCover`].
+    pub artwork_path: Option<PathBuf>,
     pub duration_ms: i64,
     pub quality: Option<String>,
 }
@@ -635,6 +635,8 @@ pub enum Event {
         key: String,
         image: Rgba,
     },
+    /// Local cached cover file path for system media controls (SMTC / MPRIS).
+    MediaCover(Option<PathBuf>),
     NowPlaying(Option<NowPlaying>),
     /// The whole queue in play order, and the current row.
     Queue {
@@ -860,6 +862,11 @@ enum Internal {
         mix_id: i64,
         index: usize,
         blocked: bool,
+    },
+    MediaCoverReady {
+        seq: u64,
+        source: String,
+        path: PathBuf,
     },
     Notice(String),
 }
@@ -1284,6 +1291,10 @@ struct Core {
     cast_generation: u64,
     cast_rooms: Vec<sonos::Room>,
     cast_discovering: bool,
+    /// Monotonic counter for local SMTC / MPRIS cover file caching.
+    media_cover_seq: u64,
+    media_cover_source: Option<String>,
+    media_cover_path: Option<PathBuf>,
 }
 
 impl Core {
@@ -1357,6 +1368,9 @@ impl Core {
             cast_generation: 0,
             cast_rooms: Vec::new(),
             cast_discovering: false,
+            media_cover_seq: 0,
+            media_cover_source: None,
+            media_cover_path: None,
         }
     }
 
@@ -1365,11 +1379,6 @@ impl Core {
     }
 
     fn now_playing(&self, track: &Track) -> NowPlaying {
-        let artwork_url = self.library.as_ref().and_then(|l| {
-            l.client
-                .image_url(&track.artwork_url, Some(512))
-                .map(|u| u.to_string())
-        });
         NowPlaying {
             track_id: track.id,
             title: track.title.clone(),
@@ -1381,10 +1390,61 @@ impl Core {
             year: track.year,
             favorite: track.is_favorite,
             artwork: track.artwork_url.clone(),
-            artwork_url,
+            artwork_path: self.media_cover_path.clone(),
             duration_ms: track.duration_millis,
             quality: format::audio_quality(track),
         }
+    }
+
+    /// Emits [`Event::NowPlaying`] and caches a local cover file (without
+    /// `mediaToken`) for system media controls when the artwork path changes.
+    pub(super) fn emit_now_playing(&mut self, track: Option<&Track>) {
+        let Some(track) = track else {
+            self.media_cover_seq += 1;
+            self.media_cover_source = None;
+            self.media_cover_path = None;
+            self.emit(Event::NowPlaying(None));
+            return;
+        };
+        let same_cached = !track.artwork_url.is_empty()
+            && self.media_cover_source.as_deref() == Some(track.artwork_url.as_str())
+            && self.media_cover_path.as_ref().is_some_and(|p| p.exists());
+        if !same_cached {
+            self.media_cover_seq += 1;
+            let seq = self.media_cover_seq;
+            self.media_cover_source =
+                (!track.artwork_url.is_empty()).then(|| track.artwork_url.clone());
+            self.media_cover_path = None;
+            if !track.artwork_url.is_empty()
+                && let Some(library) = &self.library
+                && let Some(url) = library.client.image_url(&track.artwork_url, Some(512))
+            {
+                let images = library.images.clone();
+                let data_dir = self.config.data_dir.clone();
+                let source = track.artwork_url.clone();
+                let tx = self.internal.clone();
+                tokio::spawn(async move {
+                    let bytes = match images.fetch_bytes(url).await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::debug!("media cover {source}: {e}");
+                            return;
+                        }
+                    };
+                    let path = tokio::task::spawn_blocking(move || {
+                        write_media_cover(&data_dir, seq, &bytes)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(path) = path {
+                        let _ = tx.send(Internal::MediaCoverReady { seq, source, path });
+                    }
+                });
+            }
+        }
+        let now = self.now_playing(track);
+        self.emit(Event::NowPlaying(Some(now)));
     }
 
     /// Applies `f` to the settings and schedules a save if anything changed.
@@ -1458,6 +1518,7 @@ impl Core {
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.close(Duration::from_secs(2)).await;
         }
+        cleanup_media_covers(&self.config.data_dir, None);
         let _ = self.engine.stop();
     }
 
@@ -1625,7 +1686,7 @@ impl Core {
             Command::ClearQueue => {
                 self.stop_playback();
                 self.queue.clear();
-                self.emit(Event::NowPlaying(None));
+                self.emit_now_playing(None);
                 self.queue_changed();
             }
             Command::SetRepeat(repeat) => {
@@ -2071,11 +2132,8 @@ impl Core {
             r.act(|a| a.on_track_change(adapter_track));
         }
         self.started_uid = None;
-        let now = self
-            .queue
-            .current()
-            .map(|item| self.now_playing(&item.track));
-        self.emit(Event::NowPlaying(now));
+        let current = self.queue.current().map(|item| item.track.clone());
+        self.emit_now_playing(current.as_ref());
         self.emit_position();
         match self.queue.current().map(|i| i.track.id) {
             Some(id) => self.load_lyrics(id),
@@ -2328,7 +2386,8 @@ impl Core {
             #[allow(clippy::cast_precision_loss)]
             r.act(|a| a.on_progress(position_ms as f64 / 1000.0));
         }
-        self.emit(Event::NowPlaying(Some(self.now_playing(&item.track))));
+        let track = item.track.clone();
+        self.emit_now_playing(Some(&track));
         self.emit(Event::Paused(true));
         self.emit_position();
         self.load_lyrics(item.track.id);
@@ -2487,8 +2546,8 @@ impl Core {
             self.apply_buffering(true);
         }
 
-        let track = &item.track;
-        self.emit(Event::NowPlaying(Some(self.now_playing(track))));
+        let track = item.track.clone();
+        self.emit_now_playing(Some(&track));
         self.emit(Event::Paused(false));
         self.emit_position();
         self.save_position();
@@ -2665,7 +2724,11 @@ impl Core {
                 {
                     // The engine moved on to a stale preload (the queue
                     // changed right at the track boundary): load the right one.
-                    tracing::debug!(%path, %expected, "unexpected file, reloading");
+                    tracing::debug!(
+                        path = %api::redact_media_token(path),
+                        expected = %api::redact_media_token(expected),
+                        "unexpected file, reloading"
+                    );
                     if let Err(e) = self.engine.load_for(expected, self.asio_active) {
                         self.emit(Event::Notice(e));
                     }
@@ -2913,6 +2976,16 @@ impl Core {
                     self.save_settings();
                 }
             }
+            Internal::MediaCoverReady { seq, source, path } => {
+                if seq == self.media_cover_seq
+                    && self.media_cover_source.as_deref() == Some(source.as_str())
+                {
+                    self.media_cover_path = Some(path.clone());
+                    self.emit(Event::MediaCover(Some(path)));
+                } else {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
         }
     }
 
@@ -2979,7 +3052,8 @@ impl Core {
             });
         }
 
-        self.emit(Event::NowPlaying(None));
+        cleanup_media_covers(&self.config.data_dir, None);
+        self.emit_now_playing(None);
         self.emit(Event::Paused(true));
         self.emit_position();
         self.clear_lyrics();
@@ -3085,5 +3159,83 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         tracing::warn!("writing {}: {e}", path.display());
+    }
+}
+
+fn detect_image_ext(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "jpg"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else if bytes.starts_with(b"GIF8") {
+        "gif"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else {
+        "jpg"
+    }
+}
+
+fn media_cover_prefix() -> String {
+    format!("media-cover-{}-", std::process::id())
+}
+
+/// Persists cover bytes into `<data_dir>/cache/media-cover-<pid>-<seq>.<ext>`
+/// with private permissions on Unix so SMTC / MPRIS receive a local file path
+/// instead of a URL carrying `mediaToken`.
+fn write_media_cover(data_dir: &std::path::Path, seq: u64, bytes: &[u8]) -> Option<PathBuf> {
+    use std::io::Write as _;
+
+    let cache_dir = data_dir.join("cache");
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        tracing::debug!("creating cover cache dir {}: {e}", cache_dir.display());
+        return None;
+    }
+    let prefix = media_cover_prefix();
+    let ext = detect_image_ext(bytes);
+    let final_path = cache_dir.join(format!("{prefix}{seq}.{ext}"));
+    let tmp_path = cache_dir.join(format!("{prefix}{seq}.tmp"));
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let write_res = opts
+        .open(&tmp_path)
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.flush()))
+        .and_then(|()| std::fs::rename(&tmp_path, &final_path));
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        tracing::debug!("writing media cover {}: {e}", final_path.display());
+        return None;
+    }
+    cleanup_media_covers(data_dir, Some(&final_path));
+    Some(final_path)
+}
+
+/// Removes temporary cover files created by this process (optionally keeping `keep`).
+fn cleanup_media_covers(data_dir: &std::path::Path, keep: Option<&std::path::Path>) {
+    let cache_dir = data_dir.join("cache");
+    let Ok(entries) = std::fs::read_dir(&cache_dir) else {
+        return;
+    };
+    let prefix = media_cover_prefix();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep.is_some_and(|k| k == path) {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(&prefix))
+        {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }

@@ -1688,7 +1688,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
     window.on_open_logs(|| {
         let dir = crate::log_dir();
-        os::browser::open_url(&dir.to_string_lossy());
+        let _ = std::fs::create_dir_all(&dir);
+        os::browser::open_path(&dir);
     });
     window.set_exclusive(settings.exclusive);
     window.set_exclusive_mode(exclusive_mode_index(settings.exclusive_mode()));
@@ -2598,6 +2599,7 @@ pub fn apply(event: Event) {
                 w.set_detail_cover(image);
             }
         }
+        Event::MediaCover(_) => {}
         Event::NowPlaying(None) => {
             ui.mark_playing_album(0);
             w.set_has_track(false);

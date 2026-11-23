@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 asio.workspace = true
 libmpv2 = { version = "6", default-features = false }
+libmpv2-sys = "4"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

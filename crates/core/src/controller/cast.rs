@@ -1432,7 +1432,8 @@ impl Core {
                 a.on_status(playback_status(paused));
             });
         }
-        self.emit(Event::NowPlaying(Some(self.now_playing(&item.track))));
+        let track = item.track.clone();
+        self.emit_now_playing(Some(&track));
         self.emit(Event::Paused(paused));
         self.emit_position();
         self.queue_changed();

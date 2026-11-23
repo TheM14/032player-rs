@@ -17,6 +17,7 @@ struct System {
     window: slint::Weak<AppWindow>,
     commander: Commander,
     media: RefCell<Option<MediaControls>>,
+    metadata: RefCell<Option<Metadata>>,
     #[cfg(windows)]
     tray: RefCell<Option<os::tray::Tray>>,
     has_track: Cell<bool>,
@@ -67,6 +68,7 @@ pub fn install(window: &AppWindow, commander: Commander) {
         window: window.as_weak(),
         commander,
         media: RefCell::new(media),
+        metadata: RefCell::new(None),
         #[cfg(windows)]
         tray: RefCell::new(tray()),
         has_track: Cell::new(false),
@@ -203,16 +205,27 @@ impl System {
                     );
                     tray.set_tooltip(&tip);
                 }
-                if let (Some(media), Some(now)) = (self.media.borrow_mut().as_mut(), now) {
-                    media.set_metadata(&Metadata {
-                        title: now.title.clone(),
-                        artist: now.artist.clone(),
-                        album: now.album.clone(),
-                        cover_url: now.artwork_url.clone(),
-                        duration: (now.duration_ms > 0).then(|| duration(now.duration_ms)),
-                    });
+                let next_meta = now.as_ref().map(|now| Metadata {
+                    title: now.title.clone(),
+                    artist: now.artist.clone(),
+                    album: now.album.clone(),
+                    cover_path: now.artwork_path.clone(),
+                    duration: (now.duration_ms > 0).then(|| duration(now.duration_ms)),
+                });
+                if let (Some(media), Some(meta)) = (self.media.borrow_mut().as_mut(), &next_meta) {
+                    media.set_metadata(meta);
                 }
+                *self.metadata.borrow_mut() = next_meta;
                 self.send_playback();
+            }
+            Event::MediaCover(path) => {
+                let mut meta_ref = self.metadata.borrow_mut();
+                if let Some(meta) = meta_ref.as_mut() {
+                    meta.cover_path = path.clone();
+                    if let Some(media) = self.media.borrow_mut().as_mut() {
+                        media.set_metadata(meta);
+                    }
+                }
             }
             Event::Paused(paused) => {
                 self.paused.set(*paused);

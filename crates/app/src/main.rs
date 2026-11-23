@@ -163,14 +163,11 @@ fn main() -> Result<(), slint::PlatformError> {
         volume: settings.volume,
         // Keep native AO / network warnings: `paused-for-cache` alone cannot
         // distinguish a stream underrun from a Windows audio device underrun.
-        // mpv truncates this diagnostic log on every launch.
-        extra: vec![
-            (
-                "log-file".into(),
-                log_dir().join("mpv.log").to_string_lossy().into_owned(),
-            ),
-            ("msg-level".into(), "all=warn".into()),
-        ],
+        // Captured via libmpv log events so query credentials (`mediaToken`)
+        // are redacted before writing `mpv.log`.
+        log_file: Some(log_dir().join("mpv.log")),
+        log_level: Some("warn".into()),
+        extra: Vec::new(),
     };
 
     // The player callback runs on mpv's event thread; it forwards into the

@@ -94,7 +94,7 @@ impl HttpMediaSource {
                 }
                 req.send().await
             })
-            .map_err(|e| io::Error::other(e.to_string()))?;
+            .map_err(|e| io::Error::other(e.without_url().to_string()))?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -217,7 +217,7 @@ impl HttpMediaSource {
                 Err(e) => {
                     self.response = None;
                     if !self.accept_ranges || attempt >= MAX_RETRIES {
-                        return Err(io::Error::other(e.to_string()));
+                        return Err(io::Error::other(e.without_url().to_string()));
                     }
                     attempt += 1;
                     let resume_at = self.buf_end();

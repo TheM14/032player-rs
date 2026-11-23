@@ -493,3 +493,111 @@ async fn previous_restart_resets_lyrics() {
         .await
         .unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_cover_is_cached_locally_without_media_token() {
+    let server = MockServer::start().await;
+    Mock::given(path("/api/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "v1", "apiRevision": 3,
+            "features": { "browse": true },
+            "playback": { "clientKinds": ["web", "desktop"] },
+        })))
+        .mount(&server)
+        .await;
+    let track_with_art = json!({
+        "id": 1, "title": "曲1", "artist": "歌手", "album": "专辑", "year": 2024,
+        "durationMillis": 240000, "streamUrl": "/api/v1/tracks/1/stream",
+        "artworkUrl": "/api/v1/artwork/9",
+        "codec": "flac", "bitDepth": 16, "sampleRate": 44100,
+    });
+    Mock::given(path("/api/v1/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [track_with_art], "limit": 1, "offset": 0, "total": 1
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/tracks/1/stream"))
+        .respond_with(ResponseTemplate::new(206))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/albums"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [], "limit": 500, "offset": 0, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [track_with_art], "limit": 500, "offset": 0, "total": 1
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/playlists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [], "limit": 500, "offset": 0, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/tracks/1/lyrics"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/playback/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "applied": true, "sessionId": "s1", "state": "active"
+        })))
+        .mount(&server)
+        .await;
+    // Minimal PNG header + payload.
+    let fake_png = b"\x89PNG\r\n\x1a\nfake-png-bytes".to_vec();
+    Mock::given(path("/api/v1/artwork/9"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(fake_png.clone()))
+        .mount(&server)
+        .await;
+
+    let engine = Arc::new(FakeEngine::default());
+    let data_dir = std::env::temp_dir().join(format!(
+        "032player-media-cover-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let config = CoreConfig {
+        data_dir: data_dir.clone(),
+        secrets: Arc::new(MemorySecrets::default()),
+        settings: Settings::default(),
+    };
+    let core = client_core::start(engine, config, move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    let events = Events(rx);
+
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "secret-media-tok".into(),
+    });
+    events.wait("login", |e| matches!(e, Event::LoggedIn { .. }));
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    let cover_ev = events.wait("media cover", |e| matches!(e, Event::MediaCover(Some(_))));
+    let Event::MediaCover(Some(cover_path)) = cover_ev else {
+        unreachable!()
+    };
+    assert!(cover_path.exists());
+    assert_eq!(cover_path.extension().and_then(|s| s.to_str()), Some("png"));
+    assert!(!cover_path.to_string_lossy().contains("secret-media-tok"));
+    assert_eq!(std::fs::read(&cover_path).unwrap(), fake_png);
+
+    // Shutdown cleans up temporary cover files.
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    assert!(!cover_path.exists());
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

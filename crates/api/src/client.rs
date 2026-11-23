@@ -90,12 +90,83 @@ pub const API_REVISION: i64 = 3;
 ///
 /// The API token goes in the `Authorization` header only; media URLs
 /// (stream, artwork) carry the separate media token as a query parameter.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
     api_token: String,
     media_token: String,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("base_url", &self.base_url)
+            .field("api_token", &"<redacted>")
+            .field("media_token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Redacts `mediaToken=...` query values and `Bearer ...` credentials from text
+/// before logging or displaying diagnostics.
+#[must_use]
+pub fn redact_media_token(input: &str) -> String {
+    fn is_delim(b: u8) -> bool {
+        matches!(
+            b,
+            b'&' | b'#'
+                | b'\''
+                | b'"'
+                | b')'
+                | b']'
+                | b'>'
+                | b','
+                | b';'
+                | b' '
+                | b'\t'
+                | b'\r'
+                | b'\n'
+        )
+    }
+
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &input[i..];
+        let prev = i.checked_sub(1).map(|p| bytes[p]);
+        if rest.len() >= 11
+            && rest.as_bytes()[..11].eq_ignore_ascii_case(b"mediatoken=")
+            && prev.is_none_or(|b| matches!(b, b'?' | b'&' | b' ' | b'\t' | b'\'' | b'"' | b'('))
+        {
+            out.push_str(&rest[..11]);
+            out.push_str("<redacted>");
+            i += 11;
+            while i < bytes.len() && !is_delim(bytes[i]) {
+                i += 1;
+            }
+        } else if rest.len() >= 7
+            && rest.as_bytes()[..7].eq_ignore_ascii_case(b"bearer ")
+            && prev.is_none_or(|b| matches!(b, b':' | b' ' | b'\t' | b'\'' | b'"'))
+        {
+            out.push_str(&rest[..7]);
+            out.push_str("<redacted>");
+            i += 7;
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            while i < bytes.len() && !is_delim(bytes[i]) {
+                i += 1;
+            }
+        } else if let Some(ch) = rest.chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// Turns a user-entered server URL into the base URL (no trailing slash).
@@ -106,6 +177,19 @@ pub fn normalize_base_url(url: &str) -> Result<String, ApiError> {
         return Err(ApiError::Url(format!("not an http(s) URL: {trimmed}")));
     }
     Ok(trimmed.to_owned())
+}
+
+fn remove_param(url: &mut Url, key: &str) {
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case(key))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    if pairs.is_empty() {
+        url.set_query(None);
+    } else {
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+    }
 }
 
 fn set_param(url: &mut Url, key: &str, value: &str) {
@@ -675,16 +759,25 @@ impl Client {
     // ------------------------------------------------------------ media URLs
 
     /// Turns a server-relative media path (artwork, artist image, stream)
-    /// into an absolute URL carrying the media token. Empty paths give `None`.
+    /// into an absolute URL carrying the media token. Empty paths or non-HTTP(S)
+    /// schemes give `None`. The media token is only attached to same-origin URLs
+    /// so third-party or protocol-relative paths never receive credentials.
     pub fn media_url(&self, path: &str, params: &[(&str, String)]) -> Option<Url> {
         if path.is_empty() {
             return None;
         }
         let base = Url::parse(&format!("{}/", self.base_url)).ok()?;
         let mut url = base.join(path).ok()?;
-        set_param(&mut url, "mediaToken", &self.media_token);
-        for (key, value) in params {
-            set_param(&mut url, key, value);
+        if !matches!(url.scheme(), "http" | "https") {
+            return None;
+        }
+        if url.origin() == base.origin() {
+            set_param(&mut url, "mediaToken", &self.media_token);
+            for (key, value) in params {
+                set_param(&mut url, key, value);
+            }
+        } else {
+            remove_param(&mut url, "mediaToken");
         }
         Some(url)
     }

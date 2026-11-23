@@ -53,7 +53,7 @@ pub async fn latest_release(api_root: &str, repo: &str) -> Result<Release, ApiEr
     let latest: LatestRelease = res
         .json()
         .await
-        .map_err(|e| ApiError::Decode(e.to_string()))?;
+        .map_err(|e| ApiError::Decode(e.without_url().to_string()))?;
     Ok(Release {
         tag: latest.tag_name,
         url: latest.html_url,

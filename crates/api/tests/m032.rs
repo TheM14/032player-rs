@@ -292,6 +292,14 @@ async fn works_and_series() {
         work_poster_path(15, &work.poster_api_url),
         "/api/v1/works/15/poster?v=1"
     );
+    assert_eq!(
+        work_poster_path(15, "//evil.example/poster.jpg"),
+        "/api/v1/works/15/poster"
+    );
+    assert_eq!(
+        work_poster_path(15, r"/\evil.example/poster.jpg"),
+        "/api/v1/works/15/poster"
+    );
     let tracks = c.work_tracks(15).await.unwrap();
     assert_eq!(tracks[0].track.title, "oath sign");
     assert_eq!((tracks[0].role.as_str(), tracks[0].sequence), ("op", 1));

@@ -8,6 +8,10 @@ mod http_source;
 pub use asio_player::WindowsAsioSink;
 pub use asio_player::{AsioPlayer, AudioSink};
 
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -94,6 +98,12 @@ pub struct PlayerOptions {
     pub exclusive: bool,
     /// 0-100.
     pub volume: f64,
+    /// Optional diagnostic log file written by `event_loop` after redacting
+    /// query-carried credentials (`mediaToken`) and bearer tokens.
+    pub log_file: Option<PathBuf>,
+    /// Minimum libmpv log level requested via `mpv_request_log_messages`
+    /// when `log_file` is set (defaults to `"warn"`).
+    pub log_level: Option<String>,
     /// Extra mpv options (name, value), applied before initialization.
     pub extra: Vec<(String, String)>,
 }
@@ -104,7 +114,102 @@ impl Default for PlayerOptions {
             audio_device: None,
             exclusive: false,
             volume: 100.0,
+            log_file: None,
+            log_level: None,
             extra: Vec::new(),
+        }
+    }
+}
+
+/// Redacts `mediaToken=...` query values and `Bearer ...` credentials from
+/// libmpv log lines before they are written to disk.
+#[must_use]
+pub fn redact_log_text(input: &str) -> String {
+    fn is_delim(b: u8) -> bool {
+        matches!(
+            b,
+            b'&' | b'#'
+                | b'\''
+                | b'"'
+                | b')'
+                | b']'
+                | b'>'
+                | b','
+                | b';'
+                | b' '
+                | b'\t'
+                | b'\r'
+                | b'\n'
+        )
+    }
+
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &input[i..];
+        let prev = i.checked_sub(1).map(|p| bytes[p]);
+        if rest.len() >= 11
+            && rest.as_bytes()[..11].eq_ignore_ascii_case(b"mediatoken=")
+            && prev.is_none_or(|b| matches!(b, b'?' | b'&' | b' ' | b'\t' | b'\'' | b'"' | b'('))
+        {
+            out.push_str(&rest[..11]);
+            out.push_str("<redacted>");
+            i += 11;
+            while i < bytes.len() && !is_delim(bytes[i]) {
+                i += 1;
+            }
+        } else if rest.len() >= 7
+            && rest.as_bytes()[..7].eq_ignore_ascii_case(b"bearer ")
+            && prev.is_none_or(|b| matches!(b, b':' | b' ' | b'\t' | b'\'' | b'"'))
+        {
+            out.push_str(&rest[..7]);
+            out.push_str("<redacted>");
+            i += 7;
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            while i < bytes.len() && !is_delim(bytes[i]) {
+                i += 1;
+            }
+        } else if let Some(ch) = rest.chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+#[allow(unsafe_code)]
+fn request_log_messages(mpv: &Mpv, min_level: &str) -> Result<()> {
+    let level =
+        CString::new(min_level).map_err(|_| PlayerError::Mpv("invalid mpv log level".into()))?;
+    // SAFETY: `mpv.ctx` is a valid initialized `mpv_handle` owned by `mpv` and
+    // `level` is a valid NUL-terminated C string.
+    let rc = unsafe { libmpv2_sys::mpv_request_log_messages(mpv.ctx.as_ptr(), level.as_ptr()) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(PlayerError::from(libmpv2::Error::Raw(rc)))
+    }
+}
+
+fn open_log_file(path: &std::path::Path) -> Option<File> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(file) => Some(file),
+        Err(e) => {
+            tracing::warn!("opening mpv log {}: {e}", path.display());
+            None
         }
     }
 }
@@ -169,6 +274,13 @@ impl Player {
         for (id, (name, format)) in (0u64..).zip(OBSERVED) {
             mpv.observe_property(name, *format, id)?;
         }
+        let log_file = options.log_file.as_deref().and_then(open_log_file);
+        if log_file.is_some() {
+            let level = options.log_level.as_deref().unwrap_or("warn");
+            if let Err(e) = request_log_messages(&mpv, level) {
+                tracing::warn!("requesting mpv log messages ({level}): {e}");
+            }
+        }
 
         let mpv = Arc::new(mpv);
         let stop = Arc::new(AtomicBool::new(false));
@@ -177,7 +289,7 @@ impl Player {
             let stop = stop.clone();
             std::thread::Builder::new()
                 .name("mpv-events".into())
-                .spawn(move || event_loop(&mpv, &stop, &mut on_event))
+                .spawn(move || event_loop(&mpv, &stop, log_file, &mut on_event))
                 .map_err(|e| PlayerError::Mpv(e.to_string()))?
         };
         Ok(Self {
@@ -386,7 +498,12 @@ fn property_event(name: &str, change: &PropertyData<'_>) -> Option<PlayerEvent> 
     })
 }
 
-fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEvent)) {
+fn event_loop(
+    mpv: &Mpv,
+    stop: &AtomicBool,
+    mut log_file: Option<File>,
+    on_event: &mut impl FnMut(PlayerEvent),
+) {
     loop {
         // None is either a timeout or a property that became unavailable.
         let Some(event) = mpv.wait_event(0.5) else {
@@ -400,6 +517,18 @@ fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEven
                 on_event(PlayerEvent::Shutdown);
                 return;
             }
+            Ok(Event::LogMessage {
+                prefix,
+                level,
+                text,
+                ..
+            }) => {
+                if let Some(file) = log_file.as_mut() {
+                    let redacted = redact_log_text(text.trim_end_matches(['\r', '\n']));
+                    let _ = writeln!(file, "[{prefix}] {level}: {redacted}");
+                }
+                None
+            }
             Ok(Event::PropertyChange { name, change, .. }) => property_event(name, &change),
             Ok(Event::FileLoaded) => Some(PlayerEvent::FileLoaded {
                 path: mpv.get_property::<String>("path").ok(),
@@ -409,10 +538,15 @@ fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEven
                 reason: end_reason(reason),
                 error: None,
             }),
+            // A non-UTF-8 log line or property string must not abort playback.
+            Err(libmpv2::Error::InvalidUtf8) => {
+                tracing::debug!("skipping non-UTF-8 mpv event");
+                None
+            }
             // Only end-file (and async replies, which are unused) carry an error.
             Err(e) => Some(PlayerEvent::EndFile {
                 reason: EndReason::Error,
-                error: Some(format!("{e:?}")),
+                error: Some(redact_log_text(&format!("{e:?}"))),
             }),
             Ok(_) => None,
         };
@@ -422,5 +556,28 @@ fn event_loop(mpv: &Mpv, stop: &AtomicBool, on_event: &mut impl FnMut(PlayerEven
             }
             on_event(out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_log_text;
+
+    #[test]
+    fn redacts_media_token_and_bearer_in_mpv_logs() {
+        assert_eq!(
+            redact_log_text(
+                "Opening 'https://music.example.com/api/v1/tracks/5/stream?mediaToken=s3cr3t%26abc&foo=1'"
+            ),
+            "Opening 'https://music.example.com/api/v1/tracks/5/stream?mediaToken=<redacted>&foo=1'"
+        );
+        assert_eq!(
+            redact_log_text("Authorization: Bearer top-secret-token\n曲目：星街すいせい"),
+            "Authorization: Bearer <redacted>\n曲目：星街すいせい"
+        );
+        assert_eq!(
+            redact_log_text("ao/wasapi: buffer underrun"),
+            "ao/wasapi: buffer underrun"
+        );
     }
 }

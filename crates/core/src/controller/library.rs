@@ -770,8 +770,8 @@ impl Core {
 
     fn refresh_queue_artists(&mut self, tracks: &[Track]) {
         if self.queue.refresh_artists(tracks) {
-            let now = self.queue.current().map(|i| self.now_playing(&i.track));
-            self.emit(Event::NowPlaying(now));
+            let current = self.queue.current().map(|i| i.track.clone());
+            self.emit_now_playing(current.as_ref());
             self.emit(Event::Queue {
                 items: self
                     .queue

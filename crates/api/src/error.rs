@@ -9,11 +9,19 @@ pub enum ApiError {
         message: String,
     },
     #[error("network error: {0}")]
-    Network(#[from] reqwest::Error),
+    Network(reqwest::Error),
     #[error("invalid response: {0}")]
     Decode(String),
     #[error("invalid URL: {0}")]
     Url(String),
+}
+
+impl From<reqwest::Error> for ApiError {
+    fn from(err: reqwest::Error) -> Self {
+        // Strip the request URL so query-carried credentials (mediaToken) can
+        // never leak into UI notices or logs via Display/Debug.
+        Self::Network(err.without_url())
+    }
 }
 
 impl ApiError {

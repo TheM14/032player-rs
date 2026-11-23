@@ -1,6 +1,7 @@
 //! System media controls: SMTC on Windows (media keys, the volume flyout,
 //! the lock screen), MPRIS on Linux, Now Playing on macOS.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use souvlaki::{
@@ -61,9 +62,41 @@ pub struct Metadata {
     pub title: String,
     pub artist: String,
     pub album: String,
-    /// `http(s)://` or `file://` URL of the cover.
-    pub cover_url: Option<String>,
+    /// Local cached cover file path; never an authenticated remote URL.
+    pub cover_path: Option<PathBuf>,
     pub duration: Option<Duration>,
+}
+
+/// Formats an absolute local file path as the `file://` string expected by
+/// `souvlaki` on the current platform:
+/// - Windows SMTC strips `file://` literally and passes the rest to
+///   `StorageFile::GetFileFromPathAsync` (expects native path `C:\...`).
+/// - Linux MPRIS and macOS `NSURL` expect an RFC 8089 `file:///...` URI.
+fn cover_file_url(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    #[cfg(windows)]
+    {
+        format_windows_cover_url(path.to_str()?)
+    }
+    #[cfg(not(windows))]
+    {
+        format_unix_cover_url(path)
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn format_windows_cover_url(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    Some(format!("file://{path}"))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn format_unix_cover_url(path: &Path) -> Option<String> {
+    url::Url::from_file_path(path).ok().map(String::from)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,11 +136,12 @@ impl MediaControls {
     }
 
     pub fn set_metadata(&mut self, metadata: &Metadata) {
+        let cover_url = metadata.cover_path.as_deref().and_then(cover_file_url);
         let result = self.0.set_metadata(MediaMetadata {
             title: Some(&metadata.title),
             artist: Some(&metadata.artist),
             album: Some(&metadata.album),
-            cover_url: metadata.cover_url.as_deref(),
+            cover_url: cover_url.as_deref(),
             duration: metadata.duration,
         });
         if let Err(e) = result {
@@ -128,5 +162,24 @@ impl MediaControls {
         if let Err(e) = self.0.set_playback(playback) {
             tracing::debug!("media controls playback: {e:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_local_cover_urls_without_credentials() {
+        assert_eq!(cover_file_url(Path::new("relative/cover.jpg")), None);
+        assert_eq!(
+            format_windows_cover_url(r"C:\Users\alice\cache\cover.jpg").as_deref(),
+            Some(r"file://C:\Users\alice\cache\cover.jpg")
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            format_unix_cover_url(Path::new("/tmp/032 cover.png")).as_deref(),
+            Some("file:///tmp/032%20cover.png")
+        );
     }
 }

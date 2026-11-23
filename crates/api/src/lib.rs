@@ -9,7 +9,7 @@ mod update;
 
 pub use client::{
     API_REVISION, ArtistTrackSort, Client, FavoriteKind, MAX_PAGE_SIZE, Transcode, authenticate,
-    authenticate_client, normalize_base_url,
+    authenticate_client, normalize_base_url, redact_media_token,
 };
 pub use error::{ApiError, AuthError};
 pub use m032::*;
