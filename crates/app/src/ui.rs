@@ -321,14 +321,10 @@ struct Ui {
     played: Rc<VecModel<TrackRow>>,
     /// Preview tracks of the shown spotlight tab.
     pane_tracks: Rc<VecModel<TrackRow>>,
-    /// Related songs in the full-screen player (`TrackList::Related`).
-    related: Rc<VecModel<TrackRow>>,
     /// "收藏的歌曲" of the open artist page.
     artist_favs: Rc<VecModel<TrackRow>>,
     artist_credits: Rc<VecModel<TrackRow>>,
     artist_dir_role: RefCell<Option<client_core::ArtistRole>>,
-    /// Track the related songs were requested for (0: none).
-    related_for: Cell<i64>,
     /// The original cover in the full-screen player.
     full_cover_key: RefCell<Option<String>>,
     home_mixes: Rc<VecModel<HomeRow>>,
@@ -438,10 +434,12 @@ impl Ui {
             TrackList::SearchPreview => &self.search_preview_tracks,
             TrackList::Spotlight(_) => &self.pane_tracks,
             TrackList::History => &self.played,
-            TrackList::Related => &self.related,
             TrackList::ArtistFavorites => &self.artist_favs,
             TrackList::ArtistCredits => &self.artist_credits,
-            TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
+            TrackList::HomeResume
+            | TrackList::HomeRecent
+            | TrackList::HomeSongs
+            | TrackList::Related => return None,
         })
     }
 
@@ -1732,7 +1730,6 @@ impl Ui {
                     &self.search_preview_tracks,
                     &self.played,
                     &self.pane_tracks,
-                    &self.related,
                     &self.artist_favs,
                     &self.artist_credits,
                 ] {
@@ -1884,11 +1881,9 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         search: RefCell::default(),
         played: new_tracks(),
         pane_tracks: new_tracks(),
-        related: new_tracks(),
         artist_favs: new_tracks(),
         artist_credits: new_tracks(),
         artist_dir_role: RefCell::new(None),
-        related_for: Cell::new(0),
         full_cover_key: RefCell::default(),
         home_mixes: Rc::new(VecModel::default()),
         home_recent: Rc::new(VecModel::default()),
@@ -1945,7 +1940,6 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_detail_tracks(ModelRc::from(ui.detail_tracks.clone()));
     window.set_search_tracks(ModelRc::from(ui.search_tracks.clone()));
     window.set_queue(ModelRc::from(ui.queue.clone()));
-    window.set_full_related(ModelRc::from(ui.related.clone()));
     window.set_artist_favs(ModelRc::from(ui.artist_favs.clone()));
     window.set_artist_credits(ModelRc::from(ui.artist_credits.clone()));
     window.on_artist_credit_role_changed(|role| {
@@ -2595,7 +2589,6 @@ pub fn apply(event: Event) {
             w.set_dialog(0);
             w.set_full_open(false);
             ui.full_changed(w);
-            ui.related_for.set(0);
             *ui.now_cover_key.borrow_mut() = None;
             *ui.now_large_key.borrow_mut() = None;
             *ui.full_cover_key.borrow_mut() = None;
@@ -2618,7 +2611,6 @@ pub fn apply(event: Event) {
                 &ui.detail_tracks,
                 &ui.played,
                 &ui.pane_tracks,
-                &ui.related,
                 &ui.artist_favs,
                 &ui.artist_credits,
             ] {
@@ -2935,12 +2927,7 @@ pub fn apply(event: Event) {
                 w.set_artist_credit_role(active_role.into());
             }
         }
-        Event::Related { track_id, tracks } => {
-            if ui.related_for.get() == track_id {
-                ui.related.set_vec(track_rows(tracks, 0));
-                w.set_full_related_loading(false);
-            }
-        }
+        Event::Related { .. } => {}
         Event::Position {
             position_ms,
             duration_ms,

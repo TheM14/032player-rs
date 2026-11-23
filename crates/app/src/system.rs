@@ -178,6 +178,9 @@ impl System {
                     position_ms: (self.position_ms.get() + delta).max(0),
                 });
             }
+            MediaCommand::SetVolume(volume) => {
+                c.send(Command::SetVolume((volume * 100.0).clamp(0.0, 100.0)));
+            }
             MediaCommand::Raise => self.show_window(),
             MediaCommand::Quit => {
                 crate::ui::record_window_now();

@@ -3428,9 +3428,9 @@ export component PlayerBar inherits Rectangle {
                     { label: "4 小时", mode: 3, minutes: 240 },
                     { label: "关闭定时", mode: 0, minutes: 0 },
                 ]: Rectangle {
-                    height: 30px;
-                    border-radius: 6px;
                     visible: option.mode != 0 || root.sleep-active;
+                    height: self.visible ? 30px : 0px;
+                    border-radius: 6px;
                     background: item-area.has-hover ? Theme.surface-hover : transparent;
                     Text {
                         x: 10px;

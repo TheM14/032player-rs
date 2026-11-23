@@ -2176,7 +2176,7 @@ export component WorksPage inherits VerticalLayout {
         rows: Lib032.works;
         kind: 3;
         loading: Lib032.works-loading;
-        empty-text: root.search == "" ? "没有找到作品" : "没有找到作品";
+        empty-text: root.search == "" ? "还没有作品" : "没有找到匹配的作品";
         empty-hint: "扫描含 OP/ED/OST 标签的音乐，或在网页端新建作品。";
         playlists: root.playlists;
         layout-changed(n, size) => {
@@ -2629,7 +2629,7 @@ export component SeriesDetailPage inherits Flickable {
         }
         if !root.loading && Lib032.series-members.length == 0: Text {
             x: Shell.pad;
-            text: "没有找到系列";
+            text: "该系列暂无成员作品";
             color: Theme.text-faint;
         }
         CardRows {

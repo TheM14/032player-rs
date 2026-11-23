@@ -1233,7 +1233,6 @@ export component ConfirmDialog inherits Rectangle {
 // Track details (right-click "查看信息"; Feishin item details, only the
 // fields 032 has). Values can be selected and copied.
 export component InfoDialog inherits Rectangle {
-    in property <string> title;
     in property <[FactRow]> rows;
     callback close();
     background: #00000099;
