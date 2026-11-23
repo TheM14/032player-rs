@@ -539,3 +539,65 @@ fn normalize_base_url_strips_query_and_fragment_and_media_url_preserves_subpath(
         "https://host.example/music/https://evil.example/a?mediaToken=tok"
     );
 }
+
+#[tokio::test]
+async fn warm_media_does_not_buffer_full_200_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut req = [0u8; 1024];
+        let _ = socket.read(&mut req).await;
+        // Advertise a 10 MiB 200 OK body, send only the first 16 bytes, and hold
+        // the connection open. If warm_media tried to buffer the full body this
+        // test would time out.
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10485760\r\n\r\n0123456789abcdef")
+            .await;
+        let _ = socket.flush().await;
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    });
+
+    let client = Client::new(&format!("http://{addr}"), API, MEDIA).unwrap();
+    let url = client.stream_url(1);
+    let (status, retry) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), client.warm_media(url))
+            .await
+            .expect("warm_media must not wait for full 200 OK body")
+            .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(retry, None);
+    server.abort();
+}
+
+#[tokio::test]
+async fn post_playback_event_propagates_truncated_body_as_network_error() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut req = [0u8; 2048];
+        let _ = socket.read(&mut req).await;
+        // Truncated 409 response: declares 120 bytes but closes after 10 bytes.
+        let _ = socket
+            .write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 120\r\n\r\n{\"error\":{")
+            .await;
+        let _ = socket.shutdown().await;
+    });
+
+    let client = Client::new(&format!("http://{addr}"), API, MEDIA).unwrap();
+    let err = client
+        .post_playback_event(&json!({ "type": "heartbeat" }), false)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, api::ApiError::Network(_)),
+        "expected network error on truncated body, got {err:?}"
+    );
+}

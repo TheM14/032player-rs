@@ -770,12 +770,8 @@ impl Client {
             .send()
             .await?;
         let status = res.status().as_u16();
-        let json = res
-            .bytes()
-            .await
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or(serde_json::Value::Null);
+        let bytes = res.bytes().await?;
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         Ok((status, json))
     }
 
@@ -923,7 +919,16 @@ impl Client {
             .get(header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse().ok());
-        let _ = res.bytes().await;
+        // Only drain tiny responses (e.g. 206 bytes=0-0 or small error JSON) for keep-alive
+        // reuse; never buffer a full 200 OK FLAC stream into memory just to discard it.
+        if res.content_length().is_some_and(|n| n <= 4096) {
+            let _ = res.bytes().await;
+        } else if status == StatusCode::PARTIAL_CONTENT.as_u16()
+            || status == StatusCode::OK.as_u16()
+        {
+            let mut res = res;
+            let _ = res.chunk().await;
+        }
         Ok((status, retry))
     }
 
