@@ -240,6 +240,29 @@ fn write_sample(sample_type: AsioSampleType, sample: f32, dst: &mut [u8]) {
     }
 }
 
+/// Selects a valid ASIO buffer size in frames honoring the driver's `[min, max]`
+/// bounds and granularity.
+#[must_use]
+pub fn choose_buffer_frames(min: i32, max: i32, preferred: i32, granularity: i32) -> i32 {
+    if max <= 0 {
+        return if preferred > 0 {
+            preferred.max(64)
+        } else {
+            512
+        };
+    }
+    let lo = min.max(1).min(max);
+    let mut size = if preferred > 0 { preferred } else { 512 }.clamp(lo, max);
+    if granularity > 0 {
+        let offset = size - lo;
+        let rem = offset % granularity;
+        if rem != 0 {
+            size = (size - rem).clamp(lo, max);
+        }
+    }
+    size
+}
+
 /// FiiO ASIO driver registry key & CLSID on Windows.
 pub const FIIO_ASIO_NAME: &str = "FiiO ASIO Driver";
 pub const FIIO_ASIO_CLSID: &str = "{6B3BA606-8664-4426-8994-0F1E6FE6199F}";
@@ -433,5 +456,20 @@ mod tests {
             i32::from_le_bytes(r32[0..4].try_into().unwrap()),
             -2_147_483_647
         );
+    }
+
+    #[test]
+    fn buffer_size_respects_driver_bounds_and_granularity() {
+        assert_eq!(choose_buffer_frames(64, 2048, 512, 64), 512);
+        // Fixed small buffer drivers (e.g. min == max == 32) must not be forced up to 64.
+        assert_eq!(choose_buffer_frames(32, 32, 32, 0), 32);
+        // Out-of-range preferred values are clamped into [min, max].
+        assert_eq!(choose_buffer_frames(128, 1024, 4096, 64), 1024);
+        assert_eq!(choose_buffer_frames(128, 1024, 0, 64), 512);
+        // Granularity alignment stays within [min, max].
+        assert_eq!(choose_buffer_frames(64, 1024, 200, 64), 192);
+        // Bogus zero bounds fall back safely.
+        assert_eq!(choose_buffer_frames(0, 0, 0, 0), 512);
+        assert_eq!(choose_buffer_frames(0, 0, 256, 0), 256);
     }
 }

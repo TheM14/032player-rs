@@ -7,15 +7,17 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_registry::LOCAL_MACHINE;
-use windows_sys::Win32::Foundation::{GetLastError, S_FALSE, S_OK};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, S_FALSE, S_OK};
 use windows_sys::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetDesktopWindow, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+    DispatchMessageW, EnumThreadWindows, GetDesktopWindow, IsWindowVisible, MSG, PM_REMOVE,
+    PeekMessageW, TranslateMessage,
 };
-use windows_sys::core::GUID;
+use windows_sys::core::{BOOL, GUID};
 
 use crate::ffi::{
     ASE_NOT_PRESENT, ASE_OK, ASE_SUCCESS, ASIO_FALSE, ASIO_TRUE, AsioBool, AsioBufferInfo,
@@ -27,11 +29,61 @@ use crate::ffi::{
 use crate::slot::{CallbackSlot, StreamSlot, StreamSlotGuard};
 use crate::{
     AsioCallbackContext, AsioDriverInfo, AsioError, AsioSampleType, AsioStreamConfig,
-    RenderCallback, Result, write_stereo_channel_buffers,
+    RenderCallback, Result, choose_buffer_frames, write_stereo_channel_buffers,
 };
 
 static STREAM_SLOT: StreamSlot = StreamSlot::new();
 static ACTIVE_CALLBACK: CallbackSlot<CallbackState> = CallbackSlot::new();
+static STANDALONE_CPL: Mutex<Option<StandaloneCpl>> = Mutex::new(None);
+
+struct StandaloneCpl {
+    shutdown: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl StandaloneCpl {
+    fn stop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn close_standalone_control_panel() {
+    let old = STANDALONE_CPL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(mut cpl) = old {
+        cpl.stop();
+    }
+}
+
+unsafe extern "system" fn check_visible_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // SAFETY: `lparam` points to a valid `bool` on the stack of `has_visible_thread_window`.
+    unsafe {
+        if IsWindowVisible(hwnd) != 0 {
+            *(lparam as *mut bool) = true;
+            return 0; // stop enumerating
+        }
+    }
+    1
+}
+
+fn has_visible_thread_window() -> bool {
+    let mut found = false;
+    // SAFETY: `GetCurrentThreadId` returns the current thread id and `check_visible_window`
+    // only writes through `&raw mut found` while `EnumThreadWindows` is on the stack.
+    unsafe {
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(check_visible_window),
+            (&raw mut found) as LPARAM,
+        );
+    }
+    found
+}
 
 struct CallbackState {
     iasio: usize, // *mut IAsio as usize (used only for output_ready during callback)
@@ -513,7 +565,8 @@ pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
             if !handle.can_sample_rate(sample_rate) {
                 return Err(AsioError::UnsupportedSampleRate(sample_rate));
             }
-            let (_, _, pref, _) = handle.get_buffer_size()?;
+            let (min_sz, max_sz, pref, gran) = handle.get_buffer_size()?;
+            let buffer_frames = choose_buffer_frames(min_sz, max_sz, pref, gran);
             let ch0 = handle.get_output_channel_info(0)?;
             let sample_type = AsioSampleType::from_raw(ch0.sample_type);
             if !sample_type.is_supported() {
@@ -521,7 +574,7 @@ pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
             }
             Ok(AsioStreamConfig {
                 sample_rate,
-                buffer_size: usize::try_from(pref.max(64)).unwrap_or(512),
+                buffer_size: usize::try_from(buffer_frames).unwrap_or(512),
                 sample_type,
                 output_channels: usize::try_from(outs).unwrap_or(2),
             })
@@ -532,23 +585,59 @@ pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
 }
 
 pub fn open_control_panel_standalone(clsid: &str) -> Result<()> {
+    close_standalone_control_panel();
     let clsid = clsid.to_owned();
-    thread::Builder::new()
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_w = shutdown.clone();
+    let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
+    let thread = thread::Builder::new()
         .name("asio-cpl".into())
         .spawn(move || {
-            let handle = IAsioHandle::open(&clsid)?;
-            handle.control_panel()?;
-            // Pump STA messages briefly so external/dialog control panels finish initializing.
-            let deadline = Instant::now() + Duration::from_millis(600);
-            while Instant::now() < deadline {
+            let handle = match IAsioHandle::open(&clsid) {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = init_tx.send(Err(e));
+                    return;
+                }
+            };
+            let res = handle.control_panel();
+            let ok = res.is_ok();
+            let _ = init_tx.send(res);
+            if !ok {
+                return;
+            }
+            // Keep the COM STA apartment alive while a modeless in-process control panel
+            // window stays visible, or for a short grace window for external panel launchers.
+            let grace_deadline = Instant::now() + Duration::from_secs(2);
+            while !shutdown_w.load(Ordering::Acquire) {
                 pump_messages();
+                if Instant::now() >= grace_deadline && !has_visible_thread_window() {
+                    break;
+                }
                 thread::sleep(Duration::from_millis(20));
             }
-            Ok(())
         })
-        .map_err(|_| AsioError::Stopped)?
-        .join()
-        .map_err(|_| AsioError::Stopped)?
+        .map_err(|_| AsioError::Stopped)?;
+
+    match init_rx.recv_timeout(Duration::from_millis(250)) {
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Ok(Ok(())) | Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Either the panel opened asynchronously or `control_panel()` is running
+            // modally on the STA thread; keep the host handle tracked until closed.
+            *STANDALONE_CPL.lock().unwrap_or_else(|e| e.into_inner()) = Some(StandaloneCpl {
+                shutdown,
+                thread: Some(thread),
+            });
+            Ok(())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = thread.join();
+            Err(AsioError::Stopped)
+        }
+    }
 }
 
 enum ActorCmd {
@@ -610,7 +699,13 @@ impl AsioOutputHandle {
         self.cmd
             .send(ActorCmd::OpenControlPanel(tx))
             .map_err(|_| AsioError::Stopped)?;
-        rx.recv().map_err(|_| AsioError::Stopped)?
+        // Return promptly when the driver opens a modal dialog on `asio-com`, so callers
+        // (decode worker / engine mutex) never stall waiting for the user to close the panel.
+        match rx.recv_timeout(Duration::from_millis(150)) {
+            Ok(res) => res,
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AsioError::Stopped),
+        }
     }
 }
 
@@ -642,6 +737,7 @@ struct ActiveStream {
 
 impl ActiveStream {
     fn open(clsid: &str, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+        close_standalone_control_panel();
         let slot = STREAM_SLOT.try_acquire()?;
         let handle = IAsioHandle::open(clsid)?;
         let (_, outs) = handle.get_channels()?;
@@ -680,8 +776,8 @@ impl ActiveStream {
     }
 
     fn setup_and_start(&mut self, sample_rate: f64, render: RenderCallback) -> Result<()> {
-        let (_, _, pref, _) = self.handle.get_buffer_size()?;
-        let buffer_frames = pref.max(64);
+        let (min_sz, max_sz, pref, gran) = self.handle.get_buffer_size()?;
+        let buffer_frames = choose_buffer_frames(min_sz, max_sz, pref, gran);
         let frames_usize = usize::try_from(buffer_frames).unwrap_or(512);
         let ch0 = self.handle.get_output_channel_info(0)?;
         let sample_type = AsioSampleType::from_raw(ch0.sample_type);

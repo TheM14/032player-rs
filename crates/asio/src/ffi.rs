@@ -146,74 +146,91 @@ pub struct IAsio {
     pub vtbl: *const IAsioVtbl,
 }
 
-#[repr(C)]
-pub struct IAsioVtbl {
-    pub query_interface: unsafe extern "system" fn(
-        this: *mut IAsio,
-        riid: *const GUID,
-        ppv: *mut *mut c_void,
-    ) -> HRESULT,
-    pub add_ref: unsafe extern "system" fn(this: *mut IAsio) -> u32,
-    pub release: unsafe extern "system" fn(this: *mut IAsio) -> u32,
-    pub init: unsafe extern "system" fn(this: *mut IAsio, sys_handle: *mut c_void) -> AsioBool,
-    pub get_driver_name: unsafe extern "system" fn(this: *mut IAsio, name: *mut c_char),
-    pub get_driver_version: unsafe extern "system" fn(this: *mut IAsio) -> i32,
-    pub get_error_message: unsafe extern "system" fn(this: *mut IAsio, string: *mut c_char),
-    pub start: unsafe extern "system" fn(this: *mut IAsio) -> AsioErrorCode,
-    pub stop: unsafe extern "system" fn(this: *mut IAsio) -> AsioErrorCode,
-    pub get_channels: unsafe extern "system" fn(
-        this: *mut IAsio,
-        num_input_channels: *mut i32,
-        num_output_channels: *mut i32,
-    ) -> AsioErrorCode,
-    pub get_latencies: unsafe extern "system" fn(
-        this: *mut IAsio,
-        input_latency: *mut i32,
-        output_latency: *mut i32,
-    ) -> AsioErrorCode,
-    pub get_buffer_size: unsafe extern "system" fn(
-        this: *mut IAsio,
-        min_size: *mut i32,
-        max_size: *mut i32,
-        preferred_size: *mut i32,
-        granularity: *mut i32,
-    ) -> AsioErrorCode,
-    pub can_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: f64) -> AsioErrorCode,
-    pub get_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: *mut f64) -> AsioErrorCode,
-    pub set_sample_rate:
-        unsafe extern "system" fn(this: *mut IAsio, sample_rate: f64) -> AsioErrorCode,
-    pub get_clock_sources: unsafe extern "system" fn(
-        this: *mut IAsio,
-        clocks: *mut AsioClockSource,
-        num_sources: *mut i32,
-    ) -> AsioErrorCode,
-    pub set_clock_source:
-        unsafe extern "system" fn(this: *mut IAsio, reference: i32) -> AsioErrorCode,
-    pub get_sample_position: unsafe extern "system" fn(
-        this: *mut IAsio,
-        s_pos: *mut AsioSamples,
-        t_stamp: *mut AsioTimeStamp,
-    ) -> AsioErrorCode,
-    pub get_channel_info:
-        unsafe extern "system" fn(this: *mut IAsio, info: *mut AsioChannelInfo) -> AsioErrorCode,
-    pub create_buffers: unsafe extern "system" fn(
-        this: *mut IAsio,
-        buffer_infos: *mut AsioBufferInfo,
-        num_channels: i32,
-        buffer_size: i32,
-        callbacks: *mut AsioCallbacks,
-    ) -> AsioErrorCode,
-    pub dispose_buffers: unsafe extern "system" fn(this: *mut IAsio) -> AsioErrorCode,
-    pub control_panel: unsafe extern "system" fn(this: *mut IAsio) -> AsioErrorCode,
-    pub future: unsafe extern "system" fn(
-        this: *mut IAsio,
-        selector: i32,
-        opt: *mut c_void,
-    ) -> AsioErrorCode,
-    pub output_ready: unsafe extern "system" fn(this: *mut IAsio) -> AsioErrorCode,
+// On 32-bit x86 Windows, `IUnknown` methods (slots 0..2) use `stdcall` (`extern "system"`),
+// whereas Steinberg's `IASIO` methods (slots 3..23) are plain C++ virtual methods using
+// MSVC `__thiscall` (`extern "thiscall"`). On x86_64/aarch64 all methods use `extern "system"`.
+macro_rules! define_iasio_vtbl {
+    ($asio_abi:literal) => {
+        #[repr(C)]
+        pub struct IAsioVtbl {
+            pub query_interface: unsafe extern "system" fn(
+                this: *mut IAsio,
+                riid: *const GUID,
+                ppv: *mut *mut c_void,
+            ) -> HRESULT,
+            pub add_ref: unsafe extern "system" fn(this: *mut IAsio) -> u32,
+            pub release: unsafe extern "system" fn(this: *mut IAsio) -> u32,
+            pub init: unsafe extern $asio_abi fn(this: *mut IAsio, sys_handle: *mut c_void) -> AsioBool,
+            pub get_driver_name: unsafe extern $asio_abi fn(this: *mut IAsio, name: *mut c_char),
+            pub get_driver_version: unsafe extern $asio_abi fn(this: *mut IAsio) -> i32,
+            pub get_error_message:
+                unsafe extern $asio_abi fn(this: *mut IAsio, string: *mut c_char),
+            pub start: unsafe extern $asio_abi fn(this: *mut IAsio) -> AsioErrorCode,
+            pub stop: unsafe extern $asio_abi fn(this: *mut IAsio) -> AsioErrorCode,
+            pub get_channels: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                num_input_channels: *mut i32,
+                num_output_channels: *mut i32,
+            ) -> AsioErrorCode,
+            pub get_latencies: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                input_latency: *mut i32,
+                output_latency: *mut i32,
+            ) -> AsioErrorCode,
+            pub get_buffer_size: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                min_size: *mut i32,
+                max_size: *mut i32,
+                preferred_size: *mut i32,
+                granularity: *mut i32,
+            ) -> AsioErrorCode,
+            pub can_sample_rate:
+                unsafe extern $asio_abi fn(this: *mut IAsio, sample_rate: f64) -> AsioErrorCode,
+            pub get_sample_rate: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                sample_rate: *mut f64,
+            ) -> AsioErrorCode,
+            pub set_sample_rate:
+                unsafe extern $asio_abi fn(this: *mut IAsio, sample_rate: f64) -> AsioErrorCode,
+            pub get_clock_sources: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                clocks: *mut AsioClockSource,
+                num_sources: *mut i32,
+            ) -> AsioErrorCode,
+            pub set_clock_source:
+                unsafe extern $asio_abi fn(this: *mut IAsio, reference: i32) -> AsioErrorCode,
+            pub get_sample_position: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                s_pos: *mut AsioSamples,
+                t_stamp: *mut AsioTimeStamp,
+            ) -> AsioErrorCode,
+            pub get_channel_info: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                info: *mut AsioChannelInfo,
+            ) -> AsioErrorCode,
+            pub create_buffers: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                buffer_infos: *mut AsioBufferInfo,
+                num_channels: i32,
+                buffer_size: i32,
+                callbacks: *mut AsioCallbacks,
+            ) -> AsioErrorCode,
+            pub dispose_buffers: unsafe extern $asio_abi fn(this: *mut IAsio) -> AsioErrorCode,
+            pub control_panel: unsafe extern $asio_abi fn(this: *mut IAsio) -> AsioErrorCode,
+            pub future: unsafe extern $asio_abi fn(
+                this: *mut IAsio,
+                selector: i32,
+                opt: *mut c_void,
+            ) -> AsioErrorCode,
+            pub output_ready: unsafe extern $asio_abi fn(this: *mut IAsio) -> AsioErrorCode,
+        }
+    };
 }
+
+#[cfg(target_arch = "x86")]
+define_iasio_vtbl!("thiscall");
+#[cfg(not(target_arch = "x86"))]
+define_iasio_vtbl!("system");
 
 pub const CLSID_MM_DEVICE_ENUMERATOR: GUID =
     GUID::from_u128(0xbcde0395_e52f_467c_8e3d_c4579291692e);
