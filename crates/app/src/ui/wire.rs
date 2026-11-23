@@ -133,6 +133,8 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         update_url: RefCell::default(),
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
+        asio_driver_clsids: RefCell::new(Vec::new()),
+        asio_channel_pairs: RefCell::new(Vec::new()),
         cast: RefCell::default(),
     });
     window.set_album_rows(ModelRc::from(ui.grids[GRID_ALBUMS].clone()));
@@ -519,6 +521,35 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         };
         c.send(Command::SetExclusiveMode(mode));
     });
+    let c = commander.clone();
+    window.on_asio_driver_selected(move |index| {
+        let clsid = UI.with(|cell| {
+            let ui = cell.borrow();
+            let clsids = ui.as_ref()?.asio_driver_clsids.borrow();
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| clsids.get(i).cloned())
+                .flatten()
+        });
+        if let Some(clsid) = clsid {
+            c.send(Command::SetAsioDriver(clsid));
+        }
+    });
+    let c = commander.clone();
+    window.on_asio_channel_pair_selected(move |index| {
+        let pair = UI.with(|cell| {
+            let ui = cell.borrow();
+            let pairs = ui.as_ref()?.asio_channel_pairs.borrow();
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| pairs.get(i).copied())
+        });
+        if let Some((left, right)) = pair {
+            c.send(Command::SetAsioChannelPair(left, right));
+        }
+    });
+    let c = commander.clone();
+    window.on_refresh_asio_driver(move || c.send(Command::RefreshAsioDriver));
     let c = commander.clone();
     window.on_open_asio_control_panel(move || c.send(Command::OpenAsioControlPanel));
     commander.send(Command::RefreshAudioDevices);

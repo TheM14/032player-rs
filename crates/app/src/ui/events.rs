@@ -1117,7 +1117,7 @@ pub fn apply(event: Event) {
             w.set_asio_fallback(asio_fallback);
             w.set_output_busy(false);
         }
-        Event::AsioState(_) => {}
+        Event::AsioState(state) => ui.set_asio_state(w, state),
         Event::LyricsActive(active) => {
             w.set_lyrics_active(active.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1));
         }
