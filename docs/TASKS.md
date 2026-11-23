@@ -5,6 +5,13 @@
 
 ## 当前状态（2026-11-23）
 
+- [x] 相似歌曲电台与队列自动续播 [api / core / app]：对齐 Android MusicBridge 与 032 服务端 `GET /api/v1/tracks/{id}/similar`（`diverse=1`、`exclude`、503 重试、400 旧服务端回退、`features.similarTracks` 与 `similarity.method`）；移除旧静态「相似歌曲」页，各曲目右键菜单改为「开启相似电台」，并在右侧正在播放栏、全屏播放页及队列行右键菜单提供不中断当前播放的开台/重开入口；侧栏与全屏队列统一支持双分区（「接下来 · 相似续播」分隔条、理由胶囊、换一批、顶部 `∞` 开关、电台种子徽章、尾部全状态卡片与跨分区拖拽晋升/降级）、滚动作种跳过伴奏/Off Vocal、自然播完无缝衔接、`queue.json` 分区持久化、Sonos 同步及设置页开关双向同步。
+- [ ] **[Win]** 验证相似歌曲电台与队列自动续播：
+  - 任意曲目右键「开启相似电台」立即起播并静默追加推荐曲目，自动关闭循环与随机；
+  - 右侧正在播放栏电台按钮、全屏页「开启相似电台 / 以此曲重开电台」与队列当前曲目右键触发时保持当前播放不中断，仅替换后续队列；
+  - 双分区队列（侧栏与宽/窄全屏、深/浅主题）正确显示分隔条、理由胶囊、电台种子徽章、「换一批」与尾部状态卡（正常 / 禁用 / 循环暂停 / 睡眠定时暂停 / 503 忙 / 网络失败 / 空结果）；
+  - 手动「添加到播放队列末尾」落入手动区尾部、跨分隔条拖拽晋升/降级、关闭 `∞` 截断未播自动区、重启恢复分区与理由、播完队列自然衔接与 Sonos 投放一致。
+
 - **v0.2.27 正式版构建已安排**：汇总完成全仓库 P0 / P1 / P2 / P3 审计修复及架构、性能与工程化第 1-4 批整改（ASIO 内存安全与 SPSC 拆分、`mediaToken` 全路径脱敏、API/会话/播放器/Sonos/Core 鲁棒性修复、图片单飞与 64 MiB 字节预算、Slint / `ui.rs` / `controller.rs` 模块化拆分与强类型枚举、OFL 字体许可打包与 CI SHA 固定）。正式安装包由 `v0.2.27` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.27 。
 - [x] P0-1 [asio] 修复 `ACTIVE_CALLBACK` / `CallbackState` 内存安全：新增 `StreamSlot` 禁止并发 ASIO 流，用 `CallbackSlot`（`RwLock<Option<Arc<CallbackState>>>`）消除裸指针 TOCTOU UAF 与 `Box` 别名 UB，移除 250ms 超时强行 `dispose_buffers()`，所有 `extern "C"` 回调包裹 `catch_unwind` 并校验 DMA 缓冲区不重叠。
 - [x] P0-2 [asio / player] 将 `SpscRing` 拆分为 64 字节对齐且 `!Sync` 的 `(SpscProducer, SpscConsumer)`；`AsioPlayer` 通过 `reset_requested` / `reset_acked` 由音频回调独占清环，消除生产侧 `clear()` 与 `sleep(15ms)` 数据竞争。

@@ -17,7 +17,7 @@
 | 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [x] |
 | 登录态持久化：两个凭据存系统凭据库，启动自动登录；表单留空沿用已保存值；退出登录清空两者 | `auth.store.ts` `logout`、`edit-server-form.tsx` | M1 | [x] |
 | 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [x] |
-| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / `artistCreditRoles` / series，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [x] |
+| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / `artistCreditRoles` / `similarTracks` / series，`similarity.method`，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [x] |
 
 ## 播放
 
@@ -70,7 +70,7 @@
 | 幕后人员：艺术家列表按作词 / 作曲 / 编曲 / 制作筛选；艺人详情按职责查看和播放署名曲目 | Electron `artistDiscography` 保留幕后专辑；详情扩展对照服务端 `GET /artists/{id}/credits` | M4 | [x] |
 | 收藏：专辑 / 曲目 / 艺人；收藏页走 `/favorites/albums|tracks`，客户端排序筛选 | `ctrl` `favoriteAlbums` / `favoriteSongs` | M2 | [x] 曲目页签可播放 / 随机播放整个列表 |
 | 搜索 | `ctrl` `search` | M2 | [x] |
-| 相似歌曲 `/tracks/{id}/similar` | `ctrl` `similarTracks`、`features/similar-songs/` | M2 | [x] |
+| 相似歌曲电台与队列自动续播 `/tracks/{id}/similar`（`diverse=1`、`exclude`、混合/元数据方式） | MusicBridge `SimilarTrackRadioCoordinator`、032 服务端 `/tracks/{id}/similar` | M4 | [x] 替代静态相似歌曲页；支持曲目右键开台、正在播放页/全屏页不中断开台、双分区队列与理由标签、换一批、队列尾部状态卡及设置页开关 |
 | 封面 / 艺人图 / 作品海报（2:3）URL，按尺寸请求 | `ctrl` `getImageUrl` | M0 | [x] |
 
 ## 歌单
