@@ -595,6 +595,9 @@ impl Core {
         // Sonos: the live stream offset of the started entry.
         let mut cast_offset = 0;
         if load {
+            if use_asio {
+                self.sync_engine_asio_target();
+            }
             let result = match &url {
                 Some(url) => self
                     .engine
@@ -609,11 +612,17 @@ impl Core {
                 return;
             }
             self.output.asio_active = use_asio;
+            self.output.active_asio_target = if use_asio {
+                self.selected_asio_target()
+            } else {
+                None
+            };
             self.output.asio_fallback = asio_fallback;
         } else if casting {
             // The speaker moved on by itself.
             cast_offset = self.cast_offset();
             self.output.asio_active = false;
+            self.output.active_asio_target = None;
             self.output.asio_fallback = false;
         } else {
             // Gapless advance stayed on the engine's existing backend.
@@ -789,6 +798,7 @@ impl Core {
             let position = self.pb.position_ms;
             let _ = self.engine.stop();
             self.output.asio_active = false;
+            self.output.active_asio_target = None;
             self.output.asio_fallback = true;
             self.emit_output_mode();
             self.hand_over(false, position);

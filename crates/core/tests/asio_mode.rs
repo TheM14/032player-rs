@@ -1,21 +1,27 @@
-//! ASIO output mode, Opus WASAPI fallback, and hot-switching in core.
+//! Generic ASIO driver discovery, multi-channel port selection, hot-switching,
+//! and Opus WASAPI fallback in core.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use client_core::{
-    AudioDevice, Command, CoreConfig, Engine, EngineEnd, EngineEvent, Event, ExclusiveMode,
-    MemorySecrets, Settings, TrackList, TrackSource,
+    AsioCapabilities, AsioChannelPair, AsioDriver, AsioTarget, AudioDevice, Command, CoreConfig,
+    Engine, EngineEnd, EngineEvent, Event, ExclusiveMode, MemorySecrets, Settings, TrackList,
+    TrackSource,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+const CLSID_MINIFUSE: &str = "{D323B478-A475-B063-6A36-197FAF1D0689}";
+const CLSID_TOPPING: &str = "{6D241B5E-CF73-4043-A85F-EF11D4670955}";
+
 #[derive(Default)]
 struct AsioFakeEngine {
     calls: Mutex<Vec<String>>,
-    fiio_connected: AtomicBool,
+    drivers_installed: AtomicBool,
+    target: Mutex<Option<AsioTarget>>,
 }
 
 impl AsioFakeEngine {
@@ -34,8 +40,18 @@ impl Engine for AsioFakeEngine {
         self.push(format!("load wasapi {url}"))
     }
     fn load_for(&self, url: &str, use_asio: bool) -> Result<(), String> {
-        let tag = if use_asio { "asio" } else { "wasapi" };
-        self.push(format!("load {tag} {url}"))
+        if use_asio {
+            let target = self
+                .target
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|t| format!("{}[{}:{}]", t.clsid, t.left_channel, t.right_channel))
+                .unwrap_or_else(|| "none".into());
+            self.push(format!("load asio {target} {url}"))
+        } else {
+            self.push(format!("load wasapi {url}"))
+        }
     }
     fn append(&self, url: &str) -> Result<(), String> {
         self.push(format!("append wasapi {url}"))
@@ -60,23 +76,10 @@ impl Engine for AsioFakeEngine {
         Ok(())
     }
     fn audio_devices(&self) -> Result<Vec<AudioDevice>, String> {
-        if self.fiio_connected.load(Ordering::Relaxed) {
-            Ok(vec![
-                AudioDevice {
-                    name: "wasapi/{fiio}".into(),
-                    description: "扬声器 (FiiO Q series)".into(),
-                },
-                AudioDevice {
-                    name: "wasapi/{realtek}".into(),
-                    description: "扬声器 (Realtek)".into(),
-                },
-            ])
-        } else {
-            Ok(vec![AudioDevice {
-                name: "wasapi/{realtek}".into(),
-                description: "扬声器 (Realtek)".into(),
-            }])
-        }
+        Ok(vec![AudioDevice {
+            name: "wasapi/{realtek}".into(),
+            description: "扬声器 (Realtek)".into(),
+        }])
     }
     fn set_audio_device(&self, name: &str) -> Result<(), String> {
         self.push(format!("device {name}"))
@@ -84,15 +87,62 @@ impl Engine for AsioFakeEngine {
     fn set_exclusive(&self, enabled: bool) -> Result<(), String> {
         self.push(format!("exclusive {enabled}"))
     }
-    fn supports_asio(&self, devices: &[AudioDevice], selected: Option<&str>) -> bool {
-        if !self.fiio_connected.load(Ordering::Relaxed) {
-            return false;
+    fn asio_drivers(&self) -> Vec<AsioDriver> {
+        if self.drivers_installed.load(Ordering::Relaxed) {
+            vec![
+                AsioDriver {
+                    clsid: CLSID_MINIFUSE.into(),
+                    name: "MiniFuse ASIO Driver".into(),
+                },
+                AsioDriver {
+                    clsid: CLSID_TOPPING.into(),
+                    name: "Topping USB Audio Device".into(),
+                },
+            ]
+        } else {
+            Vec::new()
         }
-        match selected {
-            Some("wasapi/{fiio}") => true,
-            Some(_) => false,
-            None => devices.iter().any(|d| d.name == "wasapi/{fiio}"),
+    }
+    fn probe_asio_driver(&self, clsid: &str) -> Result<AsioCapabilities, String> {
+        let _ = self.push(format!("probe {clsid}"));
+        if clsid.eq_ignore_ascii_case(CLSID_MINIFUSE) {
+            Ok(AsioCapabilities {
+                output_channels: 4,
+                channel_pairs: vec![
+                    AsioChannelPair {
+                        left: 0,
+                        right: 1,
+                        name: "1-2 · MAIN Left / MAIN Right".into(),
+                    },
+                    AsioChannelPair {
+                        left: 2,
+                        right: 3,
+                        name: "3-4 · LOOPBACK Left / LOOPBACK Right".into(),
+                    },
+                ],
+                supported_sample_rates: vec![44_100, 48_000, 88_200, 96_000, 176_400, 192_000],
+                sample_format: "Int32Lsb".into(),
+                buffer_size: 256,
+            })
+        } else if clsid.eq_ignore_ascii_case(CLSID_TOPPING) {
+            Ok(AsioCapabilities {
+                output_channels: 2,
+                channel_pairs: vec![AsioChannelPair {
+                    left: 0,
+                    right: 1,
+                    name: "1-2 · Analogue 1 / Analogue 2".into(),
+                }],
+                supported_sample_rates: vec![44_100, 48_000, 88_200, 96_000, 176_400, 192_000],
+                sample_format: "Int32Lsb".into(),
+                buffer_size: 512,
+            })
+        } else {
+            Err(format!("unknown ASIO CLSID {clsid}"))
         }
+    }
+    fn set_asio_target(&self, target: Option<AsioTarget>) -> Result<(), String> {
+        *self.target.lock().unwrap() = target;
+        Ok(())
     }
     fn set_exclusive_mode(&self, mode: ExclusiveMode) -> Result<(), String> {
         self.push(format!("mode {mode:?}"))
@@ -195,7 +245,7 @@ async fn wait_call(engine: &AsioFakeEngine, call: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
+async fn generic_asio_selection_port_switch_and_opus_fallback() {
     let server = setup_server().await;
     let dir = std::env::temp_dir().join(format!("032player-asio-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -210,7 +260,7 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
         let _ = tx.send(e);
     });
 
-    // Without FiiO device, ASIO is unavailable and rejected.
+    // Without installed ASIO drivers, ASIO mode is unavailable and rejected.
     core.send(Command::RefreshAudioDevices);
     wait(&rx, "asio unavailable", |e| {
         matches!(
@@ -224,12 +274,12 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
     core.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
     wait(
         &rx,
-        "reject asio",
-        |e| matches!(e, Event::Notice(n) if n.contains("不支持 ASIO")),
+        "reject asio without drivers",
+        |e| matches!(e, Event::Notice(n) if n.contains("未检测到")),
     );
 
-    // Connect FiiO device -> ASIO becomes available; start in WASAPI exclusive first.
-    engine.fiio_connected.store(true, Ordering::Relaxed);
+    // Discover multiple installed ASIO drivers: switching to ASIO requires user choice first.
+    engine.drivers_installed.store(true, Ordering::Relaxed);
     core.send(Command::RefreshAudioDevices);
     wait(&rx, "asio available", |e| {
         matches!(
@@ -240,6 +290,25 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
             }
         )
     });
+    core.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
+    wait(
+        &rx,
+        "prompt select driver",
+        |e| matches!(e, Event::Notice(n) if n.contains("选择要使用的 ASIO 驱动")),
+    );
+
+    // User selects MiniFuse ASIO Driver -> probes on demand and discovers 2 stereo ports.
+    core.send(Command::SetAsioDriver(CLSID_MINIFUSE.into()));
+    wait(&rx, "minifuse probed", |e| {
+        matches!(
+            e,
+            Event::AsioState(s)
+                if s.ready
+                    && s.selected_clsid.as_deref() == Some(CLSID_MINIFUSE)
+                    && s.channel_pairs.len() == 2
+        )
+    });
+
     core.send(Command::SetExclusiveMode(ExclusiveMode::Wasapi));
     wait(&rx, "wasapi mode", |e| {
         matches!(
@@ -262,7 +331,7 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
         |e| matches!(e, Event::TracksAppended { items, .. } if items.len() == 3),
     );
 
-    // Play track 1 (FLAC) in WASAPI mode, advance to 42s, then hot-switch to ASIO.
+    // Play track 1 (FLAC) in WASAPI mode, advance to 42s, then hot-switch to ASIO (MiniFuse 0:1).
     core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
     let url1 = format!("{}/api/v1/tracks/1/stream?mediaToken=media", server.uri());
     let url2 = format!("{}/api/v1/tracks/2/stream?mediaToken=media", server.uri());
@@ -280,7 +349,6 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
         |e| matches!(e, Event::Position { position_ms, .. } if *position_ms >= 42_000),
     );
 
-    // Hot-switch WASAPI -> ASIO: should hand over at 42s and load track 1 on ASIO + seek.
     core.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
     wait(&rx, "asio mode", |e| {
         matches!(
@@ -292,10 +360,25 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
             }
         )
     });
+    wait_call(&engine, &format!("load asio {CLSID_MINIFUSE}[0:1] {url1}")).await;
     core.engine_event(EngineEvent::FileLoaded {
         path: Some(url1.clone()),
     });
     wait_call(&engine, "seek 42.000").await;
+
+    // Hot-switch ASIO output port on MiniFuse to channels 2:3 while playing.
+    core.send(Command::SetAsioChannelPair(2, 3));
+    wait_call(&engine, &format!("load asio {CLSID_MINIFUSE}[2:3] {url1}")).await;
+    core.engine_event(EngineEvent::FileLoaded {
+        path: Some(url1.clone()),
+    });
+
+    // Hot-switch to a completely different ASIO driver (Topping) while playing.
+    core.send(Command::SetAsioDriver(CLSID_TOPPING.into()));
+    wait_call(&engine, &format!("load asio {CLSID_TOPPING}[0:1] {url1}")).await;
+    core.engine_event(EngineEvent::FileLoaded {
+        path: Some(url1.clone()),
+    });
 
     // Next track is Opus -> must NOT preload into ASIO.
     assert!(
@@ -336,7 +419,7 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
         engine.calls()
     );
 
-    // End track 2 -> track 3 (FLAC) resumes ASIO.
+    // End track 2 -> track 3 (FLAC) resumes ASIO on Topping.
     core.engine_event(EngineEvent::EndFile {
         reason: EngineEnd::Eof,
         error: None,
@@ -351,12 +434,7 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
             }
         )
     });
-
-    let calls = engine.calls();
-    assert!(calls.contains(&format!("load wasapi {url1}")), "{calls:?}");
-    assert!(calls.contains(&format!("load asio {url1}")), "{calls:?}");
-    assert!(calls.contains(&format!("load wasapi {url2}")), "{calls:?}");
-    assert!(calls.contains(&format!("load asio {url3}")), "{calls:?}");
+    wait_call(&engine, &format!("load asio {CLSID_TOPPING}[0:1] {url3}")).await;
 
     tokio::task::spawn_blocking(move || core.shutdown())
         .await
@@ -365,11 +443,10 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn refresh_audio_devices_hands_over_when_asio_becomes_available() {
+async fn refresh_audio_devices_hands_over_when_saved_asio_driver_appears() {
     let server = setup_server().await;
     let engine = Arc::new(AsioFakeEngine::default());
-    // Start with FiiO disconnected while user preference is ExclusiveMode::Asio.
-    engine.fiio_connected.store(false, Ordering::Relaxed);
+    engine.drivers_installed.store(false, Ordering::Relaxed);
 
     let dir = std::env::temp_dir().join(format!("032player-asio-hotplug-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -383,6 +460,7 @@ async fn refresh_audio_devices_hands_over_when_asio_becomes_available() {
             settings: Settings {
                 exclusive: true,
                 asio: true,
+                asio_driver: Some(CLSID_TOPPING.into()),
                 ..Settings::default()
             },
         },
@@ -415,8 +493,8 @@ async fn refresh_audio_devices_hands_over_when_asio_becomes_available() {
         |e| matches!(e, Event::Position { position_ms, .. } if *position_ms >= 12_000),
     );
 
-    // Plug FiiO DAC in and refresh devices -> should hand over active FLAC to ASIO.
-    engine.fiio_connected.store(true, Ordering::Relaxed);
+    // Saved ASIO driver becomes discovered on refresh -> hands over active FLAC to ASIO.
+    engine.drivers_installed.store(true, Ordering::Relaxed);
     core.send(Command::RefreshAudioDevices);
     wait(&rx, "asio available", |e| {
         matches!(
@@ -428,7 +506,7 @@ async fn refresh_audio_devices_hands_over_when_asio_becomes_available() {
             }
         )
     });
-    wait_call(&engine, &format!("load asio {url1}")).await;
+    wait_call(&engine, &format!("load asio {CLSID_TOPPING}[0:1] {url1}")).await;
 
     tokio::task::spawn_blocking(move || core.shutdown())
         .await
