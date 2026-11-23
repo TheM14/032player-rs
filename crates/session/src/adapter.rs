@@ -184,6 +184,9 @@ impl PlaybackAdapter {
     fn apply_status(&mut self, next: AdapterStatus) {
         let previous = self.status;
         self.status = next;
+        if next == AdapterStatus::Stopped {
+            self.buffering = false;
+        }
         if self.current.is_none() || next == previous {
             return;
         }
@@ -257,6 +260,9 @@ impl PlaybackAdapter {
 
         let Some(current) = &self.current else {
             if let Some(status) = p.status {
+                if status == AdapterStatus::Stopped {
+                    self.buffering = false;
+                }
                 self.status = status;
             }
             return;
@@ -285,6 +291,7 @@ impl PlaybackAdapter {
             // Repeat-one: mpv signals it; a looping engine only wraps the playhead.
             self.end_current(EndReason::Completed);
             self.set_position(0);
+            self.buffering = false;
             if let Some(status) = p.status {
                 self.status = status;
             }
@@ -341,6 +348,7 @@ impl PlaybackAdapter {
     /// Engine reported a playback failure for the current track.
     pub fn on_error(&mut self) {
         self.flush();
+        self.buffering = false;
         if self.current.is_none() {
             return;
         }

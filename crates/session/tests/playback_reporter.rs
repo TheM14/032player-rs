@@ -965,3 +965,34 @@ fn expired_recovery_does_not_persist_unconfirmed_session_and_missing_recovery_st
     assert!(s.is_idle());
     assert!(s.poll_transmit().is_none());
 }
+
+#[test]
+fn adapter_resets_buffering_on_error_stopped_and_repeat_one() {
+    let mut h = Harness::new();
+    h.play_to(track_a(), 40);
+
+    // 1. Error while buffering must not leave the retry starting in Buffering state.
+    h.adapter.on_buffering(true);
+    h.idle();
+    h.adapter.on_error();
+    h.idle();
+    h.act(|a| a.on_status(AdapterStatus::Paused));
+    h.act(|a| a.on_status(AdapterStatus::Playing));
+    assert_eq!(h.last().kind, EventType::Start);
+    assert_eq!(h.last().state, Some(PlaybackState::Playing));
+
+    // 2. Stopped while buffering must not leave the next start in Buffering state.
+    h.adapter.on_buffering(true);
+    h.idle();
+    h.act(|a| a.on_status(AdapterStatus::Stopped));
+    h.act(|a| a.on_status(AdapterStatus::Playing));
+    assert_eq!(h.last().kind, EventType::Start);
+    assert_eq!(h.last().state, Some(PlaybackState::Playing));
+
+    // 3. Repeat-one while buffering must start the next pass in Playing state.
+    h.adapter.on_buffering(true);
+    h.idle();
+    h.act(|a| a.on_repeated());
+    assert_eq!(h.last().kind, EventType::Start);
+    assert_eq!(h.last().state, Some(PlaybackState::Playing));
+}
