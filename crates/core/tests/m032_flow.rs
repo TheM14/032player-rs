@@ -622,3 +622,142 @@ async fn lyrics_translation_offset_and_search() {
     );
     h.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_lyrics_dropped_and_unsynced_clears_timeline() {
+    let server = server(json!({ "lyricsOnline": true })).await;
+    // Track 1 returns slow synced lyrics; track 2 returns fast unsynced lyrics.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/1/lyrics"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(250))
+                .set_body_json(json!({
+                    "synced": true,
+                    "source": "netease",
+                    "lines": [{ "timeMs": 1000, "text": "synced-1" }]
+                })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks/2/lyrics"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "synced": false,
+            "source": "local",
+            "lines": [{ "text": "plain-2" }]
+        })))
+        .mount(&server)
+        .await;
+    get(
+        &server,
+        "/api/v1/albums/10",
+        json!({
+            "id": 10,
+            "title": "A",
+            "trackCount": 2,
+            "tracks": [track(1), track(2)]
+        }),
+    )
+    .await;
+
+    let h = Harness::start(&server);
+    h.send(Command::Play(TrackSource::Album(10)));
+    h.wait_call("load /tracks/1/stream").await;
+    // Immediately switch to track 2 while track 1's lyrics request is still in flight.
+    h.send(Command::Next);
+    h.wait_call("load /tracks/2/stream").await;
+    h.wait("track 2 unsynced lyrics", |e| {
+        matches!(
+            e,
+            Event::Lyrics {
+                synced: false,
+                lines,
+                ..
+            } if lines.first().is_some_and(|l| l.text == "plain-2")
+        )
+    });
+    // Wait past track 1's delay; stale synced lyrics must be dropped.
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    h.engine_event(EngineEvent::TimePos(2.0));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    while let Ok(ev) = h.events.try_recv() {
+        assert!(
+            !matches!(ev, Event::Lyrics { synced: true, .. }),
+            "stale synced lyrics leaked into track 2: {ev:?}"
+        );
+        assert!(
+            !matches!(ev, Event::LyricsActive(Some(_))),
+            "unsynced lyrics should not activate timeline lines: {ev:?}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_daily_mix_invalidates_cached_mixes() {
+    let server = server(json!({ "home": true, "dailyMixes": true })).await;
+    let mixes_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_clone = mixes_hits.clone();
+    Mock::given(method("GET"))
+        .and(path("/api/v1/daily-mixes"))
+        .respond_with(move |_req: &Request| {
+            let n = hits_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let id = if n == 0 { 101 } else { 102 };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "day": "2026-11-23",
+                "status": "ready",
+                "replacementsLeft": 1,
+                "items": [{
+                    "id": id,
+                    "day": "2026-11-23",
+                    "status": "active",
+                    "title": format!("Mix {id}"),
+                    "trackCount": 1
+                }]
+            }))
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/daily-mixes/101/regenerate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 102,
+            "day": "2026-11-23",
+            "status": "active",
+            "title": "Mix 102",
+            "trackCount": 1
+        })))
+        .mount(&server)
+        .await;
+    get(
+        &server,
+        "/api/v1/daily-mixes/102",
+        json!({
+            "mix": { "id": 102, "day": "2026-11-23", "status": "active", "title": "Mix 102" },
+            "tracks": [{ "position": 0, "bucket": "familiar", "track": track(1) }]
+        }),
+    )
+    .await;
+
+    let h = Harness::start(&server);
+    h.send(Command::LoadHome);
+    h.wait(
+        "initial mixes",
+        |e| matches!(e, Event::DailyMixes { items, .. } if items.first().is_some_and(|m| m.id == 101)),
+    );
+    h.send(Command::ReplaceDailyMix(101));
+    h.wait("replaced mix event", |e| {
+        matches!(e, Event::DailyMixReplaced { from: 101, to: 102 })
+    });
+    h.wait(
+        "reloaded mixes",
+        |e| matches!(e, Event::DailyMixes { items, .. } if items.first().is_some_and(|m| m.id == 102)),
+    );
+    assert!(
+        mixes_hits.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "daily mixes cache must be invalidated on replace"
+    );
+    h.shutdown().await;
+}

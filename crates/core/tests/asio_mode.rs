@@ -363,3 +363,75 @@ async fn asio_opus_fallback_skips_cross_backend_gapless_and_hot_switches() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_audio_devices_hands_over_when_asio_becomes_available() {
+    let server = setup_server().await;
+    let engine = Arc::new(AsioFakeEngine::default());
+    // Start with FiiO disconnected while user preference is ExclusiveMode::Asio.
+    engine.fiio_connected.store(false, Ordering::Relaxed);
+
+    let dir = std::env::temp_dir().join(format!("032player-asio-hotplug-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings {
+                exclusive: true,
+                asio: true,
+                ..Settings::default()
+            },
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    wait(
+        &rx,
+        "tracks loaded",
+        |e| matches!(e, Event::TracksAppended { items, .. } if items.len() == 3),
+    );
+
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    let url1 = format!("{}/api/v1/tracks/1/stream?mediaToken=media", server.uri());
+    wait_call(&engine, &format!("load wasapi {url1}")).await;
+    core.engine_event(EngineEvent::FileLoaded {
+        path: Some(url1.clone()),
+    });
+    core.engine_event(EngineEvent::TimePos(12.0));
+    wait(
+        &rx,
+        "pos 12s",
+        |e| matches!(e, Event::Position { position_ms, .. } if *position_ms >= 12_000),
+    );
+
+    // Plug FiiO DAC in and refresh devices -> should hand over active FLAC to ASIO.
+    engine.fiio_connected.store(true, Ordering::Relaxed);
+    core.send(Command::RefreshAudioDevices);
+    wait(&rx, "asio available", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Asio,
+                asio_available: true,
+                asio_fallback: false,
+            }
+        )
+    });
+    wait_call(&engine, &format!("load asio {url1}")).await;
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

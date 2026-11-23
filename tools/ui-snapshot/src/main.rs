@@ -1371,6 +1371,7 @@ fn main() {
     set(&inst, "page", Value::Number(3.0));
     render(&window, size, &format!("{out}/artists.png"));
     set(&inst, "page", n(24.0));
+    set(&inst, "artist-credit-roles-supported", Value::Bool(true));
     set(&inst, "artist-dir-role", s("composer"));
     render(&window, size, &format!("{out}/artists-by-role.png"));
     set(&inst, "playlist-rows", album_rows(5));

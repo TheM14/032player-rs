@@ -168,6 +168,7 @@ export global Home {
     in property <int> works-pages;
     // 0 all, 1 anime, 2 game, 3 movie.
     in property <int> works-type;
+    in property <int> works-reset-seq;
     in property <[HomeRow]> songs;
     in property <int> songs-count;
     in property <int> songs-pages;
@@ -175,6 +176,7 @@ export global Home {
     in property <int> year;
     in property <int> year-total;
     in property <[AlbumRow]> chronicle;
+    in property <int> chronicle-reset-seq;
     in property <[AlbumRow]> playlists;
     in property <HomeStats> stats;
     callback tab-selected(int);
@@ -553,6 +555,7 @@ export component CardShelf inherits Rectangle {
     in property <length> side: Shell.pad;
     in property <length> gap: root.kind == 5 ? 20px : 18px;
     in property <[PlaylistChoice]> playlists;
+    in property <int> reset-seq: 0;
     callback layout-changed(length);
     callback action(string, int, int);
     property <length> offset: 0px;
@@ -567,6 +570,12 @@ export component CardShelf inherits Rectangle {
     }
     changed size => {
         root.layout-changed(root.size);
+    }
+    changed reset-seq => {
+        root.offset = 0px;
+    }
+    changed max-offset => {
+        root.offset = min(root.offset, root.max-offset);
     }
     changed width => {
         root.offset = min(root.offset, root.max-offset);
@@ -1787,6 +1796,7 @@ export component HomePage inherits Flickable {
                     card-w: root.work-w;
                     side: root.pad;
                     playlists: root.playlists;
+                    reset-seq: Home.works-reset-seq;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.works, 1000, size);
                     }
@@ -1952,6 +1962,7 @@ export component HomePage inherits Flickable {
                     size: root.shelf-card;
                     side: root.pad;
                     playlists: root.playlists;
+                    reset-seq: Home.chronicle-reset-seq;
                     layout-changed(size) => {
                         root.card-layout(HomeGrids.chronicle, 1000, size);
                     }
@@ -2329,7 +2340,7 @@ export component WorkPage inherits Flickable {
     callback card-layout(int, length);
     callback track-action(string, int, int);
     callback navigate(int, int);
-    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 40px - 64px - 80px);
+    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
     content-height: page.preferred-height;
 
     page := VerticalLayout {

@@ -306,6 +306,7 @@ impl Core {
     pub(super) fn query_artists(&mut self, favorites: bool, filter: ArtistFilter) {
         let Some(library) = &self.library else { return };
         let browse = library.browse();
+        let credit_roles = library.capabilities.has(api::Feature::ArtistCreditRoles);
         let seeds = library.seeds.clone();
         let Some((client, tx)) = self.request() else {
             return;
@@ -321,12 +322,17 @@ impl Core {
             self.emit(Event::ArtistsReset);
         }
         let random = browse && filter.sort == api::ArtistSort::Random;
+        let role = if favorites {
+            api::ArtistRole::All
+        } else {
+            match filter.role {
+                Some(role) if !role.is_credit_role() || credit_roles => role,
+                _ if filter.all_roles => api::ArtistRole::All,
+                _ => api::ArtistRole::Album,
+            }
+        };
         let query = ArtistListQuery {
-            role: filter.role.unwrap_or(if filter.all_roles {
-                api::ArtistRole::All
-            } else {
-                api::ArtistRole::Album
-            }),
+            role,
             favorite: favorites,
             search: Some(filter.search.trim().to_owned()).filter(|s| !s.is_empty()),
             sort: Some(filter.sort),
@@ -416,7 +422,7 @@ impl Core {
             .library
             .as_ref()
             .is_some_and(|l| l.capabilities.has(api::Feature::Browse));
-        let mixes_known = self.home.as_ref().and_then(|h| h.mixes()).cloned();
+        let mixes_known = self.home.as_ref().and_then(|h| h.fresh_mixes()).cloned();
         tokio::spawn(async move {
             let mut artist_credits_data = None;
             let result: Result<(DetailView, Vec<Track>, Vec<String>), ApiError> = async {
@@ -597,11 +603,23 @@ impl Core {
                     }
                     DetailKey::DailyMix(id) => {
                         let (detail, list) = match mixes_known {
-                            Some(list) => (client.daily_mix(id).await, Ok(list)),
-                            None => tokio::join!(client.daily_mix(id), client.daily_mixes()),
+                            Some(cached) => {
+                                let detail = client.daily_mix(id).await?;
+                                let list =
+                                    if !detail.mix.day.is_empty() && detail.mix.day != cached.day {
+                                        client.daily_mixes().await.ok().or(Some(cached))
+                                    } else {
+                                        Some(cached)
+                                    };
+                                (detail, list)
+                            }
+                            None => {
+                                let (detail, list) =
+                                    tokio::join!(client.daily_mix(id), client.daily_mixes());
+                                (detail?, list.ok())
+                            }
                         };
-                        let detail = detail?;
-                        let view = crate::m032::mix_view(&detail, list.ok().as_ref());
+                        let view = crate::m032::mix_view(&detail, list.as_ref());
                         let tracks = detail.tracks.into_iter().map(|t| t.track).collect();
                         (DetailView::DailyMix(view), tracks, Vec::new())
                     }
@@ -1041,9 +1059,15 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.set_favorite(kind, id, favorite).await {
-                Ok(()) => Internal::FavoriteSet { kind, id, favorite },
+                Ok(()) => Internal::FavoriteSet {
+                    generation,
+                    kind,
+                    id,
+                    favorite,
+                },
                 Err(e) => Self::failed(&client, "收藏", e),
             };
             let _ = tx.send(msg);
@@ -1110,6 +1134,7 @@ impl Core {
             && let Some((tracks, play)) = self.mix_playable(*start, true)
         {
             let play = if *shuffle { play.shuffled() } else { play };
+            self.begin_play_intent();
             self.fetched(tracks, play);
             return;
         }
@@ -1127,12 +1152,16 @@ impl Core {
             _ => None,
         };
         if let Some(tracks) = tracks {
+            if matches!(intent, Intent::Play { .. }) {
+                self.begin_play_intent();
+            }
             self.fetched(tracks, intent);
             return;
         }
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         let group_albums = match (source, &self.artist_groups) {
             (TrackSource::ArtistGroup(artist, group), Some((open, groups))) if artist == *open => {
                 groups.get(group).cloned().unwrap_or_default()
@@ -1152,6 +1181,9 @@ impl Core {
                 .filter(|track| albums.contains(&track.album_id))
                 .cloned()
                 .collect();
+            if matches!(intent, Intent::Play { .. }) {
+                self.begin_play_intent();
+            }
             self.fetched(tracks, intent);
             return;
         }
@@ -1162,13 +1194,15 @@ impl Core {
             let playlist_id = *playlist_id;
             tokio::spawn(async move {
                 let msg = match client.append_album_to_playlist(playlist_id, album_id).await {
-                    Ok(r) => added_notice(&r),
+                    Ok(r) => added_notice(generation, &r),
                     Err(e) => Self::failed(&client, "添加到歌单", e),
                 };
                 let _ = tx.send(msg);
             });
             return;
         }
+        let play_seq = matches!(intent, Intent::Play { .. }).then(|| self.begin_play_intent());
+        let api_token = client.api_token().to_owned();
         tokio::spawn(async move {
             let mut intent = intent;
             let result = match source {
@@ -1188,13 +1222,21 @@ impl Core {
                 TrackSource::Work(id) => client.work_tracks(id).await.map(|items| {
                     let tracks = unique_tracks(items);
                     let ids = tracks.iter().map(|t| t.id).collect();
-                    let _ = tx.send(Internal::SourceTracks(SourceKey::Work(id), ids));
+                    let _ = tx.send(Internal::SourceTracks {
+                        generation,
+                        key: SourceKey::Work(id),
+                        ids,
+                    });
                     tracks
                 }),
                 TrackSource::Series(id) => client.series_tracks(id).await.map(|items| {
                     let tracks = unique_tracks(items);
                     let ids = tracks.iter().map(|t| t.id).collect();
-                    let _ = tx.send(Internal::SourceTracks(SourceKey::Series(id), ids));
+                    let _ = tx.send(Internal::SourceTracks {
+                        generation,
+                        key: SourceKey::Series(id),
+                        ids,
+                    });
                     tracks
                 }),
                 TrackSource::DailyMix(id) => client.daily_mix(id).await.map(|detail| {
@@ -1234,7 +1276,13 @@ impl Core {
                     Ok(Vec::new())
                 }
             };
-            let _ = tx.send(Internal::Fetched(result, intent));
+            let _ = tx.send(Internal::Fetched {
+                generation,
+                api_token,
+                play_seq,
+                result,
+                intent,
+            });
         });
     }
 
@@ -1280,9 +1328,10 @@ impl Core {
                 let Some((client, tx)) = self.request() else {
                     return;
                 };
+                let generation = self.list_generation;
                 tokio::spawn(async move {
                     let msg = match client.append_to_playlist(playlist_id, &ids).await {
-                        Ok(r) => added_notice(&r),
+                        Ok(r) => added_notice(generation, &r),
                         Err(e) => Self::failed(&client, "添加到歌单", e),
                     };
                     let _ = tx.send(msg);
@@ -1293,9 +1342,11 @@ impl Core {
                 let Some((client, tx)) = self.request() else {
                     return;
                 };
+                let generation = self.list_generation;
                 tokio::spawn(async move {
                     let msg = match client.create_playlist(&name, &description, &ids).await {
                         Ok(_) => Internal::PlaylistsChanged {
+                            generation,
                             notice: Some(format!("已创建歌单「{name}」")),
                             deleted: None,
                         },
@@ -1315,6 +1366,9 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
+        let api_token = client.api_token().to_owned();
+        let play_seq = Some(self.begin_play_intent());
         let mut q = Query::new();
         q.push_opt("yearFrom", year(self.track_filter.year_from));
         q.push_opt("yearTo", year(self.track_filter.year_to));
@@ -1342,7 +1396,13 @@ impl Core {
                 Ok::<_, ApiError>(items)
             }
             .await;
-            let _ = tx.send(Internal::Fetched(result, Intent::play_at(0)));
+            let _ = tx.send(Internal::Fetched {
+                generation,
+                api_token,
+                play_seq,
+                result,
+                intent: Intent::play_at(0),
+            });
         });
     }
 
@@ -1372,9 +1432,11 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.update_playlist(id, &name, &description).await {
                 Ok(()) => Internal::PlaylistsChanged {
+                    generation,
                     notice: None,
                     deleted: None,
                 },
@@ -1388,9 +1450,11 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.delete_playlist(id).await {
                 Ok(()) => Internal::PlaylistsChanged {
+                    generation,
                     notice: Some("已删除歌单".into()),
                     deleted: Some(id),
                 },
@@ -1425,6 +1489,7 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let remove = || async {
                 let revision = client.playlist(playlist_id).await?.playlist.revision;
@@ -1442,6 +1507,7 @@ impl Core {
             }
             let msg = match result {
                 Ok(_) => Internal::PlaylistsChanged {
+                    generation,
                     notice: None,
                     deleted: None,
                 },
@@ -1468,6 +1534,7 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let result = async {
                 let detail = client.playlist(playlist_id).await?;
@@ -1484,11 +1551,13 @@ impl Core {
             .await;
             let msg = match result {
                 Ok(()) => Internal::PlaylistsChanged {
+                    generation,
                     notice: None,
                     deleted: None,
                 },
                 Err(e) => {
                     let _ = tx.send(Internal::PlaylistsChanged {
+                        generation,
                         notice: None,
                         deleted: None,
                     });
@@ -1503,6 +1572,7 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let result = match image {
                 Some(bytes) => client.upload_playlist_artwork(playlist_id, bytes).await,
@@ -1510,6 +1580,7 @@ impl Core {
             };
             let msg = match result {
                 Ok(_) => Internal::PlaylistsChanged {
+                    generation,
                     notice: None,
                     deleted: None,
                 },
@@ -1530,7 +1601,7 @@ fn unique_tracks(items: Vec<api::WorkTrack>) -> Vec<Track> {
         .collect()
 }
 
-fn added_notice(r: &api::PlaylistItemResult) -> Internal {
+fn added_notice(generation: u64, r: &api::PlaylistItemResult) -> Internal {
     let notice = if r.added == 0 && r.skipped_duplicate > 0 {
         "歌单里已有这些歌曲".to_owned()
     } else if r.skipped_duplicate > 0 {
@@ -1542,6 +1613,7 @@ fn added_notice(r: &api::PlaylistItemResult) -> Internal {
         format!("已添加 {} 首到歌单", r.added)
     };
     Internal::PlaylistsChanged {
+        generation,
         notice: Some(notice),
         deleted: None,
     }

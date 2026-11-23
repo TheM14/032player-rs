@@ -116,9 +116,13 @@ const LANGUAGES: [&str; 3] = ["zh-Hans", "zh-Hant", "en"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Bind {
     Home,
+    HomeSongs,
+    HomeRecent,
+    HomeMixes,
     /// Spotlight art (re-bound when its size changes).
     Hero,
     Detail,
+    AlbumWorks,
     /// Queue thumbnails (kept until they arrive; the queue caches them).
     Queue,
     /// Sidebar playlist covers.
@@ -279,6 +283,10 @@ impl Ui {
         for (_, set) in slots.into_iter().flatten() {
             set(image);
         }
+    }
+
+    pub(super) fn image_failed(&self, key: &str) {
+        self.m032.borrow_mut().bindings.remove(key);
     }
 
     /// Covers of home-style rows, set into `model` as they arrive.
@@ -486,7 +494,7 @@ impl Ui {
                 let albums = albums.clone();
                 self.bind_image(
                     w,
-                    Bind::Home,
+                    Bind::Hero,
                     &a.artwork,
                     PREVIEW_COVER,
                     ArtworkFit::Contain,
@@ -589,6 +597,25 @@ impl Ui {
         }
     }
 
+    pub(super) fn set_spotlight_album_favorite(
+        &self,
+        w: &AppWindow,
+        album_id: i64,
+        favorite: bool,
+    ) {
+        for pane in &mut self.m032.borrow_mut().panes {
+            if pane.album.id == album_id {
+                pane.album.favorite = favorite;
+            }
+        }
+        let home = w.global::<Home>();
+        let mut pane = home.get_pane();
+        if i64::from(pane.album_id) == album_id && pane.favorite != favorite {
+            pane.favorite = favorite;
+            home.set_pane(pane);
+        }
+    }
+
     pub(super) fn home_works(&self, w: &AppWindow, works: views::Rotation<views::WorkItem>) {
         let home = w.global::<Home>();
         home.set_works_count(int(works.count));
@@ -603,9 +630,11 @@ impl Ui {
         let grid = &self.grids[GRID_HOME_WORKS];
         grid.set(works.items.iter().map(|w| work_card(w, true)).collect());
         grid.set_playing(&self.playing_works());
+        home.set_works_reset_seq(home.get_works_reset_seq().wrapping_add(1));
     }
 
     pub(super) fn home_songs(&self, w: &AppWindow, songs: views::Rotation<views::SongItem>) {
+        self.unbind(Bind::HomeSongs);
         let home = w.global::<Home>();
         home.set_songs_count(int(songs.count));
         home.set_songs_pages(i32::try_from(songs.pages).unwrap_or(0));
@@ -625,10 +654,11 @@ impl Ui {
                 .collect::<Vec<_>>(),
         );
         let covers: Vec<String> = songs.items.iter().map(|r| r.artwork.clone()).collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_songs, &covers, ROW_COVER);
+        self.bind_row_covers(w, Bind::HomeSongs, &self.home_songs, &covers, ROW_COVER);
     }
 
     pub(super) fn home_recent(&self, w: &AppWindow, items: Vec<views::RecordItem>) {
+        self.unbind(Bind::HomeRecent);
         self.home_recent.set_vec(
             items
                 .iter()
@@ -641,12 +671,13 @@ impl Ui {
                 .collect::<Vec<_>>(),
         );
         let covers: Vec<String> = items.iter().map(|r| r.artwork.clone()).collect();
-        self.bind_row_covers(w, Bind::Home, &self.home_recent, &covers, ROW_COVER);
+        self.bind_row_covers(w, Bind::HomeRecent, &self.home_recent, &covers, ROW_COVER);
     }
 
     pub(super) fn home_mixes(&self, w: &AppWindow, generating: bool, items: &[views::MixItem]) {
+        self.unbind(Bind::HomeMixes);
         w.global::<Home>().set_mixes_generating(generating);
-        self.set_mix_rows(w, Bind::Home, &self.home_mixes, items);
+        self.set_mix_rows(w, Bind::HomeMixes, &self.home_mixes, items);
     }
 
     /// Daily mix rows: a 2x2 mosaic of the first four covers, or the first
@@ -702,6 +733,7 @@ impl Ui {
                 })
                 .collect(),
         );
+        home.set_chronicle_reset_seq(home.get_chronicle_reset_seq().wrapping_add(1));
     }
 
     pub(super) fn home_action(&self, w: &AppWindow, action: &str, arg: i64) {
@@ -911,6 +943,7 @@ impl Ui {
 
     pub(super) fn reset_m032_detail(&self, w: &AppWindow) {
         self.unbind(Bind::Detail);
+        self.unbind(Bind::AlbumWorks);
         self.m032.borrow_mut().tieup_works.clear();
         w.set_album_works(rc(Vec::new()));
         w.set_album_release(rc(Vec::new()));
@@ -993,6 +1026,7 @@ impl Ui {
         if self.route.get() != Route::Album(album_id) {
             return;
         }
+        self.unbind(Bind::AlbumWorks);
         let model = std::rc::Rc::new(VecModel::from(
             works
                 .iter()
@@ -1023,7 +1057,7 @@ impl Ui {
             let chips = model.clone();
             self.bind_image(
                 w,
-                Bind::Detail,
+                Bind::AlbumWorks,
                 &wk.poster,
                 WORK_POSTER,
                 ArtworkFit::Cover,
@@ -1036,7 +1070,7 @@ impl Ui {
             );
             self.bind_image(
                 w,
-                Bind::Detail,
+                Bind::AlbumWorks,
                 &wk.poster,
                 WORK_CHIP,
                 ArtworkFit::Cover,
@@ -1051,7 +1085,7 @@ impl Ui {
             let work_id = int(wk.id);
             self.bind_image(
                 w,
-                Bind::Detail,
+                Bind::AlbumWorks,
                 &wk.poster,
                 WORK_POSTER,
                 ArtworkFit::Cover,

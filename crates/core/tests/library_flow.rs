@@ -811,3 +811,105 @@ async fn queue_drag_and_drop() {
     assert_eq!(h.queue_titles(), ["c", "a", "b"]);
     h.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn favorite_artists_uses_all_role_and_gates_credit_roles() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/browse/artists"))
+        .and(query_param("favorite", "true"))
+        .and(query_param("role", "all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(
+            vec![json!({ "id": 8, "name": "作曲家", "albumCount": 0, "trackCount": 2 })],
+            1,
+        )))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Capabilities omit `artistCreditRoles`, so requesting `Composer` must downgrade to `all`.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/browse/artists"))
+        .and(query_param("role", "all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(
+            vec![json!({ "id": 5, "name": "歌手", "albumCount": 1, "trackCount": 3 })],
+            1,
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::QueryArtists {
+        favorites: true,
+        filter: client_core::ArtistFilter::default(),
+    });
+    h.wait(
+        "favorite artists",
+        |e| matches!(e, Event::FavoriteArtists(items) if items.len() == 1 && items[0].id == 8),
+    );
+
+    h.send(Command::QueryArtists {
+        favorites: false,
+        filter: client_core::ArtistFilter {
+            all_roles: true,
+            role: Some(client_core::ArtistRole::Composer),
+            ..client_core::ArtistFilter::default()
+        },
+    });
+    h.wait(
+        "downgraded credit role query",
+        |e| matches!(e, Event::ArtistsAppended { items, .. } if items.len() == 1 && items[0].id == 5),
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_fetched_play_intent_does_not_hijack_newer_playback() {
+    let server = server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums/101"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(250))
+                .set_body_json(json!({
+                    "id": 101,
+                    "title": "Slow Album",
+                    "trackCount": 1,
+                    "tracks": [track(101, "Slow Track")],
+                })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums/102"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 102,
+            "title": "Fast Album",
+            "trackCount": 1,
+            "tracks": [track(102, "Fast Track")],
+        })))
+        .mount(&server)
+        .await;
+
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::Play(TrackSource::Album(101)));
+    h.send(Command::Play(TrackSource::Album(102)));
+    h.wait(
+        "fast album plays",
+        |e| matches!(e, Event::NowPlaying(Some(n)) if n.track_id == 102),
+    );
+    // Wait past the slow response delay and verify it does not overwrite playback.
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let mut hijacked = false;
+    while let Ok(ev) = h.events.try_recv() {
+        if matches!(ev, Event::NowPlaying(Some(n)) if n.track_id == 101) {
+            hijacked = true;
+        }
+    }
+    assert!(
+        !hijacked,
+        "stale fetched play intent hijacked active playback"
+    );
+    h.shutdown().await;
+}

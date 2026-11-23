@@ -43,6 +43,10 @@ impl Core {
 
     /// Hides the lyrics (no current track, signed out).
     pub(super) fn clear_lyrics(&mut self) {
+        self.latest.remove(&Target::Lyrics);
+        self.latest.remove(&Target::LyricsTranslation);
+        self.latest.remove(&Target::LyricsResults);
+        self.latest.remove(&Target::LyricsPreview);
         let offsets = std::mem::take(&mut self.lyr.offsets);
         let translation_off = self.lyr.translation_off;
         self.lyr = LyricsState {
@@ -62,11 +66,12 @@ impl Core {
     /// Clears the lyrics and fetches those of `track_id`.
     pub(super) fn load_lyrics(&mut self, track_id: i64) {
         self.clear_lyrics();
-        let Some(library) = &self.library else { return };
+        let Some((client, tx)) = self.request() else {
+            return;
+        };
         self.lyr.track_id = track_id;
+        let seq = self.next_seq(Target::Lyrics);
         self.emit_lyrics_tools();
-        let client = library.client.clone();
-        let tx = self.internal.clone();
         tokio::spawn(async move {
             let lyrics = match client.lyrics(track_id).await {
                 Ok(lyrics) => lyrics,
@@ -78,17 +83,34 @@ impl Core {
                     None
                 }
             };
-            let _ = tx.send(Internal::Lyrics { track_id, lyrics });
+            let _ = tx.send(Internal::Lyrics {
+                seq,
+                track_id,
+                lyrics,
+            });
         });
     }
 
-    pub(super) fn lyrics_loaded(&mut self, track_id: i64, lyrics: Option<api::Lyrics>) {
-        if self.lyr.track_id != track_id
+    pub(super) fn lyrics_loaded(&mut self, seq: u64, track_id: i64, lyrics: Option<api::Lyrics>) {
+        if self.latest.get(&Target::Lyrics) != Some(&seq)
+            || self.lyr.track_id != track_id
             || self.queue.current().map(|i| i.track.id) != Some(track_id)
         {
             return;
         }
+        self.latest.remove(&Target::LyricsTranslation);
+        self.lyr.translating = false;
+        self.lyr.translation = None;
+        self.lyr.show_translation = false;
         let Some(lyrics) = lyrics.filter(|l| !l.lines.is_empty()) else {
+            self.lyr.timeline = None;
+            self.lyr.lines.clear();
+            self.lyr.synced = false;
+            self.lyr.source = None;
+            self.lyr.active = None;
+            self.emit_lyrics();
+            self.emit(Event::LyricsActive(None));
+            self.emit_lyrics_tools();
             return;
         };
         let mut lines: Vec<(i64, String, usize)> = lyrics
@@ -108,6 +130,8 @@ impl Core {
                     })
                     .collect(),
             ));
+        } else {
+            self.lyr.timeline = None;
         }
         self.lyr.lines = lines;
         self.lyr.synced = lyrics.synced;
@@ -117,7 +141,7 @@ impl Core {
         self.update_active_line();
         self.emit_lyrics_tools();
         if self.settings.lyrics.auto_translate && self.can_translate() && !self.lyr.auto_failed {
-            self.translate(true);
+            self.translate(true, false);
         }
     }
 
@@ -210,17 +234,19 @@ impl Core {
             self.emit_lyrics_tools();
             return;
         }
-        self.translate(false);
+        self.translate(false, false);
     }
 
-    fn translate(&mut self, auto: bool) {
-        if self.lyr.translating || self.lyr.lines.is_empty() || !self.can_translate() {
+    fn translate(&mut self, auto: bool, force: bool) {
+        if (!force && self.lyr.translating) || self.lyr.lines.is_empty() || !self.can_translate() {
             return;
         }
         let Some((client, tx)) = self.request() else {
             return;
         };
         let track_id = self.lyr.track_id;
+        let seq = self.next_seq(Target::LyricsTranslation);
+        let api_token = client.api_token().to_owned();
         let language = self.settings.lyrics.translation_language.clone();
         self.lyr.translating = true;
         self.lyr.auto_failed = auto;
@@ -230,16 +256,38 @@ impl Core {
                 .translate_lyrics(track_id, &language)
                 .await
                 .map(|t| t.lines);
-            let _ = tx.send(Internal::Translation { track_id, lines });
+            let _ = tx.send(Internal::Translation {
+                seq,
+                api_token,
+                track_id,
+                lines,
+            });
         });
     }
 
     pub(super) fn translation_loaded(
         &mut self,
+        seq: u64,
+        api_token: String,
         track_id: i64,
         lines: Result<Vec<String>, api::ApiError>,
     ) {
-        if self.lyr.track_id != track_id || !self.lyr.translating {
+        if let Err(ref e) = lines
+            && e.is_unauthorized()
+        {
+            if self.latest.get(&Target::LyricsTranslation) == Some(&seq)
+                && self.lyr.track_id == track_id
+            {
+                self.lyr.translating = false;
+                self.emit_lyrics_tools();
+            }
+            self.internal(Internal::Unauthorized { api_token });
+            return;
+        }
+        if self.latest.get(&Target::LyricsTranslation) != Some(&seq)
+            || self.lyr.track_id != track_id
+            || !self.lyr.translating
+        {
             return;
         }
         self.lyr.translating = false;
@@ -251,14 +299,6 @@ impl Core {
                 self.emit_lyrics();
             }
             Err(e) => {
-                if e.is_unauthorized() {
-                    self.emit_lyrics_tools();
-                    if let Some(library) = &self.library {
-                        let api_token = library.client.api_token().to_owned();
-                        self.internal(Internal::Unauthorized { api_token });
-                    }
-                    return;
-                }
                 if e.code() == Some(TRANSLATION_DISABLED) {
                     self.lyr.translation_off = true;
                 }
@@ -294,16 +334,21 @@ impl Core {
         let language_changed =
             lyrics.translation_language != self.settings.lyrics.translation_language;
         self.update_settings(|s| s.lyrics = lyrics);
-        if language_changed && self.lyr.translation.is_some() {
-            // Shown in the old language: translate again.
-            self.lyr.translation = None;
-            self.lyr.show_translation = false;
-            self.translate(false);
+        if language_changed {
+            self.lyr.auto_failed = false;
+            if self.lyr.translation.is_some() || self.lyr.translating {
+                // Shown or in-flight in the old language: translate again with a new seq.
+                self.lyr.translation = None;
+                self.lyr.show_translation = false;
+                self.translate(false, true);
+            } else if self.settings.lyrics.auto_translate {
+                self.translate(true, false);
+            }
         } else if self.settings.lyrics.auto_translate
             && self.lyr.translation.is_none()
             && !self.lyr.auto_failed
         {
-            self.translate(true);
+            self.translate(true, false);
         }
         self.emit_lyrics();
         self.emit_lyrics_tools();
@@ -316,6 +361,7 @@ impl Core {
         if track_id == 0 {
             return;
         }
+        let seq = self.next_seq(Target::LyricsResults);
         if name.trim().is_empty() && artist.trim().is_empty() {
             self.lyr.results.clear();
             self.emit(Event::LyricsSearchResults(Vec::new()));
@@ -331,15 +377,24 @@ impl Core {
         };
         tokio::spawn(async move {
             let msg = match client.search_lyrics(&name, &artist, duration).await {
-                Ok(results) => Internal::LyricsResults { track_id, results },
+                Ok(results) => Internal::LyricsResults {
+                    seq,
+                    track_id,
+                    results,
+                },
                 Err(e) => Self::failed(&client, "搜索歌词", e),
             };
             let _ = tx.send(msg);
         });
     }
 
-    pub(super) fn lyrics_results(&mut self, track_id: i64, mut results: Vec<LyricsSearchResult>) {
-        if self.lyr.track_id != track_id {
+    pub(super) fn lyrics_results(
+        &mut self,
+        seq: u64,
+        track_id: i64,
+        mut results: Vec<LyricsSearchResult>,
+    ) {
+        if self.latest.get(&Target::LyricsResults) != Some(&seq) || self.lyr.track_id != track_id {
             return;
         }
         results.sort_by(|a, b| a.score.total_cmp(&b.score));
@@ -390,9 +445,13 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.set_lyrics_source(track_id, &pick).await {
-                Ok(()) => Internal::LyricsChanged(track_id),
+                Ok(()) => Internal::LyricsChanged {
+                    generation,
+                    track_id,
+                },
                 Err(e) => Self::failed(&client, "更新歌词", e),
             };
             let _ = tx.send(msg);
@@ -407,9 +466,13 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.clear_lyrics_source(track_id).await {
-                Ok(()) => Internal::LyricsChanged(track_id),
+                Ok(()) => Internal::LyricsChanged {
+                    generation,
+                    track_id,
+                },
                 Err(e) => Self::failed(&client, "清除歌词", e),
             };
             let _ = tx.send(msg);

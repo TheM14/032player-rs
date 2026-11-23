@@ -6,7 +6,7 @@ mod search;
 mod shortcuts;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -66,6 +66,13 @@ const ALBUM_GRIDS: [usize; 13] = [
     GRID_CHRONICLE,
     GRID_WORK_ALBUMS,
 ];
+/// Grids of artist cards (for scoped favorite updates without cross-entity ID collision).
+const ARTIST_GRIDS: [usize; 4] = [
+    GRID_ARTISTS,
+    GRID_FAV_ARTISTS,
+    GRID_SEARCH_ARTISTS,
+    GRID_SEARCH_COMPOSERS,
+];
 
 /// Pages of app.slint.
 const PAGE_ALBUMS: i32 = 0;
@@ -75,11 +82,62 @@ const PAGE_DETAIL: i32 = 10;
 
 /// Queue thumbnails (logical px; matches the 48px full-screen stage cover).
 const QUEUE_COVER: f32 = 48.0;
+/// Decoded queue thumbnails kept in memory.
+const MAX_QUEUE_COVERS: usize = 128;
 /// Player bar cover (logical px).
 const NP_COVER: f32 = 56.0;
 /// Playlist artwork upload limit of the server.
 const MAX_ARTWORK_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_HISTORY: usize = 50;
+
+/// Bounded LRU-like cache for queue cover thumbnails.
+struct BoundedCache<V> {
+    map: HashMap<String, V>,
+    order: VecDeque<String>,
+    cap: usize,
+}
+
+impl<V> Default for BoundedCache<V> {
+    fn default() -> Self {
+        Self::new(MAX_QUEUE_COVERS)
+    }
+}
+
+impl<V> BoundedCache<V> {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<&V> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: String, value: V) {
+        if let Some(pos) = self.order.iter().position(|k| k == &key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, value);
+        while self.map.len() > self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+}
+
+type QueueCoverCache = BoundedCache<Image>;
 
 /// Where the content area is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,8 +146,8 @@ enum Route {
     Album(i64),
     Artist(i64),
     Playlist(i64),
-    Similar(TrackList, usize),
-    Versions(TrackList, usize),
+    Similar(i64),
+    Versions(i64),
     Work(i64),
     Series(i64),
     DailyMix(i64),
@@ -295,6 +353,7 @@ struct Ui {
     scroll_timer: Timer,
     scroll_restore: Cell<(f32, f32)>,
     scroll_restore_ticks: Cell<u8>,
+    scroll_seen: Cell<(Option<f32>, Option<f32>)>,
     dialog: Cell<Option<Dialog>>,
     /// Artist filters of the albums / tracks pages (id, name).
     album_artist: RefCell<Option<(i64, String)>>,
@@ -317,7 +376,7 @@ struct Ui {
     queue_all: RefCell<(Vec<client_core::QueueEntry>, Option<usize>)>,
     queue_search: RefCell<String>,
     /// Queue thumbnails by artwork path (40px; queues repeat albums).
-    queue_covers: Rc<RefCell<HashMap<String, Image>>>,
+    queue_covers: Rc<RefCell<QueueCoverCache>>,
     /// Artwork path of each row in the queue model.
     queue_paths: Rc<RefCell<Vec<String>>>,
     /// Release page of a newer version.
@@ -435,17 +494,24 @@ impl Ui {
         self.show_with_scroll(w, route, 0.0, 0.0);
     }
 
+    fn cancel_scroll_restore(&self) {
+        self.scroll_timer.stop();
+        self.scroll_restore.set((0.0, 0.0));
+        self.scroll_restore_ticks.set(0);
+        self.scroll_seen.set((None, None));
+    }
+
     /// Applies a back-navigation offset for about two seconds while asynchronous
     /// detail content grows. A short-lived page cannot clamp the saved offset to
     /// zero before its tracks or cards arrive.
     fn restore_scroll(&self, w: &AppWindow, scroll_y: f32, inspector_scroll_y: f32) {
-        self.scroll_timer.stop();
-        self.scroll_restore.set((scroll_y, inspector_scroll_y));
+        self.cancel_scroll_restore();
         w.set_content_scroll_y(scroll_y);
         w.set_inspector_scroll_y(inspector_scroll_y);
         if scroll_y.abs() < 1.0 && inspector_scroll_y.abs() < 1.0 {
             return;
         }
+        self.scroll_restore.set((scroll_y, inspector_scroll_y));
         self.scroll_restore_ticks.set(125);
         self.scroll_timer.start(
             slint::TimerMode::Repeated,
@@ -453,21 +519,37 @@ impl Ui {
             || {
                 with_ui(|ui, w| {
                     let (scroll_y, inspector_scroll_y) = ui.scroll_restore.get();
-                    let scroll_done = (w.get_content_scroll_y() - scroll_y).abs() < 1.0;
+                    let scroll_needed = scroll_y.abs() >= 1.0;
+                    let inspector_needed = inspector_scroll_y.abs() >= 1.0;
+                    let cur_scroll = w.get_content_scroll_y();
+                    let cur_inspector = w.get_inspector_scroll_y();
+                    let scroll_done = !scroll_needed || (cur_scroll - scroll_y).abs() < 1.0;
                     let inspector_done =
-                        (w.get_inspector_scroll_y() - inspector_scroll_y).abs() < 1.0;
+                        !inspector_needed || (cur_inspector - inspector_scroll_y).abs() < 1.0;
+                    let (mut seen_scroll, mut seen_inspector) = ui.scroll_seen.get();
+                    let user_scrolled = (scroll_needed
+                        && !scroll_done
+                        && seen_scroll.is_some_and(|prev| moved_away(cur_scroll, prev, scroll_y)))
+                        || (inspector_needed
+                            && !inspector_done
+                            && seen_inspector.is_some_and(|prev| {
+                                moved_away(cur_inspector, prev, inspector_scroll_y)
+                            }));
                     let ticks = ui.scroll_restore_ticks.get().saturating_sub(1);
                     ui.scroll_restore_ticks.set(ticks);
-                    if (scroll_done && inspector_done) || ticks == 0 {
-                        ui.scroll_timer.stop();
+                    if user_scrolled || (scroll_done && inspector_done) || ticks == 0 {
+                        ui.cancel_scroll_restore();
                         return;
                     }
-                    if !scroll_done {
+                    if scroll_needed && !scroll_done {
+                        seen_scroll = Some(cur_scroll);
                         w.set_content_scroll_y(scroll_y);
                     }
-                    if !inspector_done {
+                    if inspector_needed && !inspector_done {
+                        seen_inspector = Some(cur_inspector);
                         w.set_inspector_scroll_y(inspector_scroll_y);
                     }
+                    ui.scroll_seen.set((seen_scroll, seen_inspector));
                 });
             },
         );
@@ -497,8 +579,8 @@ impl Ui {
             Route::Album(id) => (0, id),
             Route::Artist(id) => (1, id),
             Route::Playlist(id) => (2, id),
-            Route::Similar(..) => (3, 0),
-            Route::Versions(..) => (7, 0),
+            Route::Similar(id) => (3, id),
+            Route::Versions(id) => (7, id),
             Route::Work(id) => (4, id),
             Route::Series(id) => (5, id),
             Route::DailyMix(id) => (6, id),
@@ -533,8 +615,8 @@ impl Ui {
             Route::Album(id) => Command::OpenAlbum(id),
             Route::Artist(id) => Command::OpenArtist(id),
             Route::Playlist(id) => Command::OpenPlaylist(id),
-            Route::Similar(list, index) => Command::OpenSimilar(list, index),
-            Route::Versions(list, index) => Command::OpenVersions(list, index),
+            Route::Similar(id) => Command::OpenSimilarById(id),
+            Route::Versions(id) => Command::OpenVersionsById(id),
             Route::Work(id) => Command::OpenWork(id),
             Route::Series(id) => Command::OpenSeries(id),
             Route::DailyMix(id) => Command::OpenDailyMix(id),
@@ -604,7 +686,7 @@ impl Ui {
                 });
             }
             2 | 6 | 7 => {
-                let role = if target == 7 {
+                let role = if target == 7 && w.get_artist_credit_roles_supported() {
                     *self.artist_dir_role.borrow()
                 } else {
                     None
@@ -613,7 +695,7 @@ impl Ui {
                     sort: artist_sorts(browse).get(q.sort).unwrap_or(ArtistSort::Name),
                     order: order(q.desc),
                     search,
-                    all_roles: target == 7,
+                    all_roles: target == 6 || target == 7,
                     role,
                 };
                 if target == 6 {
@@ -792,8 +874,16 @@ impl Ui {
                     });
                 }
             }
-            "similar" => self.navigate(w, Route::Similar(list, index)),
-            "versions" => self.navigate(w, Route::Versions(list, index)),
+            "similar" => {
+                if let Some((id, _, _)) = row {
+                    self.navigate(w, Route::Similar(id));
+                }
+            }
+            "versions" => {
+                if let Some((id, _, _)) = row {
+                    self.navigate(w, Route::Versions(id));
+                }
+            }
             "play-disc" => self.send(Command::PlayAlbumDisc(i32::try_from(arg).unwrap_or(1))),
             "info" => self.send(Command::TrackInfo(list, index)),
             "tieup" => {
@@ -1031,6 +1121,9 @@ impl Ui {
         let browse = features.browse;
         self.browse.set(browse);
         w.set_browse(browse);
+        w.set_artist_credit_roles_supported(features.artist_credit_roles);
+        *self.artist_dir_role.borrow_mut() = None;
+        w.set_artist_dir_role(SharedString::new());
         w.set_playlist_artwork(features.playlist_artwork);
         let albums = album_sorts(browse);
         let tracks = track_sorts(browse);
@@ -1104,8 +1197,8 @@ impl Ui {
             (DetailView::Album(a), Route::Album(id)) => a.id == id,
             (DetailView::Artist(a), Route::Artist(id)) => a.requested_id == id,
             (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
-            (DetailView::Similar { .. }, Route::Similar(..)) => true,
-            (DetailView::Versions { .. }, Route::Versions(..)) => true,
+            (DetailView::Similar { track_id, .. }, Route::Similar(id)) => *track_id == id,
+            (DetailView::Versions { track_id, .. }, Route::Versions(id)) => *track_id == id,
             (DetailView::Work(v), Route::Work(id)) => v.id == id,
             (DetailView::Series(v), Route::Series(id)) => v.id == id,
             (DetailView::DailyMix(v), Route::DailyMix(id)) => v.id == id,
@@ -1114,6 +1207,7 @@ impl Ui {
         if !matches {
             return;
         }
+        self.unbind(Bind::Detail);
         let rows = tracks.len();
         let multi_disc = matches!(&view, DetailView::Album(a) if a.multi_disc);
         w.set_album_multi_disc(multi_disc);
@@ -1166,7 +1260,9 @@ impl Ui {
             w.set_detail_loading(false);
             *self.detail.borrow_mut() = Some(view);
             let (scroll_y, inspector_scroll_y) = self.scroll_restore.get();
-            self.restore_scroll(w, scroll_y, inspector_scroll_y);
+            if scroll_y.abs() >= 1.0 || inspector_scroll_y.abs() >= 1.0 {
+                self.restore_scroll(w, scroll_y, inspector_scroll_y);
+            }
             return;
         }
         let (info, artwork) = match &view {
@@ -1326,46 +1422,55 @@ impl Ui {
         self.load_detail_cover(w, &artwork);
         *self.detail.borrow_mut() = Some(view);
         let (scroll_y, inspector_scroll_y) = self.scroll_restore.get();
-        self.restore_scroll(w, scroll_y, inspector_scroll_y);
+        if scroll_y.abs() >= 1.0 || inspector_scroll_y.abs() >= 1.0 {
+            self.restore_scroll(w, scroll_y, inspector_scroll_y);
+        }
     }
 
     /// Fills the queue panel: entries matching the search (title or
     /// artist, case-insensitive), the current one marked.
     fn show_queue(&self, w: &AppWindow) {
+        self.unbind(Bind::Queue);
         let search = self.queue_search.borrow().to_lowercase();
-        let all = self.queue_all.borrow();
-        let (items, current) = &*all;
-        let current_uid = current.and_then(|i| items.get(i)).map(|e| e.uid);
-        let mut rows = Vec::new();
-        let mut paths = Vec::new();
-        let mut missing = Vec::new();
-        let mut current_row = None;
-        let covers = self.queue_covers.borrow();
-        for (n, e) in items.iter().enumerate() {
-            if !search.is_empty()
-                && !e.title.to_lowercase().contains(&search)
-                && !e.artist.to_lowercase().contains(&search)
-            {
-                continue;
+        let (rows, paths, missing, total, current_row, current_pos) = {
+            let all = self.queue_all.borrow();
+            let (items, current) = &*all;
+            let current_uid = current.and_then(|i| items.get(i)).map(|e| e.uid);
+            let mut rows = Vec::new();
+            let mut paths = Vec::new();
+            let mut missing = Vec::new();
+            let mut missing_seen = HashSet::new();
+            let mut current_row = None;
+            let covers = self.queue_covers.borrow();
+            for (n, e) in items.iter().enumerate() {
+                if !search.is_empty()
+                    && !e.title.to_lowercase().contains(&search)
+                    && !e.artist.to_lowercase().contains(&search)
+                {
+                    continue;
+                }
+                if Some(e.uid) == current_uid {
+                    current_row = Some(rows.len());
+                }
+                let cover = covers.get(&e.artwork).cloned();
+                if cover.is_none()
+                    && !e.artwork.is_empty()
+                    && missing_seen.insert(e.artwork.as_str())
+                {
+                    missing.push(e.artwork.clone());
+                }
+                rows.push(QueueRow {
+                    uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
+                    number: int(i64::try_from(n + 1).unwrap_or(i64::MAX)),
+                    title: e.title.as_str().into(),
+                    artist: e.artist.as_str().into(),
+                    duration: e.duration.as_str().into(),
+                    cover: cover.unwrap_or_default(),
+                });
+                paths.push(e.artwork.clone());
             }
-            if Some(e.uid) == current_uid {
-                current_row = Some(rows.len());
-            }
-            let cover = covers.get(&e.artwork).cloned();
-            if cover.is_none() && !e.artwork.is_empty() && !missing.contains(&e.artwork) {
-                missing.push(e.artwork.clone());
-            }
-            rows.push(QueueRow {
-                uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
-                number: int(i64::try_from(n + 1).unwrap_or(i64::MAX)),
-                title: e.title.as_str().into(),
-                artist: e.artist.as_str().into(),
-                duration: e.duration.as_str().into(),
-                cover: cover.unwrap_or_default(),
-            });
-            paths.push(e.artwork.clone());
-        }
-        drop(covers);
+            (rows, paths, missing, items.len(), current_row, *current)
+        };
         self.queue.set_vec(rows);
         *self.queue_paths.borrow_mut() = paths;
         // A cover fills every row of its album, now and on later updates.
@@ -1375,7 +1480,7 @@ impl Ui {
             let paths = self.queue_paths.clone();
             self.bind_image(
                 w,
-                m032::Bind::Queue,
+                Bind::Queue,
                 &path.clone(),
                 (QUEUE_COVER, QUEUE_COVER),
                 ArtworkFit::Contain,
@@ -1392,7 +1497,28 @@ impl Ui {
                 },
             );
         }
-        w.set_queue_total(i32::try_from(items.len()).unwrap_or(i32::MAX));
+        w.set_queue_total(i32::try_from(total).unwrap_or(i32::MAX));
+        w.set_queue_current(row_index(current_row));
+        w.set_queue_position(row_index(current_pos));
+    }
+
+    /// Updates only the active row indicator when the current track changes,
+    /// avoiding a full rebuild of the queue model.
+    fn update_queue_position(&self, w: &AppWindow) {
+        let all = self.queue_all.borrow();
+        let (items, current) = &*all;
+        let current_uid = current.and_then(|i| items.get(i)).map(|e| e.uid);
+        let current_row = current_uid.and_then(|uid| {
+            let uid_i32 = i32::try_from(uid).unwrap_or(i32::MAX);
+            if self.queue_search.borrow().is_empty()
+                && let Some(i) = *current
+                && self.queue.row_data(i).is_some_and(|row| row.uid == uid_i32)
+            {
+                return Some(i);
+            }
+            (0..self.queue.row_count())
+                .find(|&i| self.queue.row_data(i).is_some_and(|row| row.uid == uid_i32))
+        });
         w.set_queue_current(row_index(current_row));
         w.set_queue_position(row_index(*current));
     }
@@ -1616,15 +1742,15 @@ impl Ui {
             }
             FavoriteKind::Album | FavoriteKind::Artist => {
                 self.update_search_favorite(w, kind, id, favorite);
-                for grid in &self.grids {
-                    grid.set_favorite(id, favorite);
-                }
                 if kind == FavoriteKind::Album {
-                    let home = w.global::<Home>();
-                    let mut pane = home.get_pane();
-                    if i64::from(pane.album_id) == id {
-                        pane.favorite = favorite;
-                        home.set_pane(pane);
+                    for grid in ALBUM_GRIDS {
+                        self.grids[grid].set_favorite(id, favorite);
+                    }
+                    self.grids[GRID_SERIES_ALBUMS].set_favorite(id, favorite);
+                    self.set_spotlight_album_favorite(w, id, favorite);
+                } else {
+                    for grid in ARTIST_GRIDS {
+                        self.grids[grid].set_favorite(id, favorite);
                     }
                 }
                 let mut info = w.get_detail();
@@ -1757,6 +1883,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         scroll_timer: Timer::default(),
         scroll_restore: Cell::new((0.0, 0.0)),
         scroll_restore_ticks: Cell::new(0),
+        scroll_seen: Cell::new((None, None)),
         dialog: Cell::new(None),
         album_artist: RefCell::default(),
         track_artist: RefCell::default(),
@@ -2424,6 +2551,9 @@ pub fn apply(event: Event) {
         }
         Event::SignedOut(reason) => {
             ui.finish_restore(w);
+            ui.cancel_scroll_restore();
+            w.set_content_scroll_y(0.0);
+            w.set_inspector_scroll_y(0.0);
             w.set_logged_in(false);
             w.set_login_busy(false);
             w.set_login_api_token(SharedString::new());
@@ -2432,28 +2562,85 @@ pub fn apply(event: Event) {
                 SignOutReason::User => SharedString::new(),
                 SignOutReason::Expired => "API Token 已失效，请重新输入".into(),
             });
+            w.set_server_label(SharedString::new());
+            w.set_server_status(SharedString::new());
+            ui.dialog.set(None);
             w.set_dialog(0);
             w.set_full_open(false);
             ui.full_changed(w);
             ui.related_for.set(0);
-            ui.related.set_vec(Vec::new());
             *ui.now_cover_key.borrow_mut() = None;
             *ui.now_large_key.borrow_mut() = None;
+            *ui.full_cover_key.borrow_mut() = None;
+            *ui.detail_cover_key.borrow_mut() = None;
             *ui.now.borrow_mut() = None;
+            *ui.detail.borrow_mut() = None;
+            w.set_has_track(false);
+            w.set_playing_id(-1);
+            w.set_np_favorite(false);
+            w.set_np_cover(Image::default());
+            w.set_np_cover_large(Image::default());
+            w.set_detail_cover(Image::default());
+            w.set_full_cover(Image::default());
             for grid in &ui.grids {
                 grid.clear();
             }
-            ui.detail_tracks.set_vec(Vec::new());
-            ui.reset_search(w, true);
-            ui.unbind(Bind::Home);
-            ui.unbind(Bind::Detail);
+            for model in [
+                &ui.tracks,
+                &ui.fav_tracks,
+                &ui.detail_tracks,
+                &ui.played,
+                &ui.pane_tracks,
+                &ui.related,
+                &ui.artist_favs,
+                &ui.artist_credits,
+            ] {
+                model.set_vec(Vec::new());
+            }
             for model in [
                 &ui.home_mixes,
                 &ui.home_recent,
                 &ui.home_resume,
                 &ui.home_songs,
+                &ui.mix_others,
             ] {
                 model.set_vec(Vec::new());
+            }
+            ui.lyrics.set_vec(Vec::new());
+            ui.lyrics_results.set_vec(Vec::new());
+            ui.queue.set_vec(Vec::new());
+            ui.playlist_choices.set_vec(Vec::new());
+            w.set_side_playlists(ModelRc::default());
+            w.set_lyrics_active(-1);
+            w.set_lyrics_synced(false);
+            w.set_lyrics_source(SharedString::new());
+            w.set_lyrics_translated_lines(false);
+            *ui.queue_all.borrow_mut() = (Vec::new(), None);
+            ui.queue_search.borrow_mut().clear();
+            w.set_queue_search(SharedString::new());
+            ui.queue_covers.borrow_mut().clear();
+            ui.queue_paths.borrow_mut().clear();
+            w.set_queue_total(0);
+            w.set_queue_current(-1);
+            w.set_queue_position(-1);
+            w.set_playing_mix(-1);
+            ui.history.borrow_mut().clear();
+            ui.route.set(Route::Page(PAGE_ALBUMS));
+            w.set_can_go_back(false);
+            ui.sent.borrow_mut().clear();
+            *ui.album_artist.borrow_mut() = None;
+            *ui.track_artist.borrow_mut() = None;
+            w.set_album_filter(SharedString::new());
+            w.set_track_filter(SharedString::new());
+            *ui.artist_dir_role.borrow_mut() = None;
+            w.set_artist_dir_role(SharedString::new());
+            w.set_artist_credit_roles_supported(false);
+            ui.reset_m032_detail(w);
+            ui.reset_search(w, true);
+            {
+                let mut m = ui.m032.borrow_mut();
+                m.reset();
+                m.server.clear();
             }
         }
         Event::LoginFailed(failure) => {
@@ -2599,6 +2786,24 @@ pub fn apply(event: Event) {
                 w.set_detail_cover(image);
             }
         }
+        Event::ImageFailed { key } => {
+            ui.image_failed(&key);
+            for grid in &ui.grids {
+                grid.image_failed(&key);
+            }
+            if ui.now_cover_key.borrow().as_deref() == Some(key.as_str()) {
+                *ui.now_cover_key.borrow_mut() = None;
+            }
+            if ui.now_large_key.borrow().as_deref() == Some(key.as_str()) {
+                *ui.now_large_key.borrow_mut() = None;
+            }
+            if ui.full_cover_key.borrow().as_deref() == Some(key.as_str()) {
+                *ui.full_cover_key.borrow_mut() = None;
+            }
+            if ui.detail_cover_key.borrow().as_deref() == Some(key.as_str()) {
+                *ui.detail_cover_key.borrow_mut() = None;
+            }
+        }
         Event::MediaCover(_) => {}
         Event::NowPlaying(None) => {
             ui.mark_playing_album(0);
@@ -2729,7 +2934,7 @@ pub fn apply(event: Event) {
         }
         Event::QueuePosition(current) => {
             ui.queue_all.borrow_mut().1 = current;
-            ui.show_queue(w);
+            ui.update_queue_position(w);
         }
         Event::Repeat(repeat) => w.set_repeat(repeat_index(repeat)),
         Event::Shuffle(shuffle) => w.set_shuffle(shuffle),
@@ -2868,9 +3073,21 @@ pub(crate) fn thousands(n: i64) -> String {
     if n < 0 { format!("-{out}") } else { out }
 }
 
+/// True when the viewport moved away from `target` (or past it) compared to
+/// the last observed clamped position, meaning the user scrolled manually.
+fn moved_away(cur: f32, prev: f32, target: f32) -> bool {
+    if target < 0.0 {
+        cur > prev + 1.0 || cur < target - 1.0
+    } else if target > 0.0 {
+        cur < prev - 1.0 || cur > target + 1.0
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod shell_tests {
-    use super::{server_host, thousands};
+    use super::{BoundedCache, moved_away, server_host, thousands};
 
     #[test]
     fn server_status_parts() {
@@ -2883,5 +3100,31 @@ mod shell_tests {
         assert_eq!(thousands(18930), "18,930");
         assert_eq!(thousands(930), "930");
         assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn bounded_cache_evicts_oldest_and_promotes_updates() {
+        let mut cache = BoundedCache::new(2);
+        cache.insert("a".into(), 1);
+        cache.insert("b".into(), 2);
+        // Re-inserting "a" promotes it so "b" is evicted next.
+        cache.insert("a".into(), 10);
+        cache.insert("c".into(), 3);
+        assert_eq!(cache.get("a"), Some(&10));
+        assert_eq!(cache.get("b"), None);
+        assert_eq!(cache.get("c"), Some(&3));
+        cache.clear();
+        assert_eq!(cache.get("a"), None);
+    }
+
+    #[test]
+    fn moved_away_detects_manual_scroll_against_restore() {
+        // Content growing moves clamped offset from 0 toward -1200 (not user scroll).
+        assert!(!moved_away(-300.0, 0.0, -1200.0));
+        assert!(!moved_away(-300.0, -300.0, -1200.0));
+        // User scrolls back up from -300 to -100 while restoring toward -1200.
+        assert!(moved_away(-100.0, -300.0, -1200.0));
+        // User scrolls past target.
+        assert!(moved_away(-1400.0, -1200.0, -1200.0));
     }
 }

@@ -483,6 +483,7 @@ export component AppWindow inherits Window {
     callback artist-credit-role-changed(string);
     // Role filter on page 24 ("艺术家"): "" (all), "credit", "lyricist", "composer", "arranger", "producer".
     in-out property <string> artist-dir-role: "";
+    in property <bool> artist-credit-roles-supported: false;
     callback artist-dir-role-changed(string);
     in property <string> artist-about;
     // Artist info column. Only rows the server actually filled.
@@ -1179,7 +1180,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.page == 24 && root.browse: HorizontalLayout {
+                    if root.page == 24 && root.browse && root.artist-credit-roles-supported: HorizontalLayout {
                         padding-left: Shell.pad;
                         padding-right: Shell.pad;
                         padding-bottom: 10px;

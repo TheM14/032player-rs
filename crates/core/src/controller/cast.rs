@@ -11,6 +11,7 @@
 //! `mirror` is what the speaker queue holds once every sent command has
 //! run; statuses polled before the newest command finished are dropped.
 
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -124,6 +125,10 @@ pub(super) struct Cast {
     pending_volume: Option<f64>,
     /// The `Probe` whose answer may be adopted.
     probe_seq: Option<u64>,
+    /// Sequence number of the latest `Op::Replace`.
+    replace_seq: u64,
+    /// Sequence number of an in-flight automatic `cast_resync()` to prevent loops.
+    resync_seq: Option<u64>,
     /// A `Replace` whose first track may fall back to live MP3: (seq, uid, offset).
     flac_start: Option<(u64, u64, i64)>,
     /// The transcode plan changed: the next play builds a new speaker queue.
@@ -182,6 +187,8 @@ pub(super) enum Op {
     },
     Play,
     Pause,
+    /// Pause sent on detach: cancels any in-progress FLAC warm-up and retries UPnP 701 while transitioning.
+    DetachPause,
     Stop,
     Seek(i64),
     Mode(PlayMode),
@@ -205,8 +212,10 @@ pub(super) struct FlacStart {
 pub(super) enum Failure {
     /// Transport only (pause, seek, volume ...): the next poll shows the truth.
     Soft,
-    /// The speaker queue may not match the mirror any more.
+    /// Incremental speaker queue edit failed; one full resync may recover.
     Queue,
+    /// Full queue replacement while paused failed; do not recurse into resync.
+    Resync,
     /// Playback did not start.
     Start,
 }
@@ -216,20 +225,33 @@ impl Op {
         match self {
             Self::Replace(push) if push.play => Failure::Start,
             Self::PlayIndex { .. } => Failure::Start,
-            Self::Replace(_)
-            | Self::Insert { .. }
+            Self::Replace(_) => Failure::Resync,
+            Self::Insert { .. }
             | Self::Remove(_)
             | Self::Move { .. }
             | Self::ReplaceItem { .. } => Failure::Queue,
             _ => Failure::Soft,
         }
     }
+
+    fn cancels_replace_warmup(&self) -> bool {
+        matches!(
+            self,
+            Self::Replace(_)
+                | Self::Stop
+                | Self::Pause
+                | Self::DetachPause
+                | Self::PlayIndex { .. }
+        )
+    }
 }
 
 pub(super) enum Outcome {
     Done,
-    /// The first track's FLAC was not ready: it plays as live MP3.
-    FellBack,
+    /// `Op::Replace` was aborted during FLAC warm-up before touching the speaker.
+    Aborted,
+    /// The first track's FLAC was not ready: it plays as live MP3 with this URI identity.
+    FellBack(String),
     Probed(Option<Box<Probed>>),
 }
 
@@ -318,7 +340,12 @@ impl Actor {
         self.tx.send(Internal::Cast(self.generation, msg)).is_ok()
     }
 
-    async fn replace(&mut self, push: Push) -> Result<Outcome, String> {
+    async fn replace(
+        &mut self,
+        push: Push,
+        rx: &mut UnboundedReceiver<(u64, Op)>,
+        pending: &mut VecDeque<(u64, Op)>,
+    ) -> Result<Outcome, String> {
         let Push {
             mut items,
             start,
@@ -331,31 +358,60 @@ impl Actor {
         for task in self.warming.drain(..) {
             task.abort();
         }
+        // Check if a superseding/cancel op is already queued before starting work.
+        while let Ok(next) = rx.try_recv() {
+            pending.push_back(next);
+        }
+        if pending.iter().any(|(_, op)| op.cancels_replace_warmup()) {
+            return Ok(Outcome::Aborted);
+        }
         let mut outcome = Outcome::Done;
         if let Some(flac) = flac {
-            let cached = self
-                .client
-                .media_cached(flac.warm.clone())
-                .await
-                .unwrap_or(false);
-            if !cached {
-                self.send(CastMsg::Notice(format!(
-                    "服务器正在准备 FLAC：{}",
-                    flac.title
-                )));
-                if !warm_flac(&self.client, &flac.warm, FLAC_BUDGET).await {
-                    let Some(fallback) = flac.fallback else {
-                        return Err(
-                            "FLAC 准备失败，服务器也未启用 MP3 转码，无法在 Sonos 播放".into()
-                        );
-                    };
-                    if let Some(item) = items.get_mut(start) {
-                        *item = fallback;
-                    }
-                    // The live stream starts at the offset itself.
-                    position_ms = 0;
-                    outcome = Outcome::FellBack;
+            let client = self.client.clone();
+            let warm_url = flac.warm.clone();
+            let title = flac.title.clone();
+            let tx = self.tx.clone();
+            let generation = self.generation;
+            let warm_fut = async move {
+                if client.media_cached(warm_url.clone()).await.unwrap_or(false) {
+                    return true;
                 }
+                let _ = tx.send(Internal::Cast(
+                    generation,
+                    CastMsg::Notice(format!("服务器正在准备 FLAC：{title}")),
+                ));
+                warm_flac(&client, &warm_url, FLAC_BUDGET).await
+            };
+            tokio::pin!(warm_fut);
+            let flac_ready = loop {
+                tokio::select! {
+                    biased;
+                    msg = rx.recv() => {
+                        match msg {
+                            None => return Ok(Outcome::Aborted),
+                            Some(next) => {
+                                let cancel = next.1.cancels_replace_warmup();
+                                pending.push_back(next);
+                                if cancel {
+                                    return Ok(Outcome::Aborted);
+                                }
+                            }
+                        }
+                    }
+                    ready = &mut warm_fut => break ready,
+                }
+            };
+            if !flac_ready {
+                let Some(fallback) = flac.fallback else {
+                    return Err("FLAC 准备失败，服务器也未启用 MP3 转码，无法在 Sonos 播放".into());
+                };
+                let identity = plan::uri_identity(&fallback.uri);
+                if let Some(item) = items.get_mut(start) {
+                    *item = fallback;
+                }
+                // The live stream starts at the offset itself.
+                position_ms = 0;
+                outcome = Outcome::FellBack(identity);
             }
         }
         self.speaker
@@ -398,10 +454,15 @@ impl Actor {
         }))))
     }
 
-    async fn run(&mut self, op: Op) -> Result<Outcome, String> {
+    async fn run(
+        &mut self,
+        op: Op,
+        rx: &mut UnboundedReceiver<(u64, Op)>,
+        pending: &mut VecDeque<(u64, Op)>,
+    ) -> Result<Outcome, String> {
         let s = &self.speaker;
         let r = match op {
-            Op::Replace(push) => return self.replace(*push).await,
+            Op::Replace(push) => return self.replace(*push, rx, pending).await,
             Op::Probe => return self.probe().await,
             Op::Insert { items, at, warm } => {
                 let r = s.insert(&items, at).await;
@@ -432,6 +493,29 @@ impl Actor {
             }
             Op::Play => s.play().await,
             Op::Pause => s.pause().await,
+            Op::DetachPause => {
+                let mut res = s.pause().await;
+                if let Err(ref e) = res
+                    && e.to_string().contains(" 701")
+                {
+                    for _ in 0..8 {
+                        let transitioning = matches!(
+                            s.status().await.map(|st| st.state),
+                            Ok(TransportState::Transitioning | TransportState::Playing)
+                        );
+                        if !transitioning {
+                            res = Ok(());
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        res = s.pause().await;
+                        if res.is_ok() {
+                            break;
+                        }
+                    }
+                }
+                res
+            }
             Op::Stop => s.stop().await,
             Op::Seek(ms) => s.seek(ms).await,
             Op::Mode(mode) => s.set_play_mode(mode).await,
@@ -466,38 +550,48 @@ async fn actor(mut actor: Actor, mut rx: UnboundedReceiver<(u64, Op)>) {
     poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut pending: VecDeque<(u64, Op)> = VecDeque::new();
     let mut done = 0;
     let mut polls = 0u32;
     loop {
-        tokio::select! {
-            biased;
-            msg = rx.recv() => {
-                let Some((seq, op)) = msg else { break };
-                let failure = op.failure();
-                let result = actor.run(op).await;
-                done = seq;
-                if !actor.send(CastMsg::Done { seq, failure, result }) {
-                    break;
-                }
-                if rx.is_empty() {
+        let next = if let Some(item) = pending.pop_front() {
+            Some(item)
+        } else {
+            tokio::select! {
+                biased;
+                msg = rx.recv() => msg,
+                _ = poll.tick() => {
                     polls += 1;
                     if !actor.poll(polls, done).await {
                         break;
                     }
-                    poll.reset();
+                    continue;
+                }
+                _ = tick.tick() => {
+                    if !actor.send(CastMsg::Tick) {
+                        break;
+                    }
+                    continue;
                 }
             }
-            _ = poll.tick() => {
-                polls += 1;
-                if !actor.poll(polls, done).await {
-                    break;
-                }
+        };
+        let Some((seq, op)) = next else { break };
+        let failure = op.failure();
+        let result = actor.run(op, &mut rx, &mut pending).await;
+        done = seq;
+        if !actor.send(CastMsg::Done {
+            seq,
+            failure,
+            result,
+        }) {
+            break;
+        }
+        if pending.is_empty() && rx.is_empty() {
+            polls += 1;
+            if !actor.poll(polls, done).await {
+                break;
             }
-            _ = tick.tick() => {
-                if !actor.send(CastMsg::Tick) {
-                    break;
-                }
-            }
+            poll.reset();
         }
     }
     for task in actor.warming {
@@ -692,6 +786,8 @@ impl Core {
             volume_revision: 0,
             pending_volume: None,
             probe_seq: None,
+            replace_seq: 0,
+            resync_seq: None,
             flac_start: None,
             replan: false,
             speaker_duration_ms: 0,
@@ -738,7 +834,7 @@ impl Core {
     pub(super) fn drop_cast(&mut self, pause: bool) {
         let Some(cast) = self.cast.take() else { return };
         if pause && cast.loaded && !self.idle && !self.paused {
-            let _ = cast.ops.send((cast.sent + 1, Op::Pause));
+            let _ = cast.ops.send((cast.sent + 1, Op::DetachPause));
         }
     }
 
@@ -910,6 +1006,8 @@ impl Core {
         };
         cast.mirror = entries;
         cast.loaded = true;
+        cast.replace_seq = seq;
+        cast.resync_seq = None;
         cast.replan = false;
         cast.buffering = true;
         cast.mode = Some(mode);
@@ -1030,7 +1128,13 @@ impl Core {
                 cast.anchor = None;
             }
         } else {
-            let (index, entry) = self.cast_current().ok_or("Sonos 队列已变化")?;
+            let Some((index, entry)) = self.cast_current() else {
+                let offset = self.cast_start(self.position_ms)?;
+                self.stream_offset_ms = offset;
+                self.loading = true;
+                self.apply_paused(false);
+                return Ok(());
+            };
             let stopped = self
                 .cast
                 .as_ref()
@@ -1167,7 +1271,12 @@ impl Core {
         let start = current.saturating_sub(range.start);
         let play = !self.paused;
         match self.cast_push(range, start, self.position_ms, play) {
-            Ok(offset) => self.stream_offset_ms = offset,
+            Ok(offset) => {
+                self.stream_offset_ms = offset;
+                if let Some(cast) = self.cast.as_mut() {
+                    cast.resync_seq = Some(cast.sent);
+                }
+            }
             Err(e) => self.emit(Event::Notice(format!("同步 Sonos 队列失败：{e}"))),
         }
     }
@@ -1251,11 +1360,39 @@ impl Core {
 
     fn cast_done(&mut self, seq: u64, failure: Failure, result: Result<Outcome, String>) {
         match result {
-            Ok(Outcome::Done) => {}
-            Ok(Outcome::FellBack) => {
+            Ok(Outcome::Done) => {
+                if let Some(cast) = self.cast.as_mut() {
+                    if cast.resync_seq.is_some_and(|r| seq >= r) {
+                        cast.resync_seq = None;
+                    }
+                    if matches!(failure, Failure::Start | Failure::Resync) {
+                        cast.settle_until = Some(Instant::now() + SETTLE);
+                    }
+                }
+            }
+            Ok(Outcome::Aborted) => {
+                if let Some(cast) = self.cast.as_mut() {
+                    if cast.replace_seq == seq {
+                        cast.loaded = false;
+                    }
+                    if cast.flac_start.is_some_and(|(s, _, _)| s == seq) {
+                        cast.flac_start = None;
+                    }
+                    if cast.resync_seq == Some(seq) {
+                        cast.resync_seq = None;
+                    }
+                }
+            }
+            Ok(Outcome::FellBack(identity)) => {
                 let Some(cast) = self.cast.as_mut() else {
                     return;
                 };
+                if cast.resync_seq.is_some_and(|r| seq >= r) {
+                    cast.resync_seq = None;
+                }
+                if matches!(failure, Failure::Start | Failure::Resync) {
+                    cast.settle_until = Some(Instant::now() + SETTLE);
+                }
                 let Some((s, uid, offset)) = cast.flac_start.take() else {
                     return;
                 };
@@ -1265,6 +1402,7 @@ impl Core {
                 if let Some(e) = cast.mirror.iter_mut().find(|e| e.uid == uid) {
                     e.kind = Kind::LiveMp3;
                     e.offset_ms = offset;
+                    e.identity = identity;
                 }
                 if self.queue.current().is_some_and(|i| i.uid == uid) {
                     self.stream_offset_ms = offset;
@@ -1295,17 +1433,27 @@ impl Core {
                     Failure::Start => {
                         // The speaker queue is unknown now: the next play pushes again.
                         cast.loaded = false;
+                        cast.resync_seq = None;
                         if self.idle {
                             self.emit(Event::Notice(format!("Sonos「{name}」：{e}")));
                         } else {
                             self.playback_failed(format!("Sonos「{name}」：{e}"));
                         }
                     }
+                    Failure::Resync => {
+                        // Full paused queue replacement failed: stay unloaded until next play.
+                        cast.loaded = false;
+                        if cast.resync_seq == Some(seq) {
+                            cast.resync_seq = None;
+                        }
+                        self.emit(Event::Notice(format!("同步 Sonos 队列失败：{e}")));
+                    }
                     Failure::Queue => {
                         cast.loaded = false;
+                        let should_resync = !self.idle && cast.resync_seq.is_none_or(|r| seq > r);
                         self.emit(Event::Notice(format!("同步 Sonos 队列失败：{e}")));
-                        if !self.idle {
-                            // Push the whole queue again, where playback is.
+                        if should_resync {
+                            // Push the whole queue again once, where playback is.
                             self.cast_resync();
                         }
                     }

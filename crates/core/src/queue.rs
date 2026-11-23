@@ -358,18 +358,26 @@ impl Queue {
 
     /// Refresh identities without changing transport, entry UID or playback context.
     pub fn refresh_artists(&mut self, tracks: &[Track]) -> bool {
+        if self.items.is_empty() || tracks.is_empty() {
+            return false;
+        }
         let by_id: std::collections::HashMap<_, _> = tracks.iter().map(|t| (t.id, t)).collect();
         let mut changed = false;
         for item in &mut self.items {
-            if let Some(fresh) = by_id.get(&item.track.id)
-                && (item.track.artist != fresh.artist
+            if let Some(fresh) = by_id.get(&item.track.id) {
+                let update_album_artists = !fresh.album_artists.is_empty()
+                    && item.track.album_artists != fresh.album_artists;
+                if item.track.artist != fresh.artist
                     || item.track.artists != fresh.artists
-                    || item.track.album_artists != fresh.album_artists)
-            {
-                item.track.artist.clone_from(&fresh.artist);
-                item.track.artists.clone_from(&fresh.artists);
-                item.track.album_artists.clone_from(&fresh.album_artists);
-                changed = true;
+                    || update_album_artists
+                {
+                    item.track.artist.clone_from(&fresh.artist);
+                    item.track.artists.clone_from(&fresh.artists);
+                    if update_album_artists {
+                        item.track.album_artists.clone_from(&fresh.album_artists);
+                    }
+                    changed = true;
+                }
             }
         }
         changed
@@ -461,6 +469,34 @@ mod tests {
         assert_eq!(after.track.stream_url, original.stream_url);
         assert_eq!(after.track.artists, fresh.artists);
         assert!(!q.refresh_artists(&[fresh]));
+    }
+
+    #[test]
+    fn artist_refresh_preserves_existing_album_artists_when_fresh_is_empty() {
+        let mut q = Queue::with_seed(1);
+        let mut original = track(9);
+        original.album_artists = vec![api::ArtistRef {
+            id: 42,
+            name: "Album Artist".into(),
+            join_phrase: None,
+        }];
+        q.replace(vec![original.clone()], 0);
+
+        let mut fresh = original.clone();
+        fresh.artist = "Updated Artist".into();
+        fresh.artists = vec![api::ArtistRef {
+            id: 7,
+            name: "Updated Artist".into(),
+            join_phrase: None,
+        }];
+        fresh.album_artists = Vec::new();
+
+        assert!(q.refresh_artists(&[fresh]));
+        let after = q.current().unwrap();
+        assert_eq!(after.track.artists.len(), 1);
+        assert_eq!(after.track.artists[0].id, 7);
+        assert_eq!(after.track.album_artists.len(), 1);
+        assert_eq!(after.track.album_artists[0].id, 42);
     }
 
     use super::*;

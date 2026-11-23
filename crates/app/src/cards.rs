@@ -395,6 +395,26 @@ impl CardGridModel {
         true
     }
 
+    /// Resets `requested` when an image load fails so cards can retry instead
+    /// of remaining permanently blank.
+    pub fn image_failed(&self, key: &str) {
+        let Some((fit, px, path)) = parse_key(key) else {
+            return;
+        };
+        if fit != self.fit.get() || px != self.cover_px.get() {
+            return;
+        }
+        let Some(indices) = self.by_path.borrow().get(path).cloned() else {
+            return;
+        };
+        let entries = self.entries.borrow();
+        for i in indices {
+            if let Some(entry) = entries.get(i) {
+                entry.requested.set(false);
+            }
+        }
+    }
+
     /// Replaces every item (small lists that are loaded at once).
     pub fn set(&self, items: Vec<Card>) {
         self.clear();

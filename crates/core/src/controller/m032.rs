@@ -46,12 +46,15 @@ pub(super) struct HomeState {
     listening_resume: Option<PlaybackRecord>,
     recent: Vec<Track>,
     mixes: Option<api::DailyMixList>,
+    mixes_date: Option<chrono::NaiveDate>,
     mix_polls: u32,
 }
 
 impl HomeState {
-    pub fn mixes(&self) -> Option<&api::DailyMixList> {
-        self.mixes.as_ref()
+    pub fn fresh_mixes(&self) -> Option<&api::DailyMixList> {
+        (self.mixes_date == Some(chrono::Local::now().date_naive()))
+            .then_some(self.mixes.as_ref())
+            .flatten()
     }
 }
 
@@ -381,6 +384,7 @@ impl Core {
                     return;
                 };
                 state.mixes = Some(list);
+                state.mixes_date = Some(chrono::Local::now().date_naive());
                 if generating && state.mix_polls < MIX_POLLS {
                     state.mix_polls += 1;
                     let generation = self.list_generation;
@@ -435,6 +439,7 @@ impl Core {
         let Some(record) = self.home.as_ref().and_then(|s| s.listening_resume.clone()) else {
             return;
         };
+        self.begin_play_intent();
         self.fetched(
             vec![record.track],
             Intent::play_at(0).starting_at(record.position_millis),
@@ -458,6 +463,7 @@ impl Core {
                 .map_or(0, |r| r.position_millis),
             _ => 0,
         };
+        self.begin_play_intent();
         self.fetched(vec![track], Intent::play_at(0).starting_at(start_ms));
     }
 
@@ -583,9 +589,10 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.clear_playback_history().await {
-                Ok(()) => Internal::HistoryCleared,
+                Ok(()) => Internal::HistoryCleared(generation),
                 Err(e) => Self::failed(&client, "清空播放历史", e),
             };
             let _ = tx.send(msg);
@@ -610,14 +617,16 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.rate_daily_mix(id, value, &reasons).await {
                 Ok(_) => Internal::MixChanged {
+                    generation,
                     id,
                     notice: None,
                     replaced_by: None,
                 },
-                Err(e) => mix_failure(&client, &e),
+                Err(e) => mix_failure(generation, &client, &e),
             };
             let _ = tx.send(msg);
         });
@@ -627,14 +636,16 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.regenerate_daily_mix(id).await {
                 Ok(next) => Internal::MixChanged {
+                    generation,
                     id,
                     notice: Some(format!("已换成「{}」", next.title)),
                     replaced_by: Some(next.id),
                 },
-                Err(e) => mix_failure(&client, &e),
+                Err(e) => mix_failure(generation, &client, &e),
             };
             let _ = tx.send(msg);
         });
@@ -644,20 +655,23 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.save_daily_mix(id).await {
                 Ok(playlist) => {
                     let _ = tx.send(Internal::PlaylistsChanged {
+                        generation,
                         notice: None,
                         deleted: None,
                     });
                     Internal::MixChanged {
+                        generation,
                         id,
                         notice: Some(format!("已另存为歌单「{}」", playlist.name)),
                         replaced_by: None,
                     }
                 }
-                Err(e) => mix_failure(&client, &e),
+                Err(e) => mix_failure(generation, &client, &e),
             };
             let _ = tx.send(msg);
         });
@@ -675,7 +689,9 @@ impl Core {
         if let Some(notice) = notice {
             self.emit(Event::Notice(notice));
         }
-        if self.home.is_some() {
+        if let Some(home) = self.home.as_mut() {
+            home.mixes = None;
+            home.mixes_date = None;
             self.load_mixes();
         }
         match replaced_by {
@@ -703,9 +719,11 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        let generation = self.list_generation;
         tokio::spawn(async move {
             let msg = match client.set_recommendation_block(track_id, blocked).await {
                 Ok(()) => Internal::MixBlocked {
+                    generation,
                     mix_id,
                     index,
                     blocked,
@@ -775,11 +793,16 @@ impl Core {
             .is_some_and(|(id, _)| *id == track_id);
         if !known && self.has(Feature::TrackWorks) {
             self.track_works = Some((track_id, Vec::new()));
+            let generation = self.list_generation;
             if let Some((client, tx)) = self.request() {
                 tokio::spawn(async move {
                     match client.track_works(track_id).await {
                         Ok(works) => {
-                            let _ = tx.send(Internal::TrackWorks(track_id, works));
+                            let _ = tx.send(Internal::TrackWorks {
+                                generation,
+                                track_id,
+                                works,
+                            });
                         }
                         Err(e) => tracing::debug!("works of track {track_id}: {e}"),
                     }
@@ -816,15 +839,18 @@ impl Core {
     }
 }
 
-fn mix_failure(client: &api::Client, e: &ApiError) -> Internal {
+fn mix_failure(generation: u64, client: &api::Client, e: &ApiError) -> Internal {
     if e.is_unauthorized() {
         return Internal::Unauthorized {
             api_token: client.api_token().to_owned(),
         };
     }
-    Internal::Notice(match e.status() {
-        Some(429) => "今天换一个的次数已用完".into(),
-        Some(409) => e.to_string(),
-        _ => format!("操作失败：{e}"),
-    })
+    Internal::Notice {
+        generation,
+        text: match e.status() {
+            Some(429) => "今天换一个的次数已用完".into(),
+            Some(409) => e.to_string(),
+            _ => format!("操作失败：{e}"),
+        },
+    }
 }

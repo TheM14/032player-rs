@@ -139,8 +139,12 @@ pub enum Command {
     OpenPlaylist(i64),
     /// Tracks similar to a list row.
     OpenSimilar(TrackList, usize),
+    /// Tracks similar to a track id (used by navigation history).
+    OpenSimilarById(i64),
     /// Other versions / recordings with the same title.
     OpenVersions(TrackList, usize),
+    /// Other versions / recordings of a track id (used by navigation history).
+    OpenVersionsById(i64),
     /// Play one disc of the open album.
     PlayAlbumDisc(i32),
     /// Unified search overview (`GET /api/v1/search`), answered with [`Event::SearchResults`].
@@ -478,6 +482,8 @@ pub struct ServerFeatures {
     pub daily_mixes: bool,
     /// Server lyrics translation (`lyricsTranslation`).
     pub lyrics_translation: bool,
+    /// Server `/browse/artists` supports backstage credit role filters (`artistCreditRoles`).
+    pub artist_credit_roles: bool,
 }
 
 /// A queue row for the UI.
@@ -634,6 +640,10 @@ pub enum Event {
     Image {
         key: String,
         image: Rgba,
+    },
+    /// Loading the image for `key` failed (lets the UI drop pending bindings and retry later).
+    ImageFailed {
+        key: String,
     },
     /// Local cached cover file path for system media controls (SMTC / MPRIS).
     MediaCover(Option<PathBuf>),
@@ -814,14 +824,22 @@ enum Internal {
         what: &'static str,
         error: api::ApiError,
     },
-    Fetched(Result<Vec<Track>, api::ApiError>, Intent),
+    Fetched {
+        generation: u64,
+        api_token: String,
+        play_seq: Option<u64>,
+        result: Result<Vec<Track>, api::ApiError>,
+        intent: Intent,
+    },
     FavoriteSet {
+        generation: u64,
         kind: FavoriteKind,
         id: i64,
         favorite: bool,
     },
     /// A playlist edit finished: reload the playlists (and the open one).
     PlaylistsChanged {
+        generation: u64,
         notice: Option<String>,
         deleted: Option<i64>,
     },
@@ -834,31 +852,48 @@ enum Internal {
     SaveQueue(u64),
     SleepTick(u64),
     Lyrics {
+        seq: u64,
         track_id: i64,
         lyrics: Option<api::Lyrics>,
     },
     Translation {
+        seq: u64,
+        api_token: String,
         track_id: i64,
         lines: Result<Vec<String>, api::ApiError>,
     },
     LyricsResults {
+        seq: u64,
         track_id: i64,
         results: Vec<api::LyricsSearchResult>,
     },
     LyricsPreview(u64, Vec<String>),
     /// The track's lyrics source changed on the server: reload them.
-    LyricsChanged(i64),
+    LyricsChanged {
+        generation: u64,
+        track_id: i64,
+    },
     /// Tracks of an expanded work / series.
-    SourceTracks(m032::SourceKey, std::collections::HashSet<i64>),
-    TrackWorks(i64, Vec<api::TrackWork>),
+    SourceTracks {
+        generation: u64,
+        key: m032::SourceKey,
+        ids: std::collections::HashSet<i64>,
+    },
+    TrackWorks {
+        generation: u64,
+        track_id: i64,
+        works: Vec<api::TrackWork>,
+    },
     PollMixes(u64),
-    HistoryCleared,
+    HistoryCleared(u64),
     MixChanged {
+        generation: u64,
         id: i64,
         notice: Option<String>,
         replaced_by: Option<i64>,
     },
     MixBlocked {
+        generation: u64,
         mix_id: i64,
         index: usize,
         blocked: bool,
@@ -868,7 +903,10 @@ enum Internal {
         source: String,
         path: PathBuf,
     },
-    Notice(String),
+    Notice {
+        generation: u64,
+        text: String,
+    },
 }
 
 /// What a background request fills.
@@ -893,6 +931,9 @@ enum Target {
     Works,
     SeriesList,
     History,
+    Lyrics,
+    LyricsTranslation,
+    LyricsResults,
     LyricsPreview,
     Related,
     ArtistFavorites,
@@ -1252,10 +1293,17 @@ struct Core {
     /// Bumped per queue change; the debounced save writes the latest.
     queue_revision: u64,
     saved_queue_revision: u64,
+    /// Serialized background writer for `queue.json` (flushed and joined on shutdown).
+    queue_writer_tx: Option<UnboundedSender<(PathBuf, Vec<u8>)>>,
+    queue_writer_task: Option<tokio::task::JoinHandle<()>>,
     saved_position_step: i64,
     sleep: Option<Sleep>,
     /// Bumped per sleep timer start / cancel; stale ticks are ignored.
     sleep_generation: u64,
+    /// Handle for the active minutes sleep-timer task so it is aborted when cancelled.
+    sleep_task: Option<tokio::task::AbortHandle>,
+    /// Monotonic counter for play intents; supersedes older in-flight async play fetches.
+    play_intent_seq: u64,
     /// Request counter; `latest` holds the newest request per target.
     seq: u64,
     latest: HashMap<Target, u64>,
@@ -1342,9 +1390,13 @@ impl Core {
             report_seek_ms: None,
             queue_revision: 0,
             saved_queue_revision: 0,
+            queue_writer_tx: None,
+            queue_writer_task: None,
             saved_position_step: -1,
             sleep: None,
             sleep_generation: 0,
+            sleep_task: None,
+            play_intent_seq: 0,
             seq: 0,
             latest: HashMap::new(),
             track_filter: TrackFilter::default(),
@@ -1376,6 +1428,31 @@ impl Core {
 
     fn emit(&self, event: Event) {
         (self.sink)(event);
+    }
+
+    pub(super) fn begin_play_intent(&mut self) -> u64 {
+        self.play_intent_seq += 1;
+        self.play_intent_seq
+    }
+
+    fn enqueue_queue_write(&mut self, path: PathBuf, bytes: Vec<u8>) {
+        if self.queue_writer_tx.is_none() {
+            let (tx, mut rx) = mpsc::unbounded_channel::<(PathBuf, Vec<u8>)>();
+            let handle = tokio::spawn(async move {
+                while let Some(mut item) = rx.recv().await {
+                    while let Ok(newer) = rx.try_recv() {
+                        item = newer;
+                    }
+                    let (p, b) = item;
+                    let _ = tokio::task::spawn_blocking(move || write_atomic(&p, &b)).await;
+                }
+            });
+            self.queue_writer_tx = Some(tx);
+            self.queue_writer_task = Some(handle);
+        }
+        if let Some(tx) = &self.queue_writer_tx {
+            let _ = tx.send((path, bytes));
+        }
     }
 
     fn now_playing(&self, track: &Track) -> NowPlaying {
@@ -1508,12 +1585,20 @@ impl Core {
                 _ = &mut shutdown => break,
             }
         }
+        if let Some(task) = self.sleep_task.take() {
+            task.abort();
+        }
         self.save_settings();
         self.save_position();
         if self.queue_revision != self.saved_queue_revision
             && let Some((path, bytes)) = self.queue_file()
         {
-            write_atomic(&path, &bytes);
+            self.saved_queue_revision = self.queue_revision;
+            self.enqueue_queue_write(path, bytes);
+        }
+        self.queue_writer_tx = None;
+        if let Some(handle) = self.queue_writer_task.take() {
+            let _ = handle.await;
         }
         if let Some(reporter) = self.reporter.as_mut() {
             reporter.close(Duration::from_secs(2)).await;
@@ -1615,6 +1700,7 @@ impl Core {
                     self.open_detail(DetailKey::Similar(id));
                 }
             }
+            Command::OpenSimilarById(id) => self.open_detail(DetailKey::Similar(id)),
             Command::OpenVersions(list, index) => {
                 let id = self
                     .library
@@ -1625,6 +1711,7 @@ impl Core {
                     self.open_detail(DetailKey::Versions(id));
                 }
             }
+            Command::OpenVersionsById(id) => self.open_detail(DetailKey::Versions(id)),
             Command::PlayAlbumDisc(disc) => {
                 let tracks: Vec<api::Track> = self
                     .library
@@ -1638,6 +1725,7 @@ impl Core {
                     })
                     .unwrap_or_default();
                 if !tracks.is_empty() {
+                    self.begin_play_intent();
                     self.fetched(tracks, Intent::play_at(0));
                 }
             }
@@ -1678,12 +1766,14 @@ impl Core {
             }
             Command::PlayQueueItem(uid) => {
                 if self.queue.go_to_uid(uid).is_some() {
+                    self.begin_play_intent();
                     self.play_current(true);
                     self.emit_queue_position();
                 }
             }
             Command::RemoveFromQueue(uid) => self.remove_from_queue(uid),
             Command::ClearQueue => {
+                self.begin_play_intent();
                 self.stop_playback();
                 self.queue.clear();
                 self.emit_now_playing(None);
@@ -1934,7 +2024,10 @@ impl Core {
         fit: crate::ArtworkFit,
         original: bool,
     ) {
-        let Some(library) = &self.library else { return };
+        let Some(library) = &self.library else {
+            self.emit(Event::ImageFailed { key });
+            return;
+        };
         let images = library.images.clone();
         let url = if original {
             images.original_url(&path)
@@ -1942,13 +2035,17 @@ impl Core {
             images.url(&path, width, height)
         };
         let Some(url) = url else {
+            self.emit(Event::ImageFailed { key });
             return;
         };
         let sink = self.sink.clone();
         tokio::spawn(async move {
             match images.load(url, width, height, fit).await {
                 Ok(image) => sink(Event::Image { key, image }),
-                Err(e) => tracing::debug!("artwork {path}: {e}"),
+                Err(e) => {
+                    tracing::debug!("artwork {path}: {e}");
+                    sink(Event::ImageFailed { key });
+                }
             }
         });
     }
@@ -2259,6 +2356,9 @@ impl Core {
     }
 
     fn set_sleep_timer(&mut self, timer: Option<SleepTimer>) {
+        if let Some(task) = self.sleep_task.take() {
+            task.abort();
+        }
         self.sleep_generation += 1;
         self.sleep = timer.map(|timer| Sleep {
             timer,
@@ -2271,7 +2371,7 @@ impl Core {
         if let Some(SleepTimer::Minutes(_)) = timer {
             let generation = self.sleep_generation;
             let tx = self.internal.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let mut tick =
                     tokio::time::interval(Duration::from_millis(SLEEP_TICK_MS.unsigned_abs()));
                 tick.tick().await;
@@ -2282,6 +2382,7 @@ impl Core {
                     }
                 }
             });
+            self.sleep_task = Some(handle.abort_handle());
         }
         self.emit_sleep();
         // Whether the engine may continue into the next file changed.
@@ -2493,12 +2594,18 @@ impl Core {
                 self.emit(Event::Notice(e));
                 return;
             }
+            self.asio_active = use_asio;
+            self.asio_fallback = asio_fallback;
         } else if casting {
             // The speaker moved on by itself.
             cast_offset = self.cast_offset();
+            self.asio_active = false;
+            self.asio_fallback = false;
+        } else {
+            // Gapless advance stayed on the engine's existing backend.
+            self.asio_fallback =
+                !self.asio_active && self.effective_exclusive_mode() == ExclusiveMode::Asio;
         }
-        self.asio_active = use_asio;
-        self.asio_fallback = asio_fallback;
         self.emit_output_mode();
         self.resume_at = None;
         self.idle = false;
@@ -2811,19 +2918,51 @@ impl Core {
                     self.emit(Event::Notice(format!("{what}失败：{error}")));
                 }
             }
-            Internal::Fetched(Ok(tracks), intent) => self.fetched(tracks, intent),
-            Internal::Fetched(Err(e), _) => {
-                if e.is_unauthorized() {
-                    self.sign_out(SignOutReason::Expired);
-                } else if self.library.is_some() {
-                    self.emit(Event::Notice(format!("加载曲目失败：{e}")));
+            Internal::Fetched {
+                generation,
+                api_token,
+                play_seq,
+                result,
+                intent,
+            } => match result {
+                Ok(tracks) => {
+                    if generation != self.list_generation {
+                        return;
+                    }
+                    if let Some(seq) = play_seq
+                        && seq != self.play_intent_seq
+                    {
+                        return;
+                    }
+                    self.fetched(tracks, intent);
+                }
+                Err(e) => {
+                    if e.is_unauthorized() {
+                        self.internal(Internal::Unauthorized { api_token });
+                    } else if generation == self.list_generation
+                        && self.library.is_some()
+                        && play_seq.is_none_or(|seq| seq == self.play_intent_seq)
+                    {
+                        self.emit(Event::Notice(format!("加载曲目失败：{e}")));
+                    }
+                }
+            },
+            Internal::FavoriteSet {
+                generation,
+                kind,
+                id,
+                favorite,
+            } => {
+                if generation == self.list_generation {
+                    self.favorite_set(kind, id, favorite);
                 }
             }
-            Internal::FavoriteSet { kind, id, favorite } => {
-                self.favorite_set(kind, id, favorite);
-            }
-            Internal::PlaylistsChanged { notice, deleted } => {
-                if self.library.is_none() {
+            Internal::PlaylistsChanged {
+                generation,
+                notice,
+                deleted,
+            } => {
+                if generation != self.list_generation || self.library.is_none() {
                     return;
                 }
                 if let Some(notice) = notice {
@@ -2843,22 +2982,53 @@ impl Core {
                     self.open_detail(key);
                 }
             }
-            Internal::Lyrics { track_id, lyrics } => self.lyrics_loaded(track_id, lyrics),
-            Internal::Translation { track_id, lines } => self.translation_loaded(track_id, lines),
-            Internal::LyricsResults { track_id, results } => {
-                self.lyrics_results(track_id, results);
+            Internal::Lyrics {
+                seq,
+                track_id,
+                lyrics,
+            } => self.lyrics_loaded(seq, track_id, lyrics),
+            Internal::Translation {
+                seq,
+                api_token,
+                track_id,
+                lines,
+            } => self.translation_loaded(seq, api_token, track_id, lines),
+            Internal::LyricsResults {
+                seq,
+                track_id,
+                results,
+            } => {
+                self.lyrics_results(seq, track_id, results);
             }
             Internal::LyricsPreview(seq, lines) => self.lyrics_preview(seq, lines),
-            Internal::LyricsChanged(track_id) => self.lyrics_changed(track_id),
-            Internal::SourceTracks(key, ids) => {
-                self.sources.record(key, ids);
-                self.update_playing_sources();
+            Internal::LyricsChanged {
+                generation,
+                track_id,
+            } => {
+                if generation == self.list_generation {
+                    self.lyrics_changed(track_id);
+                }
             }
-            Internal::TrackWorks(track_id, works) => {
-                if self
-                    .track_works
-                    .as_ref()
-                    .is_some_and(|(id, _)| *id == track_id)
+            Internal::SourceTracks {
+                generation,
+                key,
+                ids,
+            } => {
+                if generation == self.list_generation {
+                    self.sources.record(key, ids);
+                    self.update_playing_sources();
+                }
+            }
+            Internal::TrackWorks {
+                generation,
+                track_id,
+                works,
+            } => {
+                if generation == self.list_generation
+                    && self
+                        .track_works
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == track_id)
                 {
                     self.track_works = Some((track_id, works));
                     self.update_playing_sources();
@@ -2869,26 +3039,44 @@ impl Core {
                     self.load_mixes();
                 }
             }
-            Internal::HistoryCleared => self.history_cleared(),
+            Internal::HistoryCleared(generation) => {
+                if generation == self.list_generation {
+                    self.history_cleared();
+                }
+            }
             Internal::MixChanged {
+                generation,
                 id,
                 notice,
                 replaced_by,
-            } => self.mix_changed(id, notice, replaced_by),
+            } => {
+                if generation == self.list_generation {
+                    self.mix_changed(id, notice, replaced_by);
+                }
+            }
             Internal::MixBlocked {
+                generation,
                 mix_id,
                 index,
                 blocked,
-            } => self.mix_blocked(mix_id, index, blocked),
-            Internal::Notice(text) => {
-                if self.library.is_some() {
+            } => {
+                if generation == self.list_generation {
+                    self.mix_blocked(mix_id, index, blocked);
+                }
+            }
+            Internal::Notice { generation, text } => {
+                if generation == self.list_generation && self.library.is_some() {
                     self.emit(Event::Notice(text));
                 }
             }
             Internal::AudioDevicesLoaded(result) => match result {
                 Ok(devices) => {
+                    let was_asio = self.asio_available;
                     self.audio_devices = devices.clone();
                     self.refresh_asio_availability();
+                    if self.asio_available != was_asio {
+                        self.maybe_handover_backend();
+                    }
                     self.emit(Event::AudioDevices(devices));
                     self.emit_output_mode();
                 }
@@ -2968,7 +3156,7 @@ impl Core {
                 }
                 if let Some((path, bytes)) = self.queue_file() {
                     self.saved_queue_revision = revision;
-                    tokio::task::spawn_blocking(move || write_atomic(&path, &bytes));
+                    self.enqueue_queue_write(path, bytes);
                 }
             }
             Internal::SaveSettings(revision) => {
@@ -3020,6 +3208,10 @@ impl Core {
         self.pending_seek_ms = None;
         self.sleep = None;
         self.sleep_generation += 1;
+        if let Some(task) = self.sleep_task.take() {
+            task.abort();
+        }
+        self.play_intent_seq += 1;
         self.position_ms = 0;
         self.engine_duration_ms = 0;
         self.stream_offset_ms = 0;
@@ -3106,6 +3298,7 @@ impl Core {
             series: capabilities.has(Feature::Series),
             daily_mixes: capabilities.has(Feature::DailyMixes),
             lyrics_translation: capabilities.has(Feature::LyricsTranslation),
+            artist_credit_roles: capabilities.has(Feature::ArtistCreditRoles),
         };
         self.library = Some(Library {
             images: Arc::new(Images::new(client.clone())),
@@ -3149,12 +3342,21 @@ fn is_opus_track(track: &Track, transcode: Option<Transcode>) -> bool {
     }
 }
 
-/// Writes via a temp file and rename, so a crash never leaves half a file.
+/// Writes via a unique temp file and rename, so concurrent writes or crashes
+/// never collide or leave half a file.
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let tmp = path.with_extension("tmp");
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("queue.json");
+    let tmp = path.with_file_name(format!("{file_name}.{}.{seq}.tmp", std::process::id()));
     let result = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);

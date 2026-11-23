@@ -308,7 +308,12 @@ async fn plays_through_a_sonos_room() {
         position_ms: 60_000,
     });
     until("live seek", || {
-        fake.state().queue[2].0.contains("offsetMs=60000") && fake.state().track == 3
+        let s = fake.state();
+        s.queue
+            .get(2)
+            .is_some_and(|(uri, _)| uri.contains("offsetMs=60000"))
+            && s.track == 3
+            && s.log.iter().any(|l| l == "Play")
     })
     .await;
     assert!(fake.log().contains(&"RemoveTrackFromQueue 3".to_owned()));
@@ -568,5 +573,213 @@ async fn stops_at_the_end_of_the_queue() {
         .unwrap();
     // The room is remembered for the next start.
     assert_eq!(Settings::load(&data_dir).cast.room.unwrap().id, UUID);
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paused_cast_replace_failure_does_not_loop_resync() {
+    let server = server().await;
+    let fake = FakeSpeaker::start().await;
+    let engine = Arc::new(FakeEngine::default());
+    let data_dir =
+        std::env::temp_dir().join(format!("032player-cast-resync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let settings = Settings {
+        cast: CastSettings {
+            hosts: fake.host(),
+            ..CastSettings::default()
+        },
+        ..Settings::default()
+    };
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: data_dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings,
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+    let events = Events(rx);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+    core.send(Command::DiscoverCast);
+    events.wait(
+        "rooms",
+        |e| matches!(e, Event::CastRooms { searching: false, rooms, .. } if rooms.len() == 1),
+    );
+    core.send(Command::SetCastOutput(Some(UUID.into())));
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    until("speaker playing", || fake.state().transport == "PLAYING").await;
+
+    // Pause, then inject queue mutation failure and edit the queue while paused.
+    core.send(Command::TogglePause);
+    until("speaker paused", || {
+        fake.state().transport == "PAUSED_PLAYBACK"
+    })
+    .await;
+    fake.clear_log();
+    fake.update(|s| s.fail_queue = true);
+
+    core.send(Command::Enqueue {
+        source: TrackSource::Track(TrackList::Library, 0),
+        at: QueuePosition::Last,
+    });
+    events.wait(
+        "cast failure notice",
+        |e| matches!(e, Event::Notice(n) if n.contains("同步 Sonos 队列失败")),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let removes = fake
+        .log()
+        .iter()
+        .filter(|l| l.starts_with("RemoveAllTracksFromQueue"))
+        .count();
+    assert!(
+        removes <= 2,
+        "paused resync failure must not loop infinitely, saw {removes} removes: {:?}",
+        fake.log()
+    );
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn detach_cast_aborts_slow_flac_warmup_without_playing_on_speaker() {
+    let server = MockServer::start().await;
+    Mock::given(path("/api/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "v1", "apiRevision": 3,
+            "features": { "browse": true },
+            "playback": { "clientKinds": ["web", "desktop"] },
+            "transcode": {
+                "available": true,
+                "formats": {
+                    "flac": { "available": true },
+                    "mp3": { "available": true }
+                }
+            },
+        })))
+        .mount(&server)
+        .await;
+    let hires = json!({
+        "id": 1, "title": "HiRes", "artist": "歌手", "album": "专辑",
+        "durationMillis": 240000, "streamUrl": "/api/v1/tracks/1/stream",
+        "codec": "flac", "sampleRate": 96000, "artworkUrl": "/api/v1/artwork/1",
+    });
+    Mock::given(path("/api/v1/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [hires], "limit": 1, "offset": 0, "total": 1
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/tracks/1/stream"))
+        .respond_with(ResponseTemplate::new(206))
+        .mount(&server)
+        .await;
+    // Slow FLAC warmup: takes 4s unless aborted.
+    Mock::given(path("/api/v1/tracks/1/transcode.flac"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_secs(4))
+                .set_body_bytes(vec![0u8; 16]),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/albums"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [], "limit": 500, "offset": 0, "total": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/browse/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [hires], "limit": 500, "offset": 0, "total": 1
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/playback/events"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "applied": true, "state": "playing" })),
+        )
+        .mount(&server)
+        .await;
+
+    let fake = FakeSpeaker::start().await;
+    let engine = Arc::new(FakeEngine::default());
+    let data_dir =
+        std::env::temp_dir().join(format!("032player-cast-abort-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let settings = Settings {
+        cast: CastSettings {
+            hires: client_core::CastHiRes::Flac48,
+            hosts: fake.host(),
+            ..CastSettings::default()
+        },
+        ..Settings::default()
+    };
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: data_dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings,
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+    let events = Events(rx);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+    core.send(Command::DiscoverCast);
+    events.wait(
+        "rooms",
+        |e| matches!(e, Event::CastRooms { searching: false, rooms, .. } if rooms.len() == 1),
+    );
+    core.send(Command::SetCastOutput(Some(UUID.into())));
+    fake.clear_log();
+
+    // Start cast (enters 4s FLAC warmup), then immediately switch back to local output.
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    core.send(Command::SetCastOutput(None));
+    events.wait("cast detached", |e| matches!(e, Event::CastOutput(None)));
+
+    // Wait briefly and assert the aborted warmup never pushed or played on the speaker.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !fake.log().iter().any(|l| l.starts_with("Play")),
+        "aborted warmup must not play on speaker: {:?}",
+        fake.log()
+    );
+    assert!(
+        engine.calls().iter().any(|c| c.starts_with("load ")),
+        "local engine should take over playback: {:?}",
+        engine.calls()
+    );
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
     let _ = std::fs::remove_dir_all(&data_dir);
 }
