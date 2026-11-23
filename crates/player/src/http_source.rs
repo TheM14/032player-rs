@@ -290,7 +290,16 @@ impl HttpMediaSource {
                         Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
                     }
                     res = resp.chunk() => {
-                        res.map_err(|e| io::Error::other(e.without_url().to_string()))
+                        res.map_err(|e| {
+                            let kind = if e.is_timeout() {
+                                io::ErrorKind::TimedOut
+                            } else if e.is_body() || e.is_decode() {
+                                io::ErrorKind::ConnectionAborted
+                            } else {
+                                io::ErrorKind::Other
+                            };
+                            io::Error::new(kind, e.without_url().to_string())
+                        })
                     }
                 }
             });
@@ -314,8 +323,10 @@ impl HttpMediaSource {
                             continue;
                         }
                         return Err(last_err.unwrap_or_else(|| {
+                            // Use ConnectionAborted rather than UnexpectedEof so Symphonia's
+                            // decoder does not mistake a truncated HTTP body for clean EOF.
                             io::Error::new(
-                                io::ErrorKind::UnexpectedEof,
+                                io::ErrorKind::ConnectionAborted,
                                 format!("truncated HTTP stream at {end}/{total} bytes"),
                             )
                         }));
@@ -683,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_stream_without_ranges_returns_unexpected_eof() {
+    fn truncated_stream_without_ranges_returns_connection_aborted() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
@@ -706,7 +717,7 @@ mod tests {
         .unwrap();
         let mut out = Vec::new();
         let err = src.read_to_end(&mut out).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionAborted);
         assert_eq!(out.len(), 200);
         drop(server);
     }
