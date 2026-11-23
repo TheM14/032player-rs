@@ -21,12 +21,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: clippy, rustfmt
+      - name: Runner image version
+        id: image
+        run: echo "version=${ImageVersion:-ubuntu-24.04}" >> "$GITHUB_OUTPUT"
       - name: Restore system libraries cache
         id: apt-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/apt-debs
-          key: apt-ubuntu-24.04-${{ env.ImageVersion }}-libmpv-fontconfig-v1
+          key: apt-ubuntu-24.04-${{ steps.image.outputs.version }}-libmpv-fontconfig-v1
       - name: System libraries
         run: |
           if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ] && compgen -G "/tmp/apt-debs/*.deb" >/dev/null; then
