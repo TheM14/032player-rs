@@ -56,13 +56,6 @@ impl Tray {
             .collect();
 
         let icon = Icon::from_rgba(rgba, width, height).map_err(|e| e.to_string())?;
-        let tray = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
-            .with_tooltip("032player")
-            .with_icon(icon)
-            .build()
-            .map_err(|e| e.to_string())?;
-
         let on_action = std::sync::Arc::new(on_action);
         let menu_action = on_action.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -80,6 +73,13 @@ impl Tray {
                 on_action(TrayAction::Show);
             }
         }));
+        let tray = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_tooltip("032player")
+            .with_icon(icon)
+            .build()
+            .map_err(|e| e.to_string())?;
         Ok(Self { icon: tray })
     }
 
