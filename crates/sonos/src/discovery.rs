@@ -612,4 +612,51 @@ mod tests {
         let ok = http.get(&url).send().await.unwrap();
         assert_eq!(read_text_limited(ok, 64).await, Some("b".repeat(16)));
     }
+
+    #[test]
+    fn topology_handles_legacy_wrapper_satellites_and_missing_known_player() {
+        // Legacy firmware sends `<ZoneGroups>` without `<ZoneGroupState>`.
+        // Bonded home-theater `<Satellite>` members must be marked covered and
+        // never create standalone rooms; coordinator absent from `known` still
+        // resolves from its `<ZoneGroupMember Location=...>` attribute.
+        let legacy_xml = r#"<ZoneGroups>
+            <ZoneGroup Coordinator="RINCON_ARC" ID="g1">
+                <ZoneGroupMember UUID="RINCON_ARC" Location="http://192.168.1.50:1400/xml/device_description.xml" ZoneName="Living Room">
+                    <Satellite UUID="RINCON_SUB" Location="http://192.168.1.51:1400/xml/device_description.xml" ZoneName="Living Room"/>
+                    <Satellite UUID="RINCON_SURR_L" Location="http://192.168.1.52:1400/xml/device_description.xml" ZoneName="Living Room"/>
+                </ZoneGroupMember>
+                <ZoneGroupMember UUID="RINCON_ONE" Location="http://192.168.1.53:1400/xml/device_description.xml" ZoneName="Kitchen"/>
+                <ZoneGroupMember UUID="RINCON_HIDDEN" Location="http://192.168.1.54:1400/xml/device_description.xml" ZoneName="Hidden" Invisible="1"/>
+            </ZoneGroup>
+            <ZoneGroup Coordinator="RINCON_MISSING_LOC" ID="g2">
+                <ZoneGroupMember UUID="RINCON_MISSING_LOC" Location="" ZoneName="Fallback Room"/>
+            </ZoneGroup>
+            <ZoneGroup Coordinator="" ID="g3">
+                <ZoneGroupMember UUID="RINCON_NO_COORD" Location="http://192.168.1.55:1400/xml/device_description.xml" ZoneName="Orphan"/>
+            </ZoneGroup>
+        </ZoneGroups>"#;
+
+        let mut known = HashMap::new();
+        known.insert(
+            "RINCON_MISSING_LOC".to_owned(),
+            Player {
+                uuid: "RINCON_MISSING_LOC".into(),
+                name: "Fallback Room".into(),
+                model: "Sonos Era 100".into(),
+                base_url: "http://192.168.1.60:1400".into(),
+            },
+        );
+        let (rooms, covered) = parse_zone_groups_with_members(legacy_xml, &known).unwrap();
+        assert!(covered.contains("RINCON_SUB"));
+        assert!(covered.contains("RINCON_SURR_L"));
+        assert!(covered.contains("RINCON_HIDDEN"));
+        assert_eq!(rooms.len(), 2);
+        assert_eq!(rooms[0].id, "RINCON_ARC");
+        assert_eq!(rooms[0].name, "Living Room + Kitchen");
+        assert_eq!(rooms[0].base_url, "http://192.168.1.50:1400");
+        assert_eq!(rooms[0].member_count, 2);
+        assert_eq!(rooms[1].id, "RINCON_MISSING_LOC");
+        assert_eq!(rooms[1].base_url, "http://192.168.1.60:1400");
+        assert_eq!(rooms[1].model, "Sonos Era 100");
+    }
 }

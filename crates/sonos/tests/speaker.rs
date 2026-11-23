@@ -93,3 +93,81 @@ async fn discovers_configured_hosts() {
     assert_eq!(rooms[0].base_url, fake.server.uri());
     assert_eq!(rooms[0].member_count, 1);
 }
+
+#[tokio::test]
+async fn status_runs_soap_calls_in_parallel_and_propagates_fault() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let peak_in_flight = Arc::new(AtomicUsize::new(0));
+    let in_flight_srv = in_flight.clone();
+    let peak_srv = peak_in_flight.clone();
+
+    let server = tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            let in_flight = in_flight_srv.clone();
+            let peak = peak_srv.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+
+                let (status_line, body) = if req.contains("GetTransportInfo") {
+                    (
+                        "HTTP/1.1 200 OK",
+                        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetTransportInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><CurrentTransportState>PLAYING</CurrentTransportState></u:GetTransportInfoResponse></s:Body></s:Envelope>"#,
+                    )
+                } else if req.contains("GetPositionInfo") {
+                    (
+                        "HTTP/1.1 200 OK",
+                        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetPositionInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><Track>2</Track><TrackDuration>0:03:00</TrackDuration><RelTime>0:00:45</RelTime><TrackURI>http://example/2.flac</TrackURI></u:GetPositionInfoResponse></s:Body></s:Envelope>"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 200 OK",
+                        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetMediaInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><NrTracks>5</NrTracks><CurrentURI>x-rincon-queue:RINCON_PAR#0</CurrentURI></u:GetMediaInfoResponse></s:Body></s:Envelope>"#,
+                    )
+                };
+                let resp = format!(
+                    "{status_line}\r\nContent-Type: text/xml; charset=\"utf-8\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+
+    let room = sonos::Room {
+        id: "RINCON_PAR".into(),
+        name: "Parallel".into(),
+        base_url: format!("http://{addr}"),
+        host: "127.0.0.1".into(),
+        member_count: 1,
+        model: "Sonos One".into(),
+    };
+    let speaker = Speaker::new(sonos::http_client(), &room);
+    let st = speaker.status().await.unwrap();
+    assert_eq!(st.state, TransportState::Playing);
+    assert_eq!(st.index, Some(1));
+    assert_eq!(st.position_ms, 45_000);
+    assert_eq!(st.duration_ms, 180_000);
+    assert_eq!(st.queue_length, 5);
+    assert!(
+        peak_in_flight.load(Ordering::SeqCst) >= 2,
+        "status() SOAP calls must execute concurrently, observed peak={}",
+        peak_in_flight.load(Ordering::SeqCst)
+    );
+    server.abort();
+}

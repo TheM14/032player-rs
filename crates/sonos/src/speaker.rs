@@ -326,9 +326,11 @@ impl Speaker {
     }
 
     pub async fn status(&self) -> Result<Status, Error> {
-        let transport = self.av("GetTransportInfo", &[]).await?;
-        let position = self.av("GetPositionInfo", &[]).await?;
-        let media = self.av("GetMediaInfo", &[]).await?;
+        let (transport, position, media) = tokio::try_join!(
+            self.av("GetTransportInfo", &[]),
+            self.av("GetPositionInfo", &[]),
+            self.av("GetMediaInfo", &[]),
+        )?;
         let queue_active = get(&media, "CurrentURI").starts_with("x-rincon-queue:");
         let index = get(&position, "Track")
             .trim()
