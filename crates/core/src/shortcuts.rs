@@ -48,6 +48,24 @@ impl Shortcuts {
             .iter()
             .find_map(|(id, _, _)| (!key.is_empty() && self.binding(id) == key).then_some(*id))
     }
+
+    /// Populates defaults for actions introduced after an older `settings.json`
+    /// was saved, without overwriting user overrides or intentional clears (`""`).
+    pub fn merge_defaults(&mut self) {
+        for &(id, _, default_key) in ACTIONS {
+            if self.bindings.contains_key(id) {
+                continue;
+            }
+            let conflict =
+                !default_key.is_empty() && self.bindings.values().any(|k| k == default_key);
+            let value = if conflict {
+                String::new()
+            } else {
+                default_key.to_owned()
+            };
+            self.bindings.insert(id.to_owned(), value);
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -70,5 +88,19 @@ mod tests {
             serde_json::from_str::<Shortcuts>("{}").unwrap(),
             Shortcuts::default()
         );
+    }
+
+    #[test]
+    fn merge_defaults_fills_missing_actions_and_respects_clears_and_conflicts() {
+        let mut keys: Shortcuts =
+            serde_json::from_str(r#"{"bindings":{"playPause":"","next":"Ctrl+K"}}"#).unwrap();
+        keys.merge_defaults();
+        // Explicitly cleared action stays empty.
+        assert_eq!(keys.binding("playPause"), "");
+        // Missing non-conflicting action receives its default.
+        assert_eq!(keys.binding("previous"), "Ctrl+Left");
+        // Missing action whose default is already taken by another action stays empty.
+        assert_eq!(keys.binding("search"), "");
+        assert_eq!(keys.binding("next"), "Ctrl+K");
     }
 }

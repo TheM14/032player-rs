@@ -39,6 +39,9 @@ pub struct Settings {
     pub shortcuts: crate::shortcuts::Shortcuts,
     /// Sonos output (MusicBridge).
     pub cast: CastSettings,
+    /// One-time layout migration version (0 = legacy pre-v3 defaults, 1 = migrated).
+    #[serde(default)]
+    pub layout_version: u32,
 }
 
 /// Exclusive audio output mode.
@@ -117,8 +120,10 @@ pub struct RightPanel {
     pub width: f32,
 }
 
-/// Default panel width before the redesign; saved files still holding it
-/// get the new default.
+/// Layout migration version; older files without `layoutVersion` migrate once.
+const LAYOUT_VERSION: u32 = 1;
+/// Default panel width before the redesign; legacy files still holding it
+/// get migrated once to the new default.
 const OLD_PANEL_WIDTH: f32 = 360.0;
 /// Default sidebar width before the redesign (see [`OLD_PANEL_WIDTH`]).
 const OLD_SIDEBAR_WIDTH: f32 = 210.0;
@@ -138,9 +143,9 @@ impl Default for RightPanel {
 }
 
 impl RightPanel {
-    fn sanitize(&mut self) {
+    fn sanitize(&mut self, migrate_legacy: bool) {
         let d = Self::default();
-        if (self.width - OLD_PANEL_WIDTH).abs() < 0.01 {
+        if migrate_legacy && (self.width - OLD_PANEL_WIDTH).abs() < 0.01 {
             self.width = d.width;
         }
         self.split = if self.split.is_finite() {
@@ -278,6 +283,7 @@ impl Default for Settings {
             lyrics: LyricsSettings::default(),
             shortcuts: crate::shortcuts::Shortcuts::default(),
             cast: CastSettings::default(),
+            layout_version: LAYOUT_VERSION,
         }
     }
 }
@@ -315,22 +321,46 @@ impl Settings {
         }
     }
 
-    /// Reads `settings.json` in `data_dir`; defaults when missing or corrupt.
+    /// Reads `settings.json` in `data_dir`; backs up corrupt files and falls
+    /// back to defaults when missing or corrupt.
     pub fn load(data_dir: &Path) -> Self {
-        let mut settings: Self = fs::read(Self::path(data_dir))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let path = Self::path(data_dir);
+        let mut settings: Self = match fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    let backup = data_dir.join("settings.json.bak");
+                    tracing::warn!(
+                        error = %e,
+                        path = %path.display(),
+                        backup = %backup.display(),
+                        "corrupt settings.json; backing up and resetting to defaults"
+                    );
+                    if let Err(copy_err) = fs::copy(&path, &backup) {
+                        tracing::warn!(error = %copy_err, "failed to back up corrupt settings.json");
+                    }
+                    Self::default()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "could not read settings.json");
+                Self::default()
+            }
+        };
+        let migrate_legacy = settings.layout_version < LAYOUT_VERSION;
         if !settings.volume.is_finite() {
             settings.volume = 100.0;
         }
         settings.volume = settings.volume.clamp(0.0, 100.0);
-        settings.right_panel.sanitize();
-        if (settings.sidebar_width - OLD_SIDEBAR_WIDTH).abs() < 0.01 {
+        settings.right_panel.sanitize(migrate_legacy);
+        if migrate_legacy && (settings.sidebar_width - OLD_SIDEBAR_WIDTH).abs() < 0.01 {
             settings.sidebar_width = SIDEBAR_WIDTH;
         }
         settings.sidebar_width = sidebar_width(settings.sidebar_width);
+        settings.layout_version = LAYOUT_VERSION;
         settings.window.sanitize();
+        settings.shortcuts.merge_defaults();
         settings.audio_device = settings
             .audio_device
             .filter(|d| !d.is_empty() && d != "auto");
@@ -405,6 +435,7 @@ mod tests {
                 opus: CastOpus::Flac,
                 hosts: "10.0.0.2".into(),
             },
+            layout_version: LAYOUT_VERSION,
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
@@ -474,6 +505,23 @@ mod tests {
 
         fs::write(Settings::path(&dir), b"nope").unwrap();
         assert_eq!(Settings::load(&dir), Settings::default());
+        assert_eq!(fs::read(dir.join("settings.json.bak")).unwrap(), b"nope");
+
+        // Once migrated (layoutVersion >= 1), explicit 210 / 360 widths are preserved.
+        let custom = Settings {
+            sidebar_width: OLD_SIDEBAR_WIDTH,
+            right_panel: RightPanel {
+                width: OLD_PANEL_WIDTH,
+                ..RightPanel::default()
+            },
+            ..Settings::default()
+        };
+        custom.save(&dir).unwrap();
+        let reloaded = Settings::load(&dir);
+        assert_eq!(
+            (reloaded.sidebar_width, reloaded.right_panel.width),
+            (OLD_SIDEBAR_WIDTH, OLD_PANEL_WIDTH)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

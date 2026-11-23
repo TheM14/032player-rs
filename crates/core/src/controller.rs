@@ -46,7 +46,6 @@ use session::KeyValueStorage;
 const RESTART_THRESHOLD_MS: i64 = 10_000;
 /// Position updates to the UI and the reporter are coarsened to this step.
 const POSITION_STEP_MS: i64 = 250;
-const PAGE: u32 = api::MAX_PAGE_SIZE;
 
 /// The timed sleep timer counts down in steps of this many ms of playback.
 const SLEEP_TICK_MS: i64 = 1_000;
@@ -798,7 +797,7 @@ pub struct LyricsTools {
 pub struct LyricsResultItem {
     pub title: String,
     pub artist: String,
-    /// "NetEase — 123 — 同步".
+    /// "NetEase - 123 - 同步".
     pub meta: String,
     /// "98.00%".
     pub score: String,

@@ -527,7 +527,7 @@ fn result_item(r: &LyricsSearchResult) -> LyricsResultItem {
     LyricsResultItem {
         title: r.name.clone(),
         artist: r.artist.clone(),
-        meta: [source, r.id.as_str(), synced].join(" — "),
+        meta: [source, r.id.as_str(), synced].join(" - "),
         score: format!("{:.2}%", (1.0 - r.score) * 100.0),
     }
 }

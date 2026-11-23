@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 
 use super::m032::SourceKey;
 use super::{
-    ArtistCredits, Core, DetailKey, Event, Intent, Internal, Loaded, PAGE, SearchPreviewData,
-    Target, TrackSource,
+    ArtistCredits, Core, DetailKey, Event, Intent, Internal, Loaded, SearchPreviewData, Target,
+    TrackSource,
 };
 use crate::browse::{
     self, AlbumFilter, ArtistFilter, DetailView, TrackFilter, TrackList, album_item, artist_item,
@@ -207,9 +207,10 @@ impl Core {
         };
         let (path, q) = query.source(browse);
         let seed = random.then(random_seed);
+        let page_size = client.page_size();
         let handle = tokio::spawn(async move {
             let mut sent_any = false;
-            let result = load_pages::<Album>(&client, path, &q, PAGE, seed, |items, total| {
+            let result = load_pages::<Album>(&client, path, &q, page_size, seed, |items, total| {
                 sent_any = true;
                 let items = items.iter().map(album_item).collect();
                 tx.send(Internal::Loaded(
@@ -280,9 +281,10 @@ impl Core {
         };
         let (path, q) = query.source(browse);
         let seed = random.then(random_seed);
+        let page_size = client.page_size();
         let handle = tokio::spawn(async move {
             let mut sent_any = false;
-            let result = load_pages::<Track>(&client, path, &q, PAGE, seed, |items, total| {
+            let result = load_pages::<Track>(&client, path, &q, page_size, seed, |items, total| {
                 sent_any = true;
                 tx.send(Internal::Loaded(
                     Target::Tracks,
@@ -343,24 +345,26 @@ impl Core {
         };
         let (path, q) = query.source(browse);
         let seed = random.then(random_seed);
+        let page_size = client.page_size();
         let handle = tokio::spawn(async move {
             let mut all = Vec::new();
             let mut sent_any = false;
-            let result = load_pages::<Artist>(&client, path, &q, PAGE, seed, |items, total| {
-                let items: Vec<_> = items.iter().map(artist_item).collect();
-                if favorites {
-                    all.extend(items);
-                    return true;
-                }
-                sent_any = true;
-                tx.send(Internal::Loaded(
-                    target,
-                    seq,
-                    Loaded::ArtistsPage(items, total),
-                ))
-                .is_ok()
-            })
-            .await;
+            let result =
+                load_pages::<Artist>(&client, path, &q, page_size, seed, |items, total| {
+                    let items: Vec<_> = items.iter().map(artist_item).collect();
+                    if favorites {
+                        all.extend(items);
+                        return true;
+                    }
+                    sent_any = true;
+                    tx.send(Internal::Loaded(
+                        target,
+                        seq,
+                        Loaded::ArtistsPage(items, total),
+                    ))
+                    .is_ok()
+                })
+                .await;
             let msg = match result {
                 Err(e) => {
                     if !favorites && !sent_any {
@@ -1437,7 +1441,7 @@ impl Core {
                 count.push("limit", 1);
                 let total: Page<Track> = client.get("/tracks", &count).await?;
                 let total = u32::try_from(total.total).unwrap_or(0);
-                let window = total.min(PAGE);
+                let window = total.min(client.page_size());
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let offset = (random_seed() as u32) % (total - window + 1).max(1);
                 q.page(offset, window.max(1));
@@ -1680,6 +1684,8 @@ fn added_notice(generation: u64, r: &api::PlaylistItemResult) -> Internal {
 
 /// Works linked to an album with each work's detail, albums and tracks
 /// (fetched concurrently). Errors leave the inspector without works.
+const ALBUM_WORKS_CONCURRENCY: usize = 6;
+
 async fn album_works(
     client: &Client,
     album_id: i64,
@@ -1692,12 +1698,17 @@ async fn album_works(
             return Vec::new();
         }
     };
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(ALBUM_WORKS_CONCURRENCY));
     let handles: Vec<_> = links
         .iter()
         .map(|link| {
             let client = client.clone();
+            let semaphore = semaphore.clone();
             let id = link.id;
             tokio::spawn(async move {
+                let Ok(_permit) = semaphore.acquire_owned().await else {
+                    return (None, Vec::new(), Vec::new());
+                };
                 let (detail, albums, tracks) = tokio::join!(
                     client.work(id),
                     client.work_albums(id),

@@ -561,15 +561,11 @@ impl Core {
             q.push("type", &query.kind);
         }
         q.push("sort", query.sort.as_str());
+        let page_size = client.page_size();
         let handle = tokio::spawn(async move {
             let mut sent_any = false;
-            let result = load_pages::<api::Work>(
-                &client,
-                "/works",
-                &q,
-                super::PAGE,
-                None,
-                |items, total| {
+            let result =
+                load_pages::<api::Work>(&client, "/works", &q, page_size, None, |items, total| {
                     sent_any = true;
                     let items = items.iter().map(work_item).collect();
                     tx.send(Internal::Loaded(
@@ -578,9 +574,8 @@ impl Core {
                         Loaded::WorksPage(items, total),
                     ))
                     .is_ok()
-                },
-            )
-            .await;
+                })
+                .await;
             if let Err(e) = result {
                 if !sent_any {
                     let _ = tx.send(Internal::Loaded(
@@ -606,13 +601,14 @@ impl Core {
         if !search.is_empty() {
             q.push("q", search);
         }
+        let page_size = client.page_size().min(SERIES_PAGE);
         let handle = tokio::spawn(async move {
             let mut sent_any = false;
             let result = load_pages::<api::Series>(
                 &client,
                 "/series",
                 &q,
-                SERIES_PAGE,
+                page_size,
                 None,
                 |items, total| {
                     sent_any = true;
@@ -647,13 +643,14 @@ impl Core {
         let seq = self.next_seq(Target::History);
         self.set_list(TrackList::History, Vec::new());
         self.emit(Event::HistoryReset);
+        let page_size = client.page_size();
         let handle = tokio::spawn(async move {
             let mut sent_any = false;
             let result = load_pages::<PlaybackRecord>(
                 &client,
                 "/playback/history",
                 &Query::new(),
-                super::PAGE,
+                page_size,
                 None,
                 |items, total| {
                     sent_any = true;

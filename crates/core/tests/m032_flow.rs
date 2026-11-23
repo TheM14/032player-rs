@@ -609,7 +609,7 @@ async fn lyrics_translation_offset_and_search() {
     else {
         unreachable!()
     };
-    assert_eq!(results[0].meta, "NetEase — 3 — 同步");
+    assert_eq!(results[0].meta, "NetEase - 3 - 同步");
     assert_eq!(results[0].score, "98.00%");
     h.send(Command::ApplyLyrics(0));
     h.wait(
