@@ -15,6 +15,11 @@ pub use ring::{SpscConsumer, SpscProducer, spsc_ring};
 
 use std::fmt;
 
+/// Standard PCM sample rates probed when inspecting an ASIO driver.
+pub const STANDARD_SAMPLE_RATES: &[u32] = &[
+    22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
+];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AsioError {
     #[error("ASIO is only supported on Windows")]
@@ -33,6 +38,19 @@ pub enum AsioError {
     UnsupportedFormat(AsioSampleType),
     #[error("ASIO driver has fewer than 2 output channels ({0})")]
     NotEnoughChannels(i32),
+    #[error(
+        "invalid ASIO channel pair ({left}, {right}) for device with {available} output channels"
+    )]
+    InvalidChannelPair {
+        left: usize,
+        right: usize,
+        available: usize,
+    },
+    #[error("ASIO output channels have mismatched sample formats ({left} vs {right})")]
+    ChannelFormatMismatch {
+        left: AsioSampleType,
+        right: AsioSampleType,
+    },
     #[error("ASIO sample rate {0} Hz is not supported by the device")]
     UnsupportedSampleRate(f64),
     #[error("ASIO host thread stopped")]
@@ -49,6 +67,48 @@ pub struct AsioDriverInfo {
     pub clsid: String,
 }
 
+/// A stereo pair of output channels exposed by an ASIO driver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioChannelPair {
+    pub left: usize,
+    pub right: usize,
+    pub name: String,
+}
+
+/// Target ASIO driver and stereo output channel pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioTarget {
+    pub clsid: String,
+    pub left_channel: usize,
+    pub right_channel: usize,
+}
+
+impl AsioTarget {
+    #[must_use]
+    pub fn new(clsid: impl Into<String>, left_channel: usize, right_channel: usize) -> Self {
+        Self {
+            clsid: clsid.into(),
+            left_channel,
+            right_channel,
+        }
+    }
+
+    #[must_use]
+    pub fn stereo_default(clsid: impl Into<String>) -> Self {
+        Self::new(clsid, 0, 1)
+    }
+}
+
+/// Hardware capabilities reported when probing an ASIO driver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioCapabilities {
+    pub output_channels: usize,
+    pub channel_pairs: Vec<AsioChannelPair>,
+    pub supported_sample_rates: Vec<u32>,
+    pub sample_type: AsioSampleType,
+    pub buffer_size: usize,
+}
+
 /// Active ASIO stream parameters negotiated with the driver.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AsioStreamConfig {
@@ -56,6 +116,8 @@ pub struct AsioStreamConfig {
     pub buffer_size: usize,
     pub sample_type: AsioSampleType,
     pub output_channels: usize,
+    pub left_channel: usize,
+    pub right_channel: usize,
 }
 
 /// Callback invocation passed to the render closure on each ASIO `bufferSwitch`.
@@ -271,7 +333,41 @@ fn write_sample(sample_type: AsioSampleType, sample: f32, dst: &mut [u8]) {
             let v = (clamped * 8_388_607.0).round() as i32;
             dst.copy_from_slice(&v.to_le_bytes());
         }
-        _ => dst.fill(0),
+        AsioSampleType::Unknown(_) => dst.fill(0),
+    }
+}
+
+/// Groups ordered output channels `(channel_index, channel_name)` into stereo
+/// output pairs `(2k, 2k + 1)`.
+#[must_use]
+pub fn build_channel_pairs(channels: &[(usize, String)]) -> Vec<AsioChannelPair> {
+    let mut pairs = Vec::with_capacity(channels.len() / 2);
+    for [(left, left_name), (right, right_name)] in channels.as_chunks::<2>().0 {
+        let name = format_channel_pair_name(*left, left_name, *right, right_name);
+        pairs.push(AsioChannelPair {
+            left: *left,
+            right: *right,
+            name,
+        });
+    }
+    pairs
+}
+
+fn format_channel_pair_name(
+    left: usize,
+    left_name: &str,
+    right: usize,
+    right_name: &str,
+) -> String {
+    let l = left_name.trim();
+    let r = right_name.trim();
+    let idx = format!("{}-{}", left + 1, right + 1);
+    match (l.is_empty(), r.is_empty()) {
+        (true, true) => format!("输出 {idx}"),
+        (false, true) => format!("{idx} · {l}"),
+        (true, false) => format!("{idx} · {r}"),
+        (false, false) if l == r => format!("{idx} · {l}"),
+        (false, false) => format!("{idx} · {l} / {r}"),
     }
 }
 
@@ -298,12 +394,8 @@ pub fn choose_buffer_frames(min: i32, max: i32, preferred: i32, granularity: i32
     size
 }
 
-/// FiiO ASIO driver registry key & CLSID on Windows.
-pub const FIIO_ASIO_NAME: &str = "FiiO ASIO Driver";
-pub const FIIO_ASIO_CLSID: &str = "{6B3BA606-8664-4426-8994-0F1E6FE6199F}";
-pub const FIIO_ENDPOINT_MATCH: &str = "FiiO Q series";
-
-/// Enumerates ASIO drivers registered under `HKLM\SOFTWARE\ASIO`.
+/// Enumerates ASIO drivers registered under `HKLM\SOFTWARE\ASIO` whose COM
+/// server DLL exists on disk.
 #[must_use]
 pub fn list_drivers() -> Vec<AsioDriverInfo> {
     #[cfg(windows)]
@@ -316,39 +408,16 @@ pub fn list_drivers() -> Vec<AsioDriverInfo> {
     }
 }
 
-/// Finds the registered FiiO ASIO driver if installed.
-#[must_use]
-pub fn find_fiio_driver() -> Option<AsioDriverInfo> {
-    list_drivers().into_iter().find(|d| {
-        d.key.eq_ignore_ascii_case(FIIO_ASIO_NAME)
-            || d.name.eq_ignore_ascii_case(FIIO_ASIO_NAME)
-            || d.clsid.eq_ignore_ascii_case(FIIO_ASIO_CLSID)
-    })
-}
-
-/// Returns the GUID (e.g. `{ef05e2a9-d17f-46af-8fed-022ced0cb378}`) of the
-/// current Windows default audio render endpoint, if available.
-#[must_use]
-pub fn default_audio_endpoint_guid() -> Option<String> {
+/// Probes an ASIO driver by opening it briefly and reading its output channel
+/// pairs, sample format, buffer size, and supported sample rates.
+pub fn probe_driver(clsid: &str) -> Result<AsioCapabilities> {
     #[cfg(windows)]
     {
-        driver::default_audio_endpoint_guid()
+        driver::probe_driver(clsid)
     }
     #[cfg(not(windows))]
     {
-        None
-    }
-}
-
-/// Probes an ASIO driver by opening it briefly and reading its capabilities.
-pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
-    #[cfg(windows)]
-    {
-        driver::probe_driver(clsid, sample_rate)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (clsid, sample_rate);
+        let _ = clsid;
         Err(AsioError::Unsupported)
     }
 }
@@ -376,18 +445,19 @@ pub struct AsioOutput {
 }
 
 impl AsioOutput {
-    /// Opens the ASIO driver identified by `clsid` at `sample_rate` Hz and starts
-    /// audio streaming. `render` receives `(context, interleaved_stereo_f32)`.
-    pub fn start(clsid: &str, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+    /// Opens the ASIO driver and output channel pair identified by `target` at
+    /// `sample_rate` Hz and starts audio streaming. `render` receives
+    /// `(context, interleaved_stereo_f32)`.
+    pub fn start(target: &AsioTarget, sample_rate: f64, render: RenderCallback) -> Result<Self> {
         #[cfg(windows)]
         {
             Ok(Self {
-                inner: driver::AsioOutputHandle::start(clsid, sample_rate, render)?,
+                inner: driver::AsioOutputHandle::start(target, sample_rate, render)?,
             })
         }
         #[cfg(not(windows))]
         {
-            let _ = (clsid, sample_rate, render);
+            let _ = (target, sample_rate, render);
             Err(AsioError::Unsupported)
         }
     }
@@ -538,5 +608,22 @@ mod tests {
             .unwrap();
         assert_eq!(&l24, &[0x7f, 0xff, 0xff]);
         assert_eq!(&r24, &[0x80, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn builds_stereo_channel_pairs() {
+        let channels = vec![
+            (0, "MAIN Left".into()),
+            (1, "MAIN Right".into()),
+            (2, "LOOPBACK Left".into()),
+            (3, "LOOPBACK Right".into()),
+            (4, "".into()),
+            (5, "".into()),
+        ];
+        let pairs = build_channel_pairs(&channels);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0].name, "1-2 · MAIN Left / MAIN Right");
+        assert_eq!(pairs[1].name, "3-4 · LOOPBACK Left / LOOPBACK Right");
+        assert_eq!(pairs[2].name, "输出 5-6");
     }
 }

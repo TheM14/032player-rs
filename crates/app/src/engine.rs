@@ -4,7 +4,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use client_core::{AudioDevice, Engine, EngineEnd, EngineEvent, ExclusiveMode};
+use client_core::{
+    AsioCapabilities, AsioChannelPair, AsioDriver, AsioTarget, AudioDevice, Engine, EngineEnd,
+    EngineEvent, ExclusiveMode,
+};
 use player::{AsioPlayer, EndReason, Player, PlayerEvent};
 
 pub type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
@@ -16,6 +19,8 @@ pub const ACTIVE_ASIO: u8 = 2;
 pub struct HybridEngine {
     mpv: Player,
     asio: Mutex<Option<Arc<AsioPlayer>>>,
+    asio_target: Mutex<Option<AsioTarget>>,
+    asio_active_target: Mutex<Option<AsioTarget>>,
     active: Arc<AtomicU8>,
     exclusive: AtomicBool,
     volume: Mutex<f64>,
@@ -35,6 +40,8 @@ impl HybridEngine {
         Self {
             mpv,
             asio: Mutex::new(None),
+            asio_target: Mutex::new(None),
+            asio_active_target: Mutex::new(None),
             active,
             exclusive: AtomicBool::new(initial_exclusive),
             volume: Mutex::new(initial_volume.clamp(0.0, 100.0)),
@@ -56,15 +63,34 @@ impl HybridEngine {
 
     fn release_asio(&self) {
         let old = self.asio.lock().expect("asio lock").take();
+        *self.asio_active_target.lock().expect("asio active target") = None;
         drop(old);
     }
 
     fn ensure_asio(&self, url: &str) -> Result<Arc<AsioPlayer>, String> {
+        let target = self
+            .asio_target
+            .lock()
+            .expect("asio target")
+            .clone()
+            .ok_or_else(|| "请先在设置中选择要使用的 ASIO 驱动".to_owned())?;
         let proxy = os::proxy::http_proxy_for(url);
         let mut guard = self.asio.lock().expect("asio lock");
+        let target_changed = self
+            .asio_active_target
+            .lock()
+            .expect("asio active target")
+            .as_ref()
+            != Some(&target);
+        if target_changed {
+            let old = guard.take();
+            *self.asio_active_target.lock().expect("asio active target") = None;
+            drop(old);
+        }
         if guard.is_none() {
-            let player = Arc::new(self.create_asio_player()?);
+            let player = Arc::new(self.create_asio_player(&target)?);
             *guard = Some(player);
+            *self.asio_active_target.lock().expect("asio active target") = Some(target);
         }
         let asio = guard.as_ref().expect("asio initialized").clone();
         drop(guard);
@@ -75,25 +101,32 @@ impl HybridEngine {
     }
 
     #[cfg(windows)]
-    fn create_asio_player(&self) -> Result<AsioPlayer, String> {
-        let clsid =
-            player::fiio_asio_clsid().ok_or_else(|| "未检测到 FiiO ASIO 驱动".to_owned())?;
+    fn create_asio_player(&self, target: &AsioTarget) -> Result<AsioPlayer, String> {
+        let sink_target = player::AsioTarget::new(
+            target.clsid.clone(),
+            target.left_channel,
+            target.right_channel,
+        );
         let forward = self.forward.clone();
         let active = self.active.clone();
         let vol = *self.volume.lock().expect("volume lock");
-        AsioPlayer::new(player::WindowsAsioSink::new(clsid), vol, move |event| {
-            if active.load(Ordering::Acquire) != ACTIVE_ASIO {
-                return;
-            }
-            if let (Some(f), Some(e)) = (forward.get(), map_event(event)) {
-                f(e);
-            }
-        })
+        AsioPlayer::new(
+            player::WindowsAsioSink::new(sink_target),
+            vol,
+            move |event| {
+                if active.load(Ordering::Acquire) != ACTIVE_ASIO {
+                    return;
+                }
+                if let (Some(f), Some(e)) = (forward.get(), map_event(event)) {
+                    f(e);
+                }
+            },
+        )
         .map_err(|e| e.to_string())
     }
 
     #[cfg(not(windows))]
-    fn create_asio_player(&self) -> Result<AsioPlayer, String> {
+    fn create_asio_player(&self, _target: &AsioTarget) -> Result<AsioPlayer, String> {
         Err("ASIO is only supported on Windows".into())
     }
 }
@@ -227,15 +260,38 @@ impl Engine for HybridEngine {
         self.mpv.set_exclusive(enabled).map_err(|e| e.to_string())
     }
 
-    fn supports_asio(&self, devices: &[AudioDevice], selected: Option<&str>) -> bool {
-        let mapped: Vec<player::AudioDevice> = devices
-            .iter()
-            .map(|d| player::AudioDevice {
-                name: d.name.clone(),
-                description: d.description.clone(),
+    fn asio_drivers(&self) -> Vec<AsioDriver> {
+        player::list_asio_drivers()
+            .into_iter()
+            .map(|d| AsioDriver {
+                clsid: d.clsid,
+                name: d.name,
             })
-            .collect();
-        player::fiio_asio_available(&mapped, selected)
+            .collect()
+    }
+
+    fn probe_asio_driver(&self, clsid: &str) -> Result<AsioCapabilities, String> {
+        let caps = player::probe_asio_driver(clsid).map_err(|e| e.to_string())?;
+        Ok(AsioCapabilities {
+            output_channels: caps.output_channels,
+            channel_pairs: caps
+                .channel_pairs
+                .into_iter()
+                .map(|p| AsioChannelPair {
+                    left: p.left,
+                    right: p.right,
+                    name: p.name,
+                })
+                .collect(),
+            supported_sample_rates: caps.supported_sample_rates,
+            sample_format: caps.sample_type.to_string(),
+            buffer_size: caps.buffer_size,
+        })
+    }
+
+    fn set_asio_target(&self, target: Option<AsioTarget>) -> Result<(), String> {
+        *self.asio_target.lock().expect("asio target") = target;
+        Ok(())
     }
 
     fn set_exclusive_mode(&self, mode: ExclusiveMode) -> Result<(), String> {
@@ -260,11 +316,20 @@ impl Engine for HybridEngine {
                 }
             }
             ExclusiveMode::Asio => {
-                if player::fiio_asio_clsid().is_none() {
-                    return Err("未检测到 FiiO ASIO 驱动".into());
+                let target = self
+                    .asio_target
+                    .lock()
+                    .expect("asio target")
+                    .clone()
+                    .ok_or_else(|| "请先选择要使用的 ASIO 驱动".to_owned())?;
+                if !player::list_asio_drivers()
+                    .iter()
+                    .any(|d| d.clsid.eq_ignore_ascii_case(&target.clsid))
+                {
+                    return Err("所选 ASIO 驱动未安装".into());
                 }
                 if self.active.load(Ordering::Acquire) == ACTIVE_NONE {
-                    player::probe_fiio_asio().map_err(|e| e.to_string())?;
+                    player::probe_asio_driver(&target.clsid).map_err(|e| e.to_string())?;
                 }
                 self.exclusive.store(true, Ordering::Release);
                 Ok(())
@@ -273,13 +338,29 @@ impl Engine for HybridEngine {
     }
 
     fn open_asio_control_panel(&self) -> Result<(), String> {
+        let target = self.asio_target.lock().expect("asio target").clone();
+        let active_matches = self
+            .asio_active_target
+            .lock()
+            .expect("asio active target")
+            .as_ref()
+            .is_some_and(|a| {
+                target
+                    .as_ref()
+                    .is_some_and(|t| a.clsid.eq_ignore_ascii_case(&t.clsid))
+            });
         // Clone the Arc and drop the mutex before opening the control panel so
         // playback controls (pause/seek/stop) never block behind it.
-        let asio = self.asio.lock().expect("asio lock").clone();
+        let asio = if active_matches {
+            self.asio.lock().expect("asio lock").clone()
+        } else {
+            None
+        };
         if let Some(asio) = asio {
             return asio.open_control_panel().map_err(|e| e.to_string());
         }
-        player::open_fiio_control_panel_standalone().map_err(|e| e.to_string())
+        let target = target.ok_or_else(|| "请先选择要使用的 ASIO 驱动".to_owned())?;
+        player::open_asio_control_panel_standalone(&target.clsid).map_err(|e| e.to_string())
     }
 }
 

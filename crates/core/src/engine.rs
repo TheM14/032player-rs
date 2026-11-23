@@ -40,11 +40,6 @@ pub trait Engine: Send + Sync + 'static {
         self.append(url)
     }
 
-    /// Legacy FiiO ASIO check retained until app switches to [`Engine::asio_drivers`].
-    fn supports_asio(&self, _devices: &[AudioDevice], _selected: Option<&str>) -> bool {
-        false
-    }
-
     /// Enumerates installed ASIO drivers without opening hardware.
     fn asio_drivers(&self) -> Vec<AsioDriver> {
         Vec::new()

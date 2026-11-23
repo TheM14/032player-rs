@@ -49,16 +49,16 @@ fn format_asio_error(err: &asio::AsioError) -> String {
 
 #[cfg(windows)]
 pub struct WindowsAsioSink {
-    clsid: String,
+    target: asio::AsioTarget,
     active: Option<asio::AsioOutput>,
 }
 
 #[cfg(windows)]
 impl WindowsAsioSink {
     #[must_use]
-    pub fn new(clsid: impl Into<String>) -> Self {
+    pub fn new(target: asio::AsioTarget) -> Self {
         Self {
-            clsid: clsid.into(),
+            target,
             active: None,
         }
     }
@@ -78,7 +78,7 @@ impl AudioSink for WindowsAsioSink {
             }
             let cb = shared_render.clone();
             match asio::AsioOutput::start(
-                &self.clsid,
+                &self.target,
                 sample_rate,
                 Box::new(move |ctx, buf| {
                     if let Ok(mut f) = cb.try_lock() {
@@ -137,7 +137,7 @@ impl AudioSink for WindowsAsioSink {
                 .open_control_panel()
                 .map_err(|e| PlayerError::Mpv(format_asio_error(&e)))
         } else {
-            asio::open_control_panel_standalone(&self.clsid)
+            asio::open_control_panel_standalone(&self.target.clsid)
                 .map_err(|e| PlayerError::Mpv(format_asio_error(&e)))
         }
     }

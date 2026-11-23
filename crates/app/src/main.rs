@@ -204,6 +204,15 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         };
 
+    if let Some(clsid) = settings.asio_driver.as_deref() {
+        let (left, right) = settings.asio_channel_pair(clsid);
+        let _ = engine.set_asio_target(Some(client_core::AsioTarget {
+            clsid: clsid.to_owned(),
+            left_channel: left,
+            right_channel: right,
+        }));
+    }
+
     let core = client_core::start(
         engine.clone(),
         CoreConfig {

@@ -2,7 +2,7 @@
 
 use std::ffi::{c_char, c_void};
 
-use windows_sys::core::{GUID, HRESULT, PWSTR};
+use windows_sys::core::{GUID, HRESULT};
 
 pub type AsioBool = i32;
 pub type AsioErrorCode = i32;
@@ -231,64 +231,3 @@ macro_rules! define_iasio_vtbl {
 define_iasio_vtbl!("thiscall");
 #[cfg(not(target_arch = "x86"))]
 define_iasio_vtbl!("system");
-
-pub const CLSID_MM_DEVICE_ENUMERATOR: GUID =
-    GUID::from_u128(0xbcde0395_e52f_467c_8e3d_c4579291692e);
-pub const IID_IMM_DEVICE_ENUMERATOR: GUID = GUID::from_u128(0xa95664d2_9614_4f35_a746_de8db63617e6);
-
-#[repr(C)]
-pub struct IMMDeviceEnumerator {
-    pub vtbl: *const IMMDeviceEnumeratorVtbl,
-}
-
-#[repr(C)]
-pub struct IMMDeviceEnumeratorVtbl {
-    pub query_interface: unsafe extern "system" fn(
-        this: *mut IMMDeviceEnumerator,
-        riid: *const GUID,
-        ppv: *mut *mut c_void,
-    ) -> HRESULT,
-    pub add_ref: unsafe extern "system" fn(this: *mut IMMDeviceEnumerator) -> u32,
-    pub release: unsafe extern "system" fn(this: *mut IMMDeviceEnumerator) -> u32,
-    pub enum_audio_endpoints: unsafe extern "system" fn(
-        this: *mut IMMDeviceEnumerator,
-        data_flow: i32,
-        state_mask: u32,
-        devices: *mut *mut c_void,
-    ) -> HRESULT,
-    pub get_default_audio_endpoint: unsafe extern "system" fn(
-        this: *mut IMMDeviceEnumerator,
-        data_flow: i32,
-        role: i32,
-        endpoint: *mut *mut IMMDevice,
-    ) -> HRESULT,
-}
-
-#[repr(C)]
-pub struct IMMDevice {
-    pub vtbl: *const IMMDeviceVtbl,
-}
-
-#[repr(C)]
-pub struct IMMDeviceVtbl {
-    pub query_interface: unsafe extern "system" fn(
-        this: *mut IMMDevice,
-        riid: *const GUID,
-        ppv: *mut *mut c_void,
-    ) -> HRESULT,
-    pub add_ref: unsafe extern "system" fn(this: *mut IMMDevice) -> u32,
-    pub release: unsafe extern "system" fn(this: *mut IMMDevice) -> u32,
-    pub activate: unsafe extern "system" fn(
-        this: *mut IMMDevice,
-        iid: *const GUID,
-        cls_ctx: u32,
-        activation_params: *mut c_void,
-        interface: *mut *mut c_void,
-    ) -> HRESULT,
-    pub open_property_store: unsafe extern "system" fn(
-        this: *mut IMMDevice,
-        stgm_access: u32,
-        properties: *mut *mut c_void,
-    ) -> HRESULT,
-    pub get_id: unsafe extern "system" fn(this: *mut IMMDevice, id: *mut PWSTR) -> HRESULT,
-}
