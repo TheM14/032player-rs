@@ -89,6 +89,10 @@ jobs:
           Copy-Item "$out/032player.exe" $dir
           Copy-Item "$out/libmpv-2.dll" $dir
           Copy-Item LICENSE "$dir/LICENSE.txt"
+          New-Item -ItemType Directory -Force "$dir/licenses" | Out-Null
+          Copy-Item "crates/app/assets/fonts/OFL-NotoSansSC.txt" "$dir/licenses/"
+          Copy-Item "crates/app/assets/fonts/OFL-SourceSerif4.txt" "$dir/licenses/"
+          Copy-Item "crates/app/assets/fonts/README.md" "$dir/licenses/FONTS.md"
           Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name) $($_.Length)" }
 

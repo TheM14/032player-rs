@@ -53,6 +53,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#SourceDir}\032player.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\..\crates\app\assets\fonts\OFL-NotoSansSC.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\..\crates\app\assets\fonts\OFL-SourceSerif4.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\..\crates\app\assets\fonts\README.md"; DestDir: "{app}\licenses"; DestName: "FONTS.md"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\032player"; Filename: "{app}\032player.exe"
