@@ -159,7 +159,7 @@ impl Core {
     /// The pause state playback is in or heading to (a running fade-out
     /// still plays but counts as paused).
     pub(super) fn effective_paused(&self) -> bool {
-        self.fade.target().unwrap_or(self.paused)
+        self.pb.fade.target().unwrap_or(self.pb.paused)
     }
 
     /// Pauses the engine, fading out first when enabled.
@@ -167,21 +167,24 @@ impl Core {
         if self.casting() {
             return self.cast_pause(true);
         }
-        let generation = self.fade.cancel();
+        let generation = self.pb.fade.cancel();
         if !self.settings.fade_on_pause
-            || self.engine.set_fade_gain(gain(self.fade.level())).is_err()
+            || self
+                .engine
+                .set_fade_gain(gain(self.pb.fade.level()))
+                .is_err()
         {
             return self.engine.set_paused(true);
         }
         let task = spawn_ramp(
             self.engine.clone(),
-            self.fade.level.clone(),
-            self.fade.generation.clone(),
+            self.pb.fade.level.clone(),
+            self.pb.fade.generation.clone(),
             generation,
             0.0,
             true,
         );
-        self.fade.running = Some((task, true));
+        self.pb.fade.running = Some((task, true));
         // The icon flips now; the engine's `Paused` follows after the fade.
         self.emit(Event::Paused(true));
         Ok(())
@@ -193,15 +196,15 @@ impl Core {
         if self.casting() {
             return self.cast_pause(false);
         }
-        let generation = self.fade.cancel();
+        let generation = self.pb.fade.cancel();
         if !self.settings.fade_on_pause {
             self.restore_gain();
             return self.engine.set_paused(false);
         }
         if from_silence {
-            self.fade.set_level(0.0);
+            self.pb.fade.set_level(0.0);
         }
-        let level = self.fade.level();
+        let level = self.pb.fade.level();
         if self.engine.set_fade_gain(gain(level)).is_err() {
             return self.engine.set_paused(false);
         }
@@ -209,15 +212,15 @@ impl Core {
         if level < 1.0 {
             let task = spawn_ramp(
                 self.engine.clone(),
-                self.fade.level.clone(),
-                self.fade.generation.clone(),
+                self.pb.fade.level.clone(),
+                self.pb.fade.generation.clone(),
                 generation,
                 1.0,
                 false,
             );
-            self.fade.running = Some((task, false));
+            self.pb.fade.running = Some((task, false));
         }
-        if !self.paused {
+        if !self.pb.paused {
             // A fade-out was cancelled: the engine never paused.
             self.emit(Event::Paused(false));
         }
@@ -226,9 +229,9 @@ impl Core {
 
     /// Back to full level (the fade was switched off mid-way).
     pub(super) fn restore_gain(&mut self) {
-        self.fade.cancel();
-        if self.fade.level() < 1.0 {
-            self.fade.set_level(1.0);
+        self.pb.fade.cancel();
+        if self.pb.fade.level() < 1.0 {
+            self.pb.fade.set_level(1.0);
             let _ = self.engine.set_fade_gain(1.0);
         }
     }

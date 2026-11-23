@@ -2,18 +2,21 @@
 //! from the UI and [`EngineEvent`]s from the audio engine, and pushes
 //! [`Event`]s to a sink. The UI never blocks on the network.
 
+mod auth;
 mod cast;
 mod fade;
 mod library;
 mod lyrics;
 mod m032;
+mod output;
+mod playback;
+mod sleep;
 
 pub use cast::CastRoom;
 pub use m032::PlayingSources;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,26 +24,24 @@ use api::{
     AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, SearchCategory, Track,
     Transcode,
 };
-use session::{AdapterStatus, AdapterTrack};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::browse::{
     AlbumFilter, AlbumItem, ArtistFilter, ArtistItem, DetailView, PlaylistFilter, PlaylistItem,
     SearchBestMatch, TrackFilter, TrackItem, TrackList,
 };
-use crate::engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
+use crate::engine::{AudioDevice, Engine, EngineEvent};
 use crate::format;
 use crate::images::{Images, Rgba};
 use crate::m032::{
     AlbumPane, ChronicleView, HomeView, MixItem, RecordItem, Rotation, SeriesItem, SongItem,
     WorkItem,
 };
-use crate::queue::{Queue, QueueSnapshot, Repeat, Step};
+use crate::queue::{Queue, QueueSnapshot, Repeat};
 use crate::reporter::{Reporter, ReporterMsg};
-use crate::secrets::{SecretStore, TokenKind, token_key};
+use crate::secrets::SecretStore;
 use crate::settings::{ExclusiveMode, LyricsSettings, Settings};
 use crate::storage::FileStorage;
-use session::KeyValueStorage;
 
 /// "Previous" restarts the track instead after this much playback.
 const RESTART_THRESHOLD_MS: i64 = 10_000;
@@ -1138,125 +1139,7 @@ enum DetailKey {
     DailyMix(i64),
 }
 
-/// Runs a blocking secret-store call off the async workers.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    tokio::task::spawn_blocking(f).await.ok()
-}
-
-async fn read_token(secrets: &Arc<dyn SecretStore>, server: &str, kind: TokenKind) -> String {
-    let secrets = secrets.clone();
-    let key = token_key(server, kind);
-    match blocking(move || secrets.get(&key)).await {
-        Some(Ok(value)) => value.unwrap_or_default(),
-        Some(Err(e)) => {
-            tracing::warn!("reading saved {kind:?} token: {e}");
-            String::new()
-        }
-        None => String::new(),
-    }
-}
-
-/// Saves (`Some`) or deletes (`None`) a token.
-async fn write_token(
-    secrets: &Arc<dyn SecretStore>,
-    server: &str,
-    kind: TokenKind,
-    value: Option<String>,
-) {
-    let secrets = secrets.clone();
-    let key = token_key(server, kind);
-    let result = blocking(move || match value {
-        Some(value) => secrets.set(&key, &value),
-        None => secrets.delete(&key),
-    })
-    .await;
-    if let Some(Err(e)) = result {
-        tracing::warn!("saving {kind:?} token: {e}");
-    }
-}
-
-/// Signs in; empty tokens come from the store. Saves both tokens on
-/// success; forgets a saved token the server rejected. All secret-store
-/// operations are serialized via `secret_lock` and gated by `auth_seq` so
-/// concurrent sign-out / restore / login tasks never overwrite newer credentials.
-#[allow(clippy::too_many_arguments)]
-async fn sign_in(
-    secrets: Arc<dyn SecretStore>,
-    secret_lock: Arc<tokio::sync::Mutex<()>>,
-    auth_seq: Arc<AtomicU64>,
-    my_auth_seq: u64,
-    sink: Sink,
-    server_url: String,
-    api_token: String,
-    media_token: String,
-) -> Internal {
-    let Ok(server) = api::normalize_base_url(&server_url) else {
-        return Internal::LoginFailed(my_auth_seq, LoginFailure::InvalidUrl);
-    };
-    let api_saved = api_token.is_empty();
-    let media_saved = media_token.is_empty();
-    let (api_token, media_token) = if api_saved || media_saved {
-        let _guard = secret_lock.lock().await;
-        if auth_seq.load(Ordering::Acquire) != my_auth_seq {
-            return Internal::LoginFailed(my_auth_seq, LoginFailure::CredentialsRequired);
-        }
-        let api_token = if api_saved {
-            read_token(&secrets, &server, TokenKind::Api).await
-        } else {
-            api_token
-        };
-        let media_token = if media_saved {
-            read_token(&secrets, &server, TokenKind::Media).await
-        } else {
-            media_token
-        };
-        (api_token, media_token)
-    } else {
-        (api_token, media_token)
-    };
-    match api::authenticate(&server, &api_token, &media_token).await {
-        Ok(ok) => {
-            let _guard = secret_lock.lock().await;
-            if auth_seq.load(Ordering::Acquire) == my_auth_seq {
-                write_token(&secrets, &server, TokenKind::Api, Some(api_token)).await;
-                write_token(&secrets, &server, TokenKind::Media, Some(media_token)).await;
-            }
-            Internal::LoggedIn(my_auth_seq, Box::new(ok))
-        }
-        Err(e) => {
-            let failure = LoginFailure::from(e);
-            let rejected = match failure {
-                LoginFailure::ApiTokenInvalid if api_saved && !api_token.is_empty() => {
-                    Some(TokenKind::Api)
-                }
-                LoginFailure::MediaTokenInvalid if media_saved && !media_token.is_empty() => {
-                    Some(TokenKind::Media)
-                }
-                _ => None,
-            };
-            if let Some(kind) = rejected {
-                let _guard = secret_lock.lock().await;
-                if auth_seq.load(Ordering::Acquire) == my_auth_seq {
-                    write_token(&secrets, &server, kind, None).await;
-                    sink(Event::SavedLogin(SavedLogin {
-                        server_url: server,
-                        has_api_token: kind != TokenKind::Api && !api_token.is_empty(),
-                        has_media_token: kind != TokenKind::Media && !media_token.is_empty(),
-                        signing_in: false,
-                    }));
-                }
-            }
-            Internal::LoginFailed(my_auth_seq, failure)
-        }
-    }
-}
-
-/// The message to send when `e` means the API token was rejected.
-fn unauthorized(client: &Client, e: &api::ApiError) -> Option<Internal> {
-    e.is_unauthorized().then(|| Internal::Unauthorized {
-        api_token: client.api_token().to_owned(),
-    })
-}
+use auth::unauthorized;
 
 struct ArtistCredits {
     artist_id: i64,
@@ -1275,68 +1158,22 @@ struct Core {
     /// Bumped on every sign-in and sign-out; results of older background
     /// work (list pages, reporter timers) are dropped.
     list_generation: u64,
-    /// Serializes secret-store reads / writes across restore, login and sign-out.
-    secret_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Monotonic counter for restore / login / sign-out operations.
-    auth_seq: Arc<AtomicU64>,
+    auth: auth::AuthState,
     queue: Queue,
-    /// Nothing loaded in the engine (before the first play, after the end
-    /// of the queue or a failure): play reloads the current entry.
-    idle: bool,
-    /// Between `load` and the new file's `FileLoaded`: progress, duration
-    /// and end-of-file signals still belong to the previous file.
-    loading: bool,
-    paused: bool,
-    buffering: bool,
-    position_ms: i64,
-    reported_step: i64,
-    engine_duration_ms: i64,
+    pb: playback::PlaybackState,
     lyr: lyrics::LyricsState,
     settings: Settings,
     /// Bumped per settings change; `saved_revision` is the last written.
     settings_revision: u64,
     saved_revision: u64,
-    /// An output device or exclusive mode change is running.
-    output_busy: bool,
-    audio_devices: Vec<AudioDevice>,
-    asio_available: bool,
-    /// Active engine stream was started in ASIO mode.
-    asio_active: bool,
-    /// Current track fell back from ASIO to WASAPI (e.g. Opus).
-    asio_fallback: bool,
-    /// Track IDs confirmed to contain Opus at runtime (fallback on subsequent plays).
-    opus_fallback_tracks: std::collections::HashSet<i64>,
-    /// Transcode active on the currently open local stream (independent of live setting changes).
-    current_transcode: Option<Transcode>,
-    /// Transcode active on the preloaded upcoming stream.
-    preloaded_transcode: Option<Transcode>,
-    /// Queue entry and URL appended to the engine for gapless playback.
-    preloaded: Option<(u64, String)>,
-    /// URL of the file being loaded; a different `FileLoaded` is a stale preload.
-    expected_path: Option<String>,
-    /// Entry of the last started play (repeat-one passes start it again).
-    started_uid: Option<u64>,
-    /// Restored queue entry and the position to continue it at.
-    resume_at: Option<(u64, i64)>,
-    /// Seek to this once the loading file is loaded (resumed position).
-    pending_seek_ms: Option<i64>,
-    /// 接着听: the play starts at 0 for the server and then seeks here
-    /// (reported once the file is loaded), like the Electron client.
-    report_seek_ms: Option<i64>,
+    output: output::OutputState,
     /// Bumped per queue change; the debounced save writes the latest.
     queue_revision: u64,
     saved_queue_revision: u64,
     /// Serialized background writer for `queue.json` (flushed and joined on shutdown).
     queue_writer_tx: Option<UnboundedSender<(PathBuf, Vec<u8>)>>,
     queue_writer_task: Option<tokio::task::JoinHandle<()>>,
-    saved_position_step: i64,
-    sleep: Option<Sleep>,
-    /// Bumped per sleep timer start / cancel; stale ticks are ignored.
-    sleep_generation: u64,
-    /// Handle for the active minutes sleep-timer task so it is aborted when cancelled.
-    sleep_task: Option<tokio::task::AbortHandle>,
-    /// Monotonic counter for play intents; supersedes older in-flight async play fetches.
-    play_intent_seq: u64,
+    sleep: sleep::SleepState,
     /// Request counter; `latest` holds the newest request per target.
     seq: u64,
     latest: HashMap<Target, u64>,
@@ -1350,9 +1187,6 @@ struct Core {
     playlist_filter: PlaylistFilter,
     playlists: Vec<Playlist>,
     open_detail: Option<DetailKey>,
-    /// Lossy transcodes cannot seek by range: the stream starts here and
-    /// engine positions are relative to it.
-    stream_offset_ms: i64,
     /// The home page was loaded (partial reloads use its state).
     home: Option<m032::HomeState>,
     open_mix: Option<m032::OpenMix>,
@@ -1361,7 +1195,6 @@ struct Core {
     /// Works of a track (`/tracks/{id}/works`).
     track_works: Option<(i64, Vec<api::TrackWork>)>,
     playing_sources: PlayingSources,
-    fade: fade::Fader,
     /// Album ids per release group of the open artist page.
     artist_groups: Option<(i64, Vec<Vec<i64>>)>,
     /// Index of the "幕后参与" release group on the open artist page.
@@ -1400,43 +1233,19 @@ impl Core {
             library: None,
             reporter: None,
             list_generation: 0,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            auth_seq: Arc::new(AtomicU64::new(0)),
+            auth: auth::AuthState::default(),
             queue,
-            idle: true,
-            loading: false,
-            paused: false,
-            buffering: false,
-            position_ms: 0,
-            reported_step: -1,
-            engine_duration_ms: 0,
+            pb: playback::PlaybackState::default(),
             lyr: lyrics::LyricsState::default(),
             settings,
             settings_revision: 0,
             saved_revision: 0,
-            output_busy: false,
-            audio_devices: Vec::new(),
-            asio_available: false,
-            asio_active: false,
-            asio_fallback: false,
-            opus_fallback_tracks: std::collections::HashSet::new(),
-            current_transcode: None,
-            preloaded_transcode: None,
-            preloaded: None,
-            expected_path: None,
-            started_uid: None,
-            resume_at: None,
-            pending_seek_ms: None,
-            report_seek_ms: None,
+            output: output::OutputState::default(),
             queue_revision: 0,
             saved_queue_revision: 0,
             queue_writer_tx: None,
             queue_writer_task: None,
-            saved_position_step: -1,
-            sleep: None,
-            sleep_generation: 0,
-            sleep_task: None,
-            play_intent_seq: 0,
+            sleep: sleep::SleepState::default(),
             seq: 0,
             latest: HashMap::new(),
             target_tasks: HashMap::new(),
@@ -1447,13 +1256,11 @@ impl Core {
             playlist_filter: PlaylistFilter::default(),
             playlists: Vec::new(),
             open_detail: None,
-            stream_offset_ms: 0,
             home: None,
             open_mix: None,
             sources: m032::SourceTracks::default(),
             track_works: None,
             playing_sources: PlayingSources::default(),
-            fade: fade::Fader::default(),
             artist_groups: None,
             artist_credit_group: None,
             artist_credit_all: None,
@@ -1472,12 +1279,8 @@ impl Core {
     }
 
     pub(super) fn begin_play_intent(&mut self) -> u64 {
-        self.play_intent_seq += 1;
-        self.play_intent_seq
-    }
-
-    fn bump_auth_seq(&self) -> u64 {
-        self.auth_seq.fetch_add(1, Ordering::AcqRel) + 1
+        self.pb.play_intent_seq += 1;
+        self.pb.play_intent_seq
     }
 
     pub(super) fn track_task(&mut self, target: Target, handle: tokio::task::AbortHandle) {
@@ -1613,23 +1416,6 @@ impl Core {
         }
     }
 
-    /// Runs an output change (device, exclusive) on a blocking thread.
-    fn change_output(
-        &mut self,
-        change: impl FnOnce(&dyn Engine) -> Result<(), String> + Send + 'static,
-        done: impl FnOnce(Result<(), String>) -> Internal + Send + 'static,
-    ) {
-        self.output_busy = true;
-        let engine = self.engine.clone();
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || change(engine.as_ref()))
-                .await
-                .unwrap_or_else(|e| Err(e.to_string()));
-            let _ = tx.send(done(result));
-        });
-    }
-
     async fn run(
         &mut self,
         mut commands: UnboundedReceiver<Command>,
@@ -1648,9 +1434,7 @@ impl Core {
                 _ = &mut shutdown => break,
             }
         }
-        if let Some(task) = self.sleep_task.take() {
-            task.abort();
-        }
+        self.sleep.cancel();
         self.abort_all_tasks();
         self.home = None;
         self.save_settings();
@@ -1676,87 +1460,12 @@ impl Core {
 
     fn command(&mut self, command: Command) {
         match command {
-            Command::Restore => {
-                if self.library.is_some() {
-                    return;
-                }
-                let my_auth_seq = self.bump_auth_seq();
-                let server = self.session_file.get(SERVER_KEY).unwrap_or_default();
-                if server.is_empty() {
-                    self.emit(Event::SavedLogin(SavedLogin::default()));
-                    return;
-                }
-                let secrets = self.config.secrets.clone();
-                let secret_lock = self.secret_lock.clone();
-                let auth_seq = self.auth_seq.clone();
-                let sink = self.sink.clone();
-                let tx = self.internal.clone();
-                tokio::spawn(async move {
-                    let (api, media) = {
-                        let _guard = secret_lock.lock().await;
-                        if auth_seq.load(Ordering::Acquire) != my_auth_seq {
-                            return;
-                        }
-                        let api = read_token(&secrets, &server, TokenKind::Api).await;
-                        let media = read_token(&secrets, &server, TokenKind::Media).await;
-                        (api, media)
-                    };
-                    if auth_seq.load(Ordering::Acquire) != my_auth_seq {
-                        return;
-                    }
-                    let signing_in = !api.is_empty() && !media.is_empty();
-                    sink(Event::SavedLogin(SavedLogin {
-                        server_url: server.clone(),
-                        has_api_token: !api.is_empty(),
-                        has_media_token: !media.is_empty(),
-                        signing_in,
-                    }));
-                    if signing_in {
-                        // Empty tokens: sign_in reads (and may forget) the saved ones.
-                        let msg = sign_in(
-                            secrets,
-                            secret_lock,
-                            auth_seq,
-                            my_auth_seq,
-                            sink,
-                            server,
-                            String::new(),
-                            String::new(),
-                        )
-                        .await;
-                        let _ = tx.send(msg);
-                    }
-                });
-            }
+            Command::Restore => self.restore_login(),
             Command::Login {
                 server_url,
                 api_token,
                 media_token,
-            } => {
-                if self.library.is_some() {
-                    return;
-                }
-                let my_auth_seq = self.bump_auth_seq();
-                let secrets = self.config.secrets.clone();
-                let secret_lock = self.secret_lock.clone();
-                let auth_seq = self.auth_seq.clone();
-                let sink = self.sink.clone();
-                let tx = self.internal.clone();
-                tokio::spawn(async move {
-                    let msg = sign_in(
-                        secrets,
-                        secret_lock,
-                        auth_seq,
-                        my_auth_seq,
-                        sink,
-                        server_url,
-                        api_token,
-                        media_token,
-                    )
-                    .await;
-                    let _ = tx.send(msg);
-                });
-            }
+            } => self.login(server_url, api_token, media_token),
             Command::Logout => self.sign_out(SignOutReason::User),
             Command::Play(source) => {
                 let start = match source {
@@ -1879,7 +1588,7 @@ impl Core {
                 self.begin_play_intent();
                 self.stop_playback();
                 self.queue.clear();
-                self.resume_at = None;
+                self.pb.resume_at = None;
                 self.show_current_stopped();
                 self.queue_changed();
             }
@@ -1899,12 +1608,12 @@ impl Core {
                 if self.queue.current().is_none() {
                     return;
                 }
-                if self.idle {
+                if self.pb.idle {
                     self.play_current(false);
                     return;
                 }
                 let result = if self.effective_paused() {
-                    self.unpause_engine(self.paused)
+                    self.unpause_engine(self.pb.paused)
                 } else {
                     self.pause_engine()
                 };
@@ -1920,7 +1629,7 @@ impl Core {
                 if self.queue.current().is_none() {
                     return;
                 }
-                if self.position_ms > RESTART_THRESHOLD_MS && !self.idle {
+                if self.pb.position_ms > RESTART_THRESHOLD_MS && !self.pb.idle {
                     // Like mediaPrevious: a seek in the same session, not a new play.
                     self.restart_current();
                 } else {
@@ -1936,68 +1645,11 @@ impl Core {
                     self.emit(Event::Notice(e));
                 }
             }
-            Command::RefreshAudioDevices => {
-                let engine = self.engine.clone();
-                let tx = self.internal.clone();
-                tokio::spawn(async move {
-                    let res = tokio::task::spawn_blocking(move || engine.audio_devices())
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()));
-                    let _ = tx.send(Internal::AudioDevicesLoaded(res));
-                });
-            }
-            Command::SetAudioDevice(device) => {
-                let device = device.filter(|d| !d.is_empty() && d != "auto");
-                if self.output_busy || device == self.settings.audio_device {
-                    self.emit(Event::AudioDevice(self.settings.audio_device.clone()));
-                    return;
-                }
-                let name = device.clone().unwrap_or_else(|| "auto".into());
-                self.change_output(
-                    move |e| e.set_audio_device(&name),
-                    move |r| Internal::AudioDeviceSet(device, r),
-                );
-            }
-            Command::SetExclusive(enabled) => {
-                if self.output_busy || enabled == self.settings.exclusive {
-                    self.emit(Event::Exclusive(self.settings.exclusive));
-                    self.emit_output_mode();
-                    return;
-                }
-                self.change_output(
-                    move |e| e.set_exclusive(enabled),
-                    move |r| Internal::ExclusiveSet(enabled, r),
-                );
-            }
-            Command::SetExclusiveMode(mode) => {
-                if self.output_busy {
-                    self.emit_output_mode();
-                    return;
-                }
-                if mode == ExclusiveMode::Asio && !self.asio_available {
-                    self.emit(Event::Notice("当前输出设备不支持 ASIO 模式".into()));
-                    self.emit_output_mode();
-                    return;
-                }
-                if mode == self.settings.exclusive_mode() {
-                    self.emit_output_mode();
-                    return;
-                }
-                self.change_output(
-                    move |e| e.set_exclusive_mode(mode),
-                    move |r| Internal::ExclusiveModeSet(mode, r),
-                );
-            }
-            Command::OpenAsioControlPanel => {
-                let engine = self.engine.clone();
-                let tx = self.internal.clone();
-                tokio::spawn(async move {
-                    let res = tokio::task::spawn_blocking(move || engine.open_asio_control_panel())
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()));
-                    let _ = tx.send(Internal::AsioControlPanelOpened(res));
-                });
-            }
+            Command::RefreshAudioDevices => self.refresh_audio_devices(),
+            Command::SetAudioDevice(device) => self.set_audio_device(device),
+            Command::SetExclusive(enabled) => self.set_exclusive(enabled),
+            Command::SetExclusiveMode(mode) => self.set_exclusive_mode(mode),
+            Command::OpenAsioControlPanel => self.open_asio_control_panel(),
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
             Command::SetShortcuts(keys) => self.update_settings(|s| s.shortcuts = keys),
             Command::SetWindow(mut window) => {
@@ -2028,19 +1680,19 @@ impl Core {
             Command::SetFadeOnPause(on) => {
                 self.update_settings(|s| s.fade_on_pause = on);
                 if !on {
-                    if self.fade.target() == Some(true) {
+                    if self.pb.fade.target() == Some(true) {
                         // A fade-out to pause was already underway (and UI shows paused):
                         // pause immediately before restoring full fade gain.
                         let _ = self.engine.set_paused(true);
                         self.restore_gain();
-                    } else if !self.paused {
+                    } else if !self.pb.paused {
                         self.restore_gain();
                     }
                 }
             }
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {
-                if !self.idle {
+                if !self.pb.idle {
                     self.stop_playback();
                 }
             }
@@ -2161,886 +1813,6 @@ impl Core {
         });
     }
 
-    // ------------------------------------------------------------ playback
-
-    fn seek(&mut self, position_ms: i64) {
-        let position_ms = position_ms.max(0);
-        if self.idle
-            && let Some((uid, _)) = self.resume_at
-        {
-            // Restored, not started yet: move where playing will start.
-            self.resume_at = Some((uid, position_ms));
-            self.position_ms = position_ms;
-            self.emit_position();
-            self.update_active_line();
-            return;
-        }
-        if self.idle || self.queue.current().is_none() {
-            return;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let seconds = position_ms as f64 / 1000.0;
-        if self.casting() {
-            if let Err(e) = self.cast_seek(position_ms) {
-                self.emit(Event::Notice(e));
-                return;
-            }
-        } else if self.loading {
-            // While the file is still loading, avoid sending an early seek to the
-            // engine and override any pending initial resume seek instead.
-            if self.current_lossy_transcode() {
-                if !self.reload_at(position_ms) {
-                    return;
-                }
-            } else {
-                self.pending_seek_ms = Some(position_ms);
-                self.report_seek_ms = None;
-            }
-        } else if self.current_lossy_transcode() {
-            // No byte ranges: restart the stream at the new position.
-            if !self.reload_at(position_ms) {
-                return;
-            }
-        } else if let Err(e) = self.engine.seek(seconds) {
-            self.emit(Event::Notice(e));
-            return;
-        }
-        self.position_ms = position_ms;
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| a.on_seek(seconds));
-        }
-        self.emit_position();
-        self.update_active_line();
-    }
-
-    fn adapter_track(&self) -> Option<AdapterTrack> {
-        self.queue.current().map(|item| AdapterTrack {
-            context: item.context.clone(),
-            duration_millis: u64::try_from(item.track.duration_millis).unwrap_or(0),
-            track_id: item.track.id,
-            unique_id: item.uid.to_string(),
-        })
-    }
-
-    fn restart_current(&mut self) {
-        self.seek(0);
-        self.emit(Event::LyricsReset);
-    }
-
-    /// Applies a queue move: play the target, restart it when it is the
-    /// entry already playing, or stop at the start of the queue.
-    fn step(&mut self, step: Option<Step>, user_navigated: bool) {
-        match step {
-            None => {}
-            Some(Step::Play(pos)) if Some(pos) == self.queue.position() && !self.idle => {
-                self.restart_current();
-            }
-            Some(Step::Play(pos)) if self.stops_at_track_change() => {
-                // "End of track" stops at the next change of track, skips included.
-                self.stop_playback();
-                self.queue.go(pos);
-                self.show_current_stopped();
-                self.emit_queue_position();
-                self.set_sleep_timer(None);
-            }
-            Some(Step::Play(pos)) => {
-                self.queue.go(pos);
-                self.play_current(user_navigated);
-                self.emit_queue_position();
-            }
-            Some(Step::Stop(pos)) => {
-                self.stop_playback();
-                self.queue.go(pos);
-                self.show_current_stopped();
-                self.emit_queue_position();
-                if matches!(
-                    self.sleep.as_ref().map(|s| s.timer),
-                    Some(SleepTimer::EndOfTrack | SleepTimer::EndOfAlbum)
-                ) {
-                    self.set_sleep_timer(None);
-                }
-            }
-        }
-    }
-
-    /// Stops the engine and ends the reported play; the queue is untouched.
-    fn stop_playback(&mut self) {
-        self.restore_gain();
-        if !self.idle {
-            if self.casting() {
-                self.cast_stop();
-            } else {
-                let _ = self.engine.stop();
-            }
-            if let Some(r) = self.reporter.as_mut() {
-                r.act(|a| a.on_status(AdapterStatus::Stopped));
-            }
-        }
-        self.clear_buffering();
-        self.idle = true;
-        self.loading = false;
-        self.paused = true;
-        self.preloaded = None;
-        self.current_transcode = None;
-        self.preloaded_transcode = None;
-        self.expected_path = None;
-        self.position_ms = 0;
-        self.pending_seek_ms = None;
-        self.report_seek_ms = None;
-        if self.asio_active || self.asio_fallback {
-            self.asio_active = false;
-            self.asio_fallback = false;
-            self.emit_output_mode();
-        }
-        self.save_position();
-        self.emit(Event::Paused(true));
-        self.emit_position();
-    }
-
-    fn effective_exclusive_mode(&self) -> ExclusiveMode {
-        if !self.settings.exclusive {
-            ExclusiveMode::Off
-        } else if self.settings.asio && self.asio_available {
-            ExclusiveMode::Asio
-        } else {
-            ExclusiveMode::Wasapi
-        }
-    }
-
-    fn emit_output_mode(&self) {
-        self.emit(Event::OutputMode {
-            mode: self.effective_exclusive_mode(),
-            asio_available: self.asio_available,
-            asio_fallback: self.asio_fallback,
-        });
-    }
-
-    fn refresh_asio_availability(&mut self) {
-        self.asio_available = self
-            .engine
-            .supports_asio(&self.audio_devices, self.settings.audio_device.as_deref());
-    }
-
-    fn want_asio_for(&self, track: &Track) -> (bool, bool) {
-        if self.effective_exclusive_mode() != ExclusiveMode::Asio || self.casting() {
-            return (false, false);
-        }
-        if is_opus_track(track, self.transcode()) || self.opus_fallback_tracks.contains(&track.id) {
-            (false, true)
-        } else {
-            (true, false)
-        }
-    }
-
-    fn maybe_handover_backend(&mut self) {
-        if self.idle || self.casting() {
-            return;
-        }
-        let (need_asio, _) = self
-            .queue
-            .current()
-            .map_or((false, false), |i| self.want_asio_for(&i.track));
-        if need_asio != self.asio_active {
-            let was_playing = !self.paused;
-            let position = self.position_ms;
-            let _ = self.engine.stop();
-            self.asio_active = false;
-            self.asio_fallback = false;
-            self.hand_over(false, position);
-            if was_playing {
-                self.play_current(false);
-            }
-        } else {
-            self.sync_preload();
-        }
-    }
-
-    /// Shows the current entry (if any) without playing it.
-    fn show_current_stopped(&mut self) {
-        let adapter_track = self.adapter_track();
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| a.on_track_change(adapter_track));
-        }
-        self.started_uid = None;
-        let current = self.queue.current().map(|item| item.track.clone());
-        self.emit_now_playing(current.as_ref());
-        self.emit_position();
-        match self.queue.current().map(|i| i.track.id) {
-            Some(id) => self.load_lyrics(id),
-            None => self.clear_lyrics(),
-        }
-        self.update_playing_sources();
-    }
-
-    /// The transcode in use, if the server offers it.
-    fn transcode(&self) -> Option<Transcode> {
-        let transcode = self.settings.transcode?;
-        let library = self.library.as_ref()?;
-        library
-            .capabilities
-            .can_transcode(transcode.format())
-            .then_some(transcode)
-    }
-
-    /// MP3 / Opus transcodes are generated live and cannot seek by range.
-    fn is_lossy_transcode(transcode: Option<Transcode>) -> bool {
-        matches!(transcode, Some(Transcode::Mp3(_) | Transcode::Ogg(_)))
-    }
-
-    fn current_lossy_transcode(&self) -> bool {
-        Self::is_lossy_transcode(self.current_transcode)
-    }
-
-    /// Stream URL of a track using `transcode`, starting at `offset_ms` (lossy transcodes).
-    fn track_url_for(
-        &self,
-        track_id: i64,
-        transcode: Option<Transcode>,
-        offset_ms: i64,
-    ) -> Option<String> {
-        let library = self.library.as_ref()?;
-        Some(
-            match transcode {
-                Some(t) => library.client.transcode_url(track_id, t, offset_ms),
-                None => library.client.stream_url(track_id),
-            }
-            .to_string(),
-        )
-    }
-
-    /// Restarts the current lossy transcode at `position_ms`.
-    fn reload_at(&mut self, position_ms: i64) -> bool {
-        let Some(id) = self.queue.current().map(|i| i.track.id) else {
-            return false;
-        };
-        let Some(url) = self.track_url_for(id, self.current_transcode, position_ms) else {
-            return false;
-        };
-        if let Err(e) = self.engine.load_for(&url, self.asio_active) {
-            self.emit(Event::Notice(e));
-            return false;
-        }
-        if self.paused {
-            let _ = self.engine.set_paused(true);
-        }
-        self.loading = true;
-        self.preloaded = None;
-        self.preloaded_transcode = None;
-        self.pending_seek_ms = None;
-        self.report_seek_ms = None;
-        self.expected_path = Some(url);
-        self.stream_offset_ms = position_ms;
-        true
-    }
-
-    fn enqueue(&mut self, tracks: Vec<Track>, at: QueuePosition) {
-        if tracks.is_empty() {
-            return;
-        }
-        let n = tracks.len();
-        match at {
-            QueuePosition::Next => self.queue.play_next(tracks),
-            QueuePosition::Last => self.queue.add_last(tracks),
-        }
-        self.queue_changed();
-        let what = if n == 1 {
-            "1 首".to_owned()
-        } else {
-            format!("{n} 首")
-        };
-        self.emit(Event::Notice(match at {
-            QueuePosition::Next => format!("已添加 {what}到下一首播放"),
-            QueuePosition::Last => format!("已添加 {what}到队列末尾"),
-        }));
-    }
-
-    fn remove_from_queue(&mut self, uid: u64) {
-        let Some(was_current) = self.queue.remove(uid) else {
-            return;
-        };
-        if was_current {
-            let playing = !self.idle && !self.paused;
-            self.stop_playback();
-            if playing && self.queue.current().is_some() {
-                self.play_current(true);
-            } else {
-                self.show_current_stopped();
-            }
-        }
-        self.queue_changed();
-    }
-
-    /// The queue's entries or order changed: tell the UI, refresh the preload.
-    fn queue_changed(&mut self) {
-        let items = self
-            .queue
-            .in_play_order()
-            .map(|item| QueueEntry {
-                uid: item.uid,
-                title: item.track.title.clone(),
-                artist: item.track.artist.clone(),
-                duration: format::duration(item.track.duration_millis),
-                artwork: item.track.artwork_url.clone(),
-            })
-            .collect();
-        self.emit(Event::Queue {
-            items,
-            current: self.queue.position(),
-        });
-        self.sync_preload();
-        self.cast_queue_changed();
-        self.schedule_queue_save();
-    }
-
-    fn emit_queue_position(&mut self) {
-        self.emit(Event::QueuePosition(self.queue.position()));
-        self.schedule_queue_save();
-    }
-
-    fn set_sleep_timer(&mut self, timer: Option<SleepTimer>) {
-        if let Some(task) = self.sleep_task.take() {
-            task.abort();
-        }
-        self.sleep_generation += 1;
-        self.sleep = timer.map(|timer| Sleep {
-            timer,
-            remaining_ms: match timer {
-                SleepTimer::Minutes(m) => i64::from(m) * 60_000,
-                _ => 0,
-            },
-            album_id: self.queue.current().map(|i| i.track.album_id),
-        });
-        if let Some(SleepTimer::Minutes(_)) = timer {
-            let generation = self.sleep_generation;
-            let tx = self.internal.clone();
-            let handle = tokio::spawn(async move {
-                let mut tick =
-                    tokio::time::interval(Duration::from_millis(SLEEP_TICK_MS.unsigned_abs()));
-                tick.tick().await;
-                loop {
-                    tick.tick().await;
-                    if tx.send(Internal::SleepTick(generation)).is_err() {
-                        break;
-                    }
-                }
-            });
-            self.sleep_task = Some(handle.abort_handle());
-        }
-        self.emit_sleep();
-        // Whether the engine or Sonos may continue into the next file changed.
-        self.sync_preload();
-        self.cast_play_mode();
-    }
-
-    fn emit_sleep(&self) {
-        let status = self.sleep.as_ref().map(|s| SleepStatus {
-            timer: s.timer,
-            remaining_ms: matches!(s.timer, SleepTimer::Minutes(_)).then_some(s.remaining_ms),
-        });
-        self.emit(Event::SleepTimer(status));
-    }
-
-    fn stops_at_track_change(&self) -> bool {
-        self.sleep
-            .as_ref()
-            .is_some_and(|s| s.timer == SleepTimer::EndOfTrack)
-    }
-
-    /// Playback stops when the current file ends (sleep timer).
-    fn pause_at_end(&self) -> bool {
-        let Some(sleep) = &self.sleep else {
-            return false;
-        };
-        match sleep.timer {
-            SleepTimer::EndOfTrack => true,
-            SleepTimer::EndOfAlbum => {
-                let next_album = match self.queue.auto_next(self.settings.repeat) {
-                    Some(Step::Play(pos)) => self.queue.at(pos).map(|i| i.track.album_id),
-                    _ => None,
-                };
-                // Last track of the album: the next one (if any) is elsewhere.
-                // Repeat-one replays the same track and so never ends the album.
-                self.settings.repeat != Repeat::One && next_album != sleep.album_id
-            }
-            SleepTimer::Minutes(_) => false,
-        }
-    }
-
-    fn schedule_queue_save(&mut self) {
-        self.queue_revision += 1;
-        let revision = self.queue_revision;
-        let tx = self.internal.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(QUEUE_SAVE_DELAY).await;
-            let _ = tx.send(Internal::SaveQueue(revision));
-        });
-    }
-
-    /// `queue.json` path and contents for the signed-in server.
-    fn queue_file(&self) -> Option<(PathBuf, Vec<u8>)> {
-        let library = self.library.as_ref()?;
-        let saved = SavedQueue {
-            server: library.client.base_url().to_owned(),
-            queue: self.queue.snapshot(),
-        };
-        let bytes = serde_json::to_vec(&saved).ok()?;
-        Some((self.config.data_dir.join(QUEUE_FILE), bytes))
-    }
-
-    fn save_position(&mut self) {
-        if self.library.is_some() {
-            self.session_file
-                .set(POSITION_KEY, &self.position_ms.max(0).to_string());
-        }
-    }
-
-    /// Brings back the queue saved for this server, stopped at the saved
-    /// position; playing it resumes the persisted reporting chain.
-    fn restore_queue(&mut self) {
-        let Some(library) = &self.library else { return };
-        let path = self.config.data_dir.join(QUEUE_FILE);
-        let Some(saved) = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<SavedQueue>(&b).ok())
-        else {
-            return;
-        };
-        if saved.server != library.client.base_url() || saved.queue.tracks.is_empty() {
-            return;
-        }
-        self.queue.restore(saved.queue);
-        self.queue_changed();
-        let Some(item) = self.queue.current().cloned() else {
-            return;
-        };
-        let position_ms = self
-            .session_file
-            .get(POSITION_KEY)
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0)
-            .clamp(0, item.track.duration_millis.max(0));
-        self.resume_at = Some((item.uid, position_ms));
-        self.position_ms = position_ms;
-        let adapter_track = self.adapter_track();
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| {
-                a.on_queue_restored();
-                a.on_track_change(adapter_track);
-            });
-            #[allow(clippy::cast_precision_loss)]
-            r.act(|a| a.on_progress(position_ms as f64 / 1000.0));
-        }
-        let track = item.track.clone();
-        self.emit_now_playing(Some(&track));
-        self.emit(Event::Paused(true));
-        self.emit_position();
-        self.load_lyrics(item.track.id);
-        self.update_playing_sources();
-    }
-
-    /// Keeps the engine's next file equal to the queue's automatic next
-    /// entry, so the engine continues into it without a gap.
-    fn sync_preload(&mut self) {
-        if self.idle || self.loading || self.casting() {
-            // Done once the current file has loaded.
-            return;
-        }
-        if self.library.is_none() {
-            return;
-        }
-        let next = match self.queue.auto_next(self.settings.repeat) {
-            // The sleep timer stops after this file: the engine must not go on.
-            _ if self.pause_at_end() => None,
-            Some(Step::Play(pos)) => self.queue.at(pos),
-            _ => None,
-        };
-        let next_transcode = self.transcode();
-        let want = next
-            .filter(|item| self.want_asio_for(&item.track).0 == self.asio_active)
-            .map(|item| (item.uid, item.track.id))
-            .and_then(|(uid, id)| Some((uid, self.track_url_for(id, next_transcode, 0)?)));
-        if want == self.preloaded {
-            return;
-        }
-        self.preloaded = None;
-        self.preloaded_transcode = None;
-        if let Err(e) = self.engine.clear_upcoming() {
-            tracing::warn!("clearing the preloaded file: {e}");
-            return;
-        }
-        if let Some((uid, url)) = want {
-            match self.engine.append_for(&url, self.asio_active) {
-                Ok(()) => {
-                    self.preloaded = Some((uid, url));
-                    self.preloaded_transcode = next_transcode;
-                }
-                Err(e) => tracing::warn!("preloading the next file: {e}"),
-            }
-        }
-    }
-
-    /// Loads and starts the current queue entry.
-    fn play_current(&mut self, user_navigated: bool) {
-        self.start_current(user_navigated, true);
-    }
-
-    /// Starts the current queue entry: `load` it, or (gapless) it is the
-    /// preloaded file the engine has just moved on to.
-    fn start_current(&mut self, user_navigated: bool, load: bool) {
-        let Some(item) = self.queue.current().cloned() else {
-            return;
-        };
-        // 接着听: the entry starts at its saved position (once).
-        let start_ms = if load {
-            self.queue.take_current_start()
-        } else {
-            0
-        };
-        // A restored entry continues where it was left.
-        let restored =
-            matches!(self.resume_at, Some((uid, ms)) if uid == item.uid && ms > 0 && load);
-        let resume_ms = match self.resume_at {
-            Some((uid, ms)) if uid == item.uid && ms > 0 && load => Some(ms),
-            _ => (start_ms > 0
-                && (item.track.duration_millis <= 0 || start_ms < item.track.duration_millis))
-                .then_some(start_ms),
-        };
-        let casting = self.casting();
-        let (use_asio, asio_fallback) = if casting {
-            (false, false)
-        } else {
-            self.want_asio_for(&item.track)
-        };
-        let stream_transcode = if casting {
-            None
-        } else if load {
-            self.transcode()
-        } else {
-            self.preloaded_transcode
-        };
-        // Lossy transcodes start the stream there instead of seeking.
-        let offset_ms = if !casting && Self::is_lossy_transcode(stream_transcode) {
-            resume_ms.unwrap_or(0)
-        } else {
-            0
-        };
-        let url = if casting {
-            None
-        } else {
-            let Some(url) = self.track_url_for(item.track.id, stream_transcode, offset_ms) else {
-                return;
-            };
-            Some(url)
-        };
-        let from_silence = self.idle || self.paused;
-        // Sonos: the live stream offset of the started entry.
-        let mut cast_offset = 0;
-        if load {
-            let result = match &url {
-                Some(url) => self
-                    .engine
-                    .load_for(url, use_asio)
-                    .and_then(|()| self.unpause_engine(from_silence)),
-                None => self
-                    .cast_start(resume_ms.unwrap_or(0))
-                    .map(|offset| cast_offset = offset),
-            };
-            if let Err(e) = result {
-                self.emit(Event::Notice(e));
-                return;
-            }
-            self.asio_active = use_asio;
-            self.asio_fallback = asio_fallback;
-        } else if casting {
-            // The speaker moved on by itself.
-            cast_offset = self.cast_offset();
-            self.asio_active = false;
-            self.asio_fallback = false;
-        } else {
-            // Gapless advance stayed on the engine's existing backend.
-            self.asio_fallback =
-                !self.asio_active && self.effective_exclusive_mode() == ExclusiveMode::Asio;
-        }
-        self.emit_output_mode();
-        self.resume_at = None;
-        self.idle = false;
-        // Sonos: loading until the speaker reports the pushed entry.
-        self.loading = !casting || load;
-        self.paused = false;
-        self.preloaded = None;
-        self.current_transcode = stream_transcode;
-        self.preloaded_transcode = None;
-        self.expected_path = url;
-        self.stream_offset_ms = if casting { cast_offset } else { offset_ms };
-        self.pending_seek_ms = resume_ms.filter(|_| !casting && offset_ms == 0);
-        self.report_seek_ms = resume_ms.filter(|_| !restored);
-        self.position_ms = resume_ms.unwrap_or(0);
-        self.reported_step = self.position_ms / POSITION_STEP_MS;
-        self.engine_duration_ms = 0;
-        let position_ms = self.position_ms;
-
-        if let Some(sleep) = &self.sleep
-            && sleep.timer == SleepTimer::EndOfAlbum
-            && sleep.album_id != Some(item.track.album_id)
-        {
-            // Moved on to another album: the timer no longer applies.
-            self.set_sleep_timer(None);
-        }
-
-        // The same entry again without a user action: a repeat-one pass.
-        let repeated = !user_navigated && self.started_uid == Some(item.uid);
-        self.started_uid = Some(item.uid);
-        let adapter_track = self.adapter_track();
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| {
-                if repeated {
-                    a.on_repeated();
-                }
-                #[allow(clippy::cast_precision_loss)]
-                a.on_progress(position_ms as f64 / 1000.0);
-                a.on_track_change(adapter_track);
-                if user_navigated {
-                    a.on_user_navigate();
-                }
-                a.on_status(AdapterStatus::Playing);
-            });
-        }
-        if casting && load {
-            // No sound until the speaker has loaded it.
-            self.apply_buffering(true);
-        }
-
-        let track = item.track.clone();
-        self.emit_now_playing(Some(&track));
-        self.emit(Event::Paused(false));
-        self.emit_position();
-        self.save_position();
-        self.load_lyrics(track.id);
-        self.update_playing_sources();
-    }
-
-    fn duration_ms(&self) -> i64 {
-        self.queue
-            .current()
-            .map(|i| i.track.duration_millis)
-            .filter(|d| *d > 0)
-            .unwrap_or(self.engine_duration_ms)
-    }
-
-    fn emit_position(&self) {
-        self.emit(Event::Position {
-            position_ms: self.position_ms,
-            duration_ms: self.duration_ms(),
-        });
-    }
-
-    /// Playback position (ms, absolute) from the engine or the speaker.
-    fn apply_position(&mut self, ms: i64) {
-        self.position_ms = ms.max(0);
-        let save_step = self.position_ms / POSITION_SAVE_STEP_MS;
-        if save_step != self.saved_position_step {
-            self.saved_position_step = save_step;
-            self.save_position();
-        }
-        let step = self.position_ms / POSITION_STEP_MS;
-        if step != self.reported_step {
-            self.reported_step = step;
-            #[allow(clippy::cast_precision_loss)]
-            let seconds = self.position_ms as f64 / 1000.0;
-            if let Some(r) = self.reporter.as_mut() {
-                r.act(|a| a.on_progress(seconds));
-            }
-            self.emit_position();
-        }
-        self.update_active_line();
-    }
-
-    /// The renderer paused or plays.
-    fn apply_paused(&mut self, paused: bool) {
-        if self.idle || paused == self.paused {
-            return;
-        }
-        self.paused = paused;
-        if let Some(r) = self.reporter.as_mut() {
-            let status = if paused {
-                AdapterStatus::Paused
-            } else {
-                AdapterStatus::Playing
-            };
-            r.act(|a| a.on_status(status));
-        }
-        if paused {
-            self.save_position();
-        }
-        self.emit(Event::Paused(paused));
-    }
-
-    fn apply_buffering(&mut self, buffering: bool) {
-        self.buffering = buffering;
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| a.on_buffering(buffering));
-        }
-        self.emit(Event::Buffering(buffering));
-    }
-
-    pub(super) fn clear_buffering(&mut self) {
-        if self.buffering {
-            self.buffering = false;
-            self.emit(Event::Buffering(false));
-        }
-    }
-
-    /// The current file played to its end.
-    fn end_of_file(&mut self) {
-        if self.idle || self.loading {
-            return;
-        }
-        match self.queue.auto_next(self.settings.repeat) {
-            Some(Step::Play(pos)) if self.pause_at_end() => {
-                // Sleep timer: on to the next entry, stopped.
-                self.stop_playback();
-                self.queue.go(pos);
-                self.show_current_stopped();
-                self.emit_queue_position();
-                self.set_sleep_timer(None);
-            }
-            Some(Step::Play(pos)) => {
-                let gapless = self
-                    .preloaded
-                    .as_ref()
-                    .is_some_and(|(uid, _)| self.queue.at(pos).map(|i| i.uid) == Some(*uid));
-                self.queue.go(pos);
-                // Gapless: the engine already moved on to the preload.
-                self.start_current(false, !gapless);
-                self.emit_queue_position();
-            }
-            step @ Some(Step::Stop(_)) => self.step(step, false),
-            None => {}
-        }
-    }
-
-    /// The current file cannot play.
-    fn playback_failed(&mut self, error: String) {
-        if self.idle {
-            return;
-        }
-        if self.asio_active && error.contains("Opus is not supported") {
-            // Only remember tracks whose *original* stream is Opus; never blacklist
-            // a lossless track just because an Ogg transcode was active.
-            if self.current_transcode.is_none()
-                && let Some(item) = self.queue.current()
-            {
-                self.opus_fallback_tracks.insert(item.track.id);
-            }
-            let position = self.position_ms;
-            let _ = self.engine.stop();
-            self.asio_active = false;
-            self.asio_fallback = true;
-            self.emit_output_mode();
-            self.hand_over(false, position);
-            self.play_current(false);
-            return;
-        }
-        self.restore_gain();
-        self.clear_buffering();
-        // Keeps the engine from moving on into the preload.
-        let _ = self.engine.stop();
-        self.preloaded = None;
-        self.current_transcode = None;
-        self.preloaded_transcode = None;
-        self.idle = true;
-        self.loading = false;
-        self.paused = true;
-        if let Some(r) = self.reporter.as_mut() {
-            r.act(|a| {
-                a.on_error();
-                a.on_status(AdapterStatus::Paused);
-            });
-        }
-        self.emit(Event::Paused(true));
-        self.emit(Event::Notice(format!("播放失败：{error}")));
-    }
-
-    fn engine_event(&mut self, event: EngineEvent) {
-        if self.casting() {
-            // The engine is stopped while a Sonos room plays; only the
-            // (local) volume setting follows it.
-            if let EngineEvent::Volume(volume) = event {
-                self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
-            }
-            return;
-        }
-        match event {
-            EngineEvent::TimePos(seconds) => {
-                if self.idle || self.loading {
-                    return;
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                let ms = (seconds * 1000.0).round() as i64 + self.stream_offset_ms;
-                self.apply_position(ms);
-            }
-            EngineEvent::Duration(seconds) => {
-                if self.loading {
-                    return;
-                }
-                #[allow(clippy::cast_possible_truncation)]
-                let ms = (seconds * 1000.0).round() as i64;
-                self.engine_duration_ms = ms;
-                self.emit_position();
-            }
-            EngineEvent::Paused(paused) => {
-                self.fade.engine_paused(paused);
-                self.apply_paused(paused);
-            }
-            EngineEvent::Buffering(buffering) => self.apply_buffering(buffering),
-            EngineEvent::Volume(volume) => {
-                self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
-                self.emit(Event::Volume(volume));
-            }
-            EngineEvent::FileLoaded { path } => {
-                if !self.loading {
-                    return;
-                }
-                if let (Some(path), Some(expected)) = (&path, &self.expected_path)
-                    && path != expected
-                {
-                    // The engine moved on to a stale preload (the queue
-                    // changed right at the track boundary): load the right one.
-                    tracing::debug!(
-                        path = %api::redact_media_token(path),
-                        expected = %api::redact_media_token(expected),
-                        "unexpected file, reloading"
-                    );
-                    if let Err(e) = self.engine.load_for(expected, self.asio_active) {
-                        self.emit(Event::Notice(e));
-                    }
-                    return;
-                }
-                self.loading = false;
-                if let Some(ms) = self.pending_seek_ms.take() {
-                    #[allow(clippy::cast_precision_loss)]
-                    if let Err(e) = self.engine.seek(ms as f64 / 1000.0) {
-                        tracing::warn!("seeking to the resumed position: {e}");
-                    }
-                }
-                if let Some(ms) = self.report_seek_ms.take()
-                    && let Some(r) = self.reporter.as_mut()
-                {
-                    #[allow(clippy::cast_precision_loss)]
-                    r.act(|a| a.on_seek(ms as f64 / 1000.0));
-                }
-                self.sync_preload();
-            }
-            EngineEvent::EndFile { reason, error } => match reason {
-                EngineEnd::Stop => {}
-                EngineEnd::Eof => self.end_of_file(),
-                EngineEnd::Error => {
-                    self.playback_failed(error.unwrap_or_else(|| "未知错误".into()));
-                }
-            },
-        }
-    }
-
     // ------------------------------------------------------------ tasks
 
     fn internal(&mut self, msg: Internal) {
@@ -3058,12 +1830,12 @@ impl Core {
                 }
             }
             Internal::LoginFailed(auth_seq, failure) => {
-                if auth_seq == self.auth_seq.load(Ordering::Acquire) {
+                if auth_seq == self.auth.current() {
                     self.emit(Event::LoginFailed(failure));
                 }
             }
             Internal::LoggedIn(auth_seq, ok) => {
-                if auth_seq != self.auth_seq.load(Ordering::Acquire) {
+                if auth_seq != self.auth.current() {
                     return;
                 }
                 let (client, capabilities) = *ok;
@@ -3112,7 +1884,7 @@ impl Core {
                         return;
                     }
                     if let Some(seq) = play_seq
-                        && seq != self.play_intent_seq
+                        && seq != self.pb.play_intent_seq
                     {
                         return;
                     }
@@ -3123,7 +1895,7 @@ impl Core {
                         self.internal(Internal::Unauthorized { api_token });
                     } else if generation == self.list_generation
                         && self.library.is_some()
-                        && play_seq.is_none_or(|seq| seq == self.play_intent_seq)
+                        && play_seq.is_none_or(|seq| seq == self.pb.play_intent_seq)
                     {
                         self.emit(Event::Notice(format!("加载曲目失败：{e}")));
                     }
@@ -3256,87 +2028,20 @@ impl Core {
                     self.emit(Event::Notice(text));
                 }
             }
-            Internal::AudioDevicesLoaded(result) => match result {
-                Ok(devices) => {
-                    let was_asio = self.asio_available;
-                    self.audio_devices = devices.clone();
-                    self.refresh_asio_availability();
-                    if self.asio_available != was_asio {
-                        self.maybe_handover_backend();
-                    }
-                    self.emit(Event::AudioDevices(devices));
-                    self.emit_output_mode();
-                }
-                Err(e) => tracing::warn!("audio devices: {e}"),
-            },
+            Internal::AudioDevicesLoaded(result) => self.handle_audio_devices_loaded(result),
             Internal::AudioDeviceSet(device, result) => {
-                self.output_busy = false;
-                match result {
-                    Ok(()) => {
-                        self.update_settings(|s| s.audio_device.clone_from(&device));
-                        self.refresh_asio_availability();
-                        self.maybe_handover_backend();
-                    }
-                    Err(e) => self.emit(Event::Notice(format!("切换输出设备失败：{e}"))),
-                }
-                self.emit(Event::AudioDevice(self.settings.audio_device.clone()));
-                self.emit_output_mode();
+                self.handle_audio_device_set(device, result)
             }
-            Internal::ExclusiveSet(enabled, result) => {
-                self.output_busy = false;
-                match result {
-                    Ok(()) => {
-                        self.update_settings(|s| {
-                            s.exclusive = enabled;
-                            if !enabled {
-                                s.asio = false;
-                            }
-                        });
-                        self.maybe_handover_backend();
-                    }
-                    Err(e) => self.emit(Event::Notice(format!("切换独占模式失败：{e}"))),
-                }
-                self.emit(Event::Exclusive(self.settings.exclusive));
-                self.emit_output_mode();
-            }
+            Internal::ExclusiveSet(enabled, result) => self.handle_exclusive_set(enabled, result),
             Internal::ExclusiveModeSet(mode, result) => {
-                self.output_busy = false;
-                match result {
-                    Ok(()) => {
-                        self.update_settings(|s| s.set_exclusive_mode(mode));
-                        self.maybe_handover_backend();
-                    }
-                    Err(e) => self.emit(Event::Notice(format!("切换输出模式失败：{e}"))),
-                }
-                self.emit(Event::Exclusive(self.settings.exclusive));
-                self.emit_output_mode();
+                self.handle_exclusive_mode_set(mode, result)
             }
             Internal::AsioControlPanelOpened(result) => {
                 if let Err(e) = result {
                     self.emit(Event::Notice(format!("打开 ASIO 控制面板失败：{e}")));
                 }
             }
-            Internal::SleepTick(generation) => {
-                if generation != self.sleep_generation {
-                    return;
-                }
-                let playing = !self.idle && !self.paused;
-                let Some(sleep) = self.sleep.as_mut() else {
-                    return;
-                };
-                if !playing {
-                    return;
-                }
-                sleep.remaining_ms -= SLEEP_TICK_MS;
-                if sleep.remaining_ms > 0 {
-                    self.emit_sleep();
-                    return;
-                }
-                self.set_sleep_timer(None);
-                if let Err(e) = self.pause_engine() {
-                    self.emit(Event::Notice(e));
-                }
-            }
+            Internal::SleepTick(generation) => self.on_sleep_tick(generation),
             Internal::SaveQueue(revision) => {
                 if revision != self.queue_revision {
                     return;
@@ -3361,182 +2066,6 @@ impl Core {
                     let _ = std::fs::remove_file(&path);
                 }
             }
-        }
-    }
-
-    /// Stops playback, drops the signed-in state and forgets the rejected
-    /// (expired) or all (user) saved tokens.
-    fn sign_out(&mut self, reason: SignOutReason) {
-        let Some(library) = self.library.take() else {
-            return;
-        };
-        let my_auth_seq = self.bump_auth_seq();
-        self.list_generation += 1;
-        self.abort_all_tasks();
-        self.restore_gain();
-        self.clear_buffering();
-        if let Some(mut reporter) = self.reporter.take()
-            && !self.idle
-        {
-            // Ends the server-side session; with an expired token this
-            // is rejected and the server times the session out.
-            reporter.act(|a| a.on_status(AdapterStatus::Stopped));
-        }
-        if self.casting() && !self.idle {
-            self.cast_stop();
-        }
-        self.drop_cast(false);
-        self.emit(Event::CastOutput(None));
-        let _ = self.engine.stop();
-        self.queue.clear();
-        self.idle = true;
-        self.loading = false;
-        self.paused = true;
-        self.preloaded = None;
-        self.current_transcode = None;
-        self.preloaded_transcode = None;
-        self.expected_path = None;
-        self.started_uid = None;
-        self.resume_at = None;
-        self.pending_seek_ms = None;
-        self.report_seek_ms = None;
-        self.sleep = None;
-        self.sleep_generation += 1;
-        if let Some(task) = self.sleep_task.take() {
-            task.abort();
-        }
-        self.play_intent_seq += 1;
-        self.position_ms = 0;
-        self.engine_duration_ms = 0;
-        self.stream_offset_ms = 0;
-        self.home = None;
-        self.open_mix = None;
-        self.sources = m032::SourceTracks::default();
-        self.track_works = None;
-        // Results of requests still running are dropped.
-        self.latest.clear();
-        self.track_filter = TrackFilter::default();
-        self.favorite_albums = None;
-        self.favorite_tracks = None;
-        self.favorite_artists = None;
-        self.playlists.clear();
-        self.open_detail = None;
-        self.artist_groups = None;
-        self.artist_credit_group = None;
-        self.artist_credit_all = None;
-
-        let server = library.client.base_url().to_owned();
-        let secrets = self.config.secrets.clone();
-        let secret_lock = self.secret_lock.clone();
-        let auth_seq = self.auth_seq.clone();
-        let has_media_token = reason == SignOutReason::Expired;
-        {
-            let server = server.clone();
-            tokio::spawn(async move {
-                let _guard = secret_lock.lock().await;
-                if auth_seq.load(Ordering::Acquire) != my_auth_seq {
-                    return;
-                }
-                write_token(&secrets, &server, TokenKind::Api, None).await;
-                if !has_media_token {
-                    write_token(&secrets, &server, TokenKind::Media, None).await;
-                }
-            });
-        }
-
-        cleanup_media_covers(&self.config.data_dir, None);
-        self.emit_now_playing(None);
-        self.emit(Event::Paused(true));
-        self.emit_position();
-        self.reset_lyrics_session();
-        self.update_playing_sources();
-        self.emit(Event::AlbumsReset);
-        self.emit(Event::TracksReset);
-        self.emit(Event::ArtistsReset);
-        self.emit(Event::FavoriteAlbums(Vec::new()));
-        self.emit(Event::FavoriteTracks(Vec::new()));
-        self.emit(Event::FavoriteArtists(Vec::new()));
-        self.emit(Event::Playlists(Vec::new()));
-        self.emit(Event::PlaylistChoices(Vec::new()));
-        self.emit(Event::Queue {
-            items: Vec::new(),
-            current: None,
-        });
-        self.emit(Event::SleepTimer(None));
-        self.emit(Event::SignedOut(reason));
-        self.emit(Event::SavedLogin(SavedLogin {
-            server_url: server,
-            has_api_token: false,
-            has_media_token,
-            signing_in: false,
-        }));
-    }
-
-    fn logged_in(&mut self, client: Client, capabilities: Capabilities) {
-        self.session_file.set(SERVER_KEY, client.base_url());
-        self.list_generation += 1;
-        let generation = self.list_generation;
-        let storage = FileStorage::open(self.config.data_dir.join("playback.json"));
-        let reporter_tx = reporter_channel(&self.internal, generation);
-        self.reporter = Some(Reporter::new(
-            client.clone(),
-            &capabilities,
-            Box::new(storage),
-            reporter_tx,
-        ));
-        let browse = capabilities.has(Feature::Browse);
-        let features = ServerFeatures {
-            browse,
-            playlist_artwork: capabilities.has(Feature::PlaylistArtwork),
-            transcode: ["mp3", "ogg", "flac"]
-                .into_iter()
-                .filter(|f| capabilities.can_transcode(f))
-                .map(str::to_owned)
-                .collect(),
-            home: capabilities.has(Feature::Home),
-            works: capabilities.has(Feature::Works),
-            series: capabilities.has(Feature::Series),
-            daily_mixes: capabilities.has(Feature::DailyMixes),
-            lyrics_translation: capabilities.has(Feature::LyricsTranslation),
-            artist_credit_roles: capabilities.has(Feature::ArtistCreditRoles),
-        };
-        self.library = Some(Library {
-            images: Arc::new(Images::new(client.clone())),
-            client: client.clone(),
-            capabilities,
-            lists: HashMap::new(),
-            favorite_tracks: Arc::default(),
-        });
-        self.emit(Event::LoggedIn {
-            server_url: client.base_url().to_owned(),
-            features,
-        });
-
-        self.restore_queue();
-        self.restore_cast();
-        self.query_albums(false, AlbumFilter::default());
-        self.query_tracks(false, TrackFilter::initial(browse));
-        self.load_playlists();
-    }
-}
-
-/// Returns true when the stream for `track` uses Opus and must fall back to WASAPI.
-fn is_opus_track(track: &Track, transcode: Option<Transcode>) -> bool {
-    match transcode {
-        Some(Transcode::Ogg(_)) => true,
-        Some(_) => false,
-        None => {
-            track
-                .codec
-                .as_deref()
-                .is_some_and(|c| c.trim().eq_ignore_ascii_case("opus"))
-                || track.container.trim().eq_ignore_ascii_case("opus")
-                || track.mime_type.to_ascii_lowercase().contains("opus")
-                || track
-                    .relative_path
-                    .trim()
-                    .to_ascii_lowercase()
-                    .ends_with(".opus")
         }
     }
 }

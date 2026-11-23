@@ -228,7 +228,7 @@ impl Core {
             .lyr
             .timeline
             .as_ref()
-            .and_then(|l| l.active_index(self.position_ms, offset));
+            .and_then(|l| l.active_index(self.pb.position_ms, offset));
         if active != self.lyr.active {
             self.lyr.active = active;
             self.emit(Event::LyricsActive(active));

@@ -23,6 +23,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
+use super::playback::TransportReset;
 use super::{Core, Event, Internal, Library};
 use crate::cast::{self as plan, Diff, Kind, QueueRef};
 use crate::queue::Repeat;
@@ -754,12 +755,12 @@ impl Core {
         if self.cast.as_ref().is_some_and(|c| c.room.id == room.id) {
             return;
         }
-        let was_idle = self.idle;
-        let playing = !self.idle && !self.effective_paused();
-        let position = self.position_ms;
+        let was_idle = self.pb.idle;
+        let playing = !self.pb.idle && !self.effective_paused();
+        let position = self.pb.position_ms;
         if self.cast.is_some() {
             self.drop_cast(true);
-        } else if !self.idle {
+        } else if !self.pb.idle {
             self.restore_gain();
             let _ = self.engine.stop();
         }
@@ -825,9 +826,9 @@ impl Core {
         if self.cast.is_none() {
             return;
         }
-        let was_idle = self.idle;
-        let playing = !self.idle && !self.paused;
-        let position = self.position_ms;
+        let was_idle = self.pb.idle;
+        let playing = !self.pb.idle && !self.pb.paused;
+        let position = self.pb.position_ms;
         self.drop_cast(true);
         self.hand_over(was_idle, position);
         self.save_cast_room(None);
@@ -844,7 +845,7 @@ impl Core {
     /// Stops talking to the room (pausing it when it plays our queue).
     pub(super) fn drop_cast(&mut self, pause: bool) {
         let Some(cast) = self.cast.take() else { return };
-        if pause && cast.loaded && !self.idle && !self.paused {
+        if pause && cast.loaded && !self.pb.idle && !self.pb.paused {
             let _ = cast.ops.send((cast.sent + 1, Op::DetachPause));
         }
     }
@@ -853,21 +854,9 @@ impl Core {
     /// and the next play resumes it at `position` without ending the
     /// reported listen (no new play is counted).
     pub(super) fn hand_over(&mut self, was_idle: bool, position: i64) {
-        self.restore_gain();
-        self.clear_buffering();
-        self.idle = true;
-        self.loading = false;
-        self.paused = true;
-        self.preloaded = None;
-        self.current_transcode = None;
-        self.preloaded_transcode = None;
-        self.expected_path = None;
-        self.pending_seek_ms = None;
-        self.report_seek_ms = None;
-        self.stream_offset_ms = 0;
-        self.started_uid = None;
+        self.reset_transport(TransportReset::handover());
         if !was_idle && let Some(item) = self.queue.current() {
-            self.resume_at = Some((item.uid, position));
+            self.pb.resume_at = Some((item.uid, position));
         }
         self.emit(Event::Paused(true));
     }
@@ -1127,13 +1116,13 @@ impl Core {
         let (index, entry) = self.cast_current().ok_or("Sonos 队列已变化")?;
         if entry.kind == Kind::LiveMp3 {
             // A live MP3 cannot seek: re-open it at the position.
-            let paused = self.paused;
-            self.stream_offset_ms = self.cast_jump(index, &entry, position_ms, paused)?;
+            let paused = self.pb.paused;
+            self.pb.stream_offset_ms = self.cast_jump(index, &entry, position_ms, paused)?;
         } else {
             self.cast_send(Op::Seek(position_ms));
         }
         if let Some(cast) = self.cast.as_mut() {
-            cast.anchor = (!self.paused).then(|| (Instant::now(), position_ms));
+            cast.anchor = (!self.pb.paused).then(|| (Instant::now(), position_ms));
         }
         Ok(())
     }
@@ -1148,9 +1137,9 @@ impl Core {
             }
         } else {
             let Some((index, entry)) = self.cast_current() else {
-                let offset = self.cast_start(self.position_ms)?;
-                self.stream_offset_ms = offset;
-                self.loading = true;
+                let offset = self.cast_start(self.pb.position_ms)?;
+                self.pb.stream_offset_ms = offset;
+                self.pb.loading = true;
                 self.apply_paused(false);
                 return Ok(());
             };
@@ -1159,14 +1148,14 @@ impl Core {
                 .as_ref()
                 .is_some_and(|c| c.state == Some(TransportState::Stopped));
             if entry.kind == Kind::LiveMp3 || stopped {
-                let position = self.position_ms;
+                let position = self.pb.position_ms;
                 let offset = self.cast_jump(index, &entry, position, false)?;
                 if entry.kind == Kind::LiveMp3 {
-                    self.stream_offset_ms = offset;
+                    self.pb.stream_offset_ms = offset;
                 }
             } else {
                 self.cast_send(Op::Play);
-                let position = self.position_ms;
+                let position = self.pb.position_ms;
                 if let Some(cast) = self.cast.as_mut() {
                     cast.anchor = Some((Instant::now(), position));
                 }
@@ -1276,7 +1265,7 @@ impl Core {
                     if let Some(cast) = self.cast.as_mut() {
                         cast.mirror.clear();
                     }
-                } else if self.idle {
+                } else if self.pb.idle {
                     // Pushed again by the next play.
                     if let Some(cast) = self.cast.as_mut() {
                         cast.loaded = false;
@@ -1297,10 +1286,10 @@ impl Core {
             return;
         };
         let start = current.saturating_sub(range.start);
-        let play = !self.paused;
-        match self.cast_push(range, start, self.position_ms, play) {
+        let play = !self.pb.paused;
+        match self.cast_push(range, start, self.pb.position_ms, play) {
             Ok(offset) => {
-                self.stream_offset_ms = offset;
+                self.pb.stream_offset_ms = offset;
                 if let Some(cast) = self.cast.as_mut() {
                     cast.resync_seq = Some(cast.sent);
                 }
@@ -1379,7 +1368,7 @@ impl Core {
     }
 
     fn adoptable(&self, seq: u64) -> bool {
-        self.idle && self.cast.as_ref().is_some_and(|c| c.probe_seq == Some(seq))
+        self.pb.idle && self.cast.as_ref().is_some_and(|c| c.probe_seq == Some(seq))
     }
 
     fn cast_done(&mut self, seq: u64, failure: Failure, result: Result<Outcome, String>) {
@@ -1429,7 +1418,7 @@ impl Core {
                     e.identity = identity;
                 }
                 if self.queue.current().is_some_and(|i| i.uid == uid) {
-                    self.stream_offset_ms = offset;
+                    self.pb.stream_offset_ms = offset;
                 }
                 self.emit(Event::Notice("FLAC 准备失败，已改用 MP3".into()));
             }
@@ -1458,7 +1447,7 @@ impl Core {
                         // The speaker queue is unknown now: the next play pushes again.
                         cast.loaded = false;
                         cast.resync_seq = None;
-                        if self.idle {
+                        if self.pb.idle {
                             self.emit(Event::Notice(format!("Sonos「{name}」：{e}")));
                         } else {
                             self.playback_failed(format!("Sonos「{name}」：{e}"));
@@ -1474,7 +1463,8 @@ impl Core {
                     }
                     Failure::Queue => {
                         cast.loaded = false;
-                        let should_resync = !self.idle && cast.resync_seq.is_none_or(|r| seq > r);
+                        let should_resync =
+                            !self.pb.idle && cast.resync_seq.is_none_or(|r| seq > r);
                         self.emit(Event::Notice(format!("同步 Sonos 队列失败：{e}")));
                         if should_resync {
                             // Push the whole queue again once, where playback is.
@@ -1609,15 +1599,15 @@ impl Core {
         cast.anchor = (!paused).then(|| (Instant::now(), position));
         let name = cast.room.name.clone();
 
-        self.resume_at = None;
-        self.idle = false;
-        self.loading = false;
-        self.paused = paused;
-        self.position_ms = position;
-        self.stream_offset_ms = offset;
-        self.started_uid = Some(item.uid);
-        self.reported_step = position / super::POSITION_STEP_MS;
-        self.engine_duration_ms = 0;
+        self.pb.resume_at = None;
+        self.pb.idle = false;
+        self.pb.loading = false;
+        self.pb.paused = paused;
+        self.pb.position_ms = position;
+        self.pb.stream_offset_ms = offset;
+        self.pb.started_uid = Some(item.uid);
+        self.pb.reported_step = position / super::POSITION_STEP_MS;
+        self.pb.engine_duration_ms = 0;
         let track = AdapterTrack {
             context: item.context.clone(),
             duration_millis: u64::try_from(item.track.duration_millis).unwrap_or(0),
@@ -1651,7 +1641,7 @@ impl Core {
     /// Between polls the position runs on by the clock (smooth progress
     /// and lyrics; Sonos reports whole seconds).
     fn cast_tick(&mut self) {
-        if self.idle || self.loading || self.paused {
+        if self.pb.idle || self.pb.loading || self.pb.paused {
             return;
         }
         let Some((at, ms)) = self.cast.as_ref().and_then(|c| c.anchor) else {
@@ -1666,7 +1656,7 @@ impl Core {
         if duration > 0 {
             position = position.min(duration);
         }
-        if position > self.position_ms {
+        if position > self.pb.position_ms {
             self.apply_position(position);
         }
     }
@@ -1705,7 +1695,7 @@ impl Core {
                     let name = cast.room.name.clone();
                     tracing::warn!("sonos unreachable: {e}");
                     self.emit(Event::Notice(format!("无法连接 Sonos「{name}」：{e}")));
-                    if !self.idle && !self.paused {
+                    if !self.pb.idle && !self.pb.paused {
                         // Not playing as far as we know: stop claiming it.
                         self.apply_paused(true);
                     }
@@ -1714,7 +1704,7 @@ impl Core {
             }
         };
         cast.state = Some(status.state);
-        if !cast.loaded || self.idle {
+        if !cast.loaded || self.pb.idle {
             return;
         }
         // The URI identifies the entry; a speaker that reports it in another
@@ -1763,7 +1753,7 @@ impl Core {
             cast.stopped_polls += 1;
             cast.anchor = None;
             let polls = cast.stopped_polls;
-            if self.loading {
+            if self.pb.loading {
                 if polls >= NEVER_STARTED_POLLS {
                     let title = current.map(|c| c.1).unwrap_or_default();
                     self.playback_failed(format!("Sonos 未能开始播放：{title}"));
@@ -1772,7 +1762,7 @@ impl Core {
             }
             let near_end = [duration, cast.speaker_duration_ms]
                 .iter()
-                .any(|d| *d > 0 && self.position_ms + END_SLACK_MS >= *d);
+                .any(|d| *d > 0 && self.pb.position_ms + END_SLACK_MS >= *d);
             if near_end {
                 if polls >= STOPPED_END_POLLS {
                     cast.stopped_polls = 0;
@@ -1781,7 +1771,7 @@ impl Core {
                 }
                 return;
             }
-            if !self.paused {
+            if !self.pb.paused {
                 // Stopped from the Sonos app; resuming re-opens the entry.
                 self.apply_paused(true);
             }
@@ -1795,8 +1785,8 @@ impl Core {
         {
             return;
         }
-        let was_loading = self.loading;
-        self.loading = false;
+        let was_loading = self.pb.loading;
+        self.pb.loading = false;
         let mut position = status.position_ms + offset;
         let duration = self.duration_ms();
         if duration > 0 {
@@ -1808,9 +1798,9 @@ impl Core {
             && self.pause_at_end()
             && self.settings.repeat == Repeat::One
             && duration > 0
-            && self.position_ms + 20_000 >= duration
+            && self.pb.position_ms + 20_000 >= duration
             && position < 3_000
-            && self.position_ms.saturating_sub(position) > 10_000
+            && self.pb.position_ms.saturating_sub(position) > 10_000
         {
             self.stop_playback();
             self.show_current_stopped();
@@ -1823,8 +1813,8 @@ impl Core {
         } else {
             0
         };
-        if self.engine_duration_ms == 0 && speaker_duration > 0 {
-            self.engine_duration_ms = speaker_duration;
+        if self.pb.engine_duration_ms == 0 && speaker_duration > 0 {
+            self.pb.engine_duration_ms = speaker_duration;
         }
         let Some(cast) = self.cast.as_mut() else {
             return;
@@ -1851,8 +1841,8 @@ impl Core {
             self.apply_buffering(buffering);
         }
         match status.state {
-            TransportState::Playing if self.paused => self.apply_paused(false),
-            TransportState::Paused if !self.paused => self.apply_paused(true),
+            TransportState::Playing if self.pb.paused => self.apply_paused(false),
+            TransportState::Paused if !self.pb.paused => self.apply_paused(true),
             _ => {}
         }
     }
