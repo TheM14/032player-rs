@@ -17,11 +17,24 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const CLSID_MINIFUSE: &str = "{D323B478-A475-B063-6A36-197FAF1D0689}";
 const CLSID_TOPPING: &str = "{6D241B5E-CF73-4043-A85F-EF11D4670955}";
 
-#[derive(Default)]
 struct AsioFakeEngine {
     calls: Mutex<Vec<String>>,
     drivers_installed: AtomicBool,
+    sole_driver_only: AtomicBool,
+    topping_ready: AtomicBool,
     target: Mutex<Option<AsioTarget>>,
+}
+
+impl Default for AsioFakeEngine {
+    fn default() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            drivers_installed: AtomicBool::new(false),
+            sole_driver_only: AtomicBool::new(false),
+            topping_ready: AtomicBool::new(true),
+            target: Mutex::new(None),
+        }
+    }
 }
 
 impl AsioFakeEngine {
@@ -88,20 +101,25 @@ impl Engine for AsioFakeEngine {
         self.push(format!("exclusive {enabled}"))
     }
     fn asio_drivers(&self) -> Vec<AsioDriver> {
-        if self.drivers_installed.load(Ordering::Relaxed) {
-            vec![
-                AsioDriver {
-                    clsid: CLSID_MINIFUSE.into(),
-                    name: "MiniFuse ASIO Driver".into(),
-                },
-                AsioDriver {
-                    clsid: CLSID_TOPPING.into(),
-                    name: "Topping USB Audio Device".into(),
-                },
-            ]
-        } else {
-            Vec::new()
+        if !self.drivers_installed.load(Ordering::Relaxed) {
+            return Vec::new();
         }
+        if self.sole_driver_only.load(Ordering::Relaxed) {
+            return vec![AsioDriver {
+                clsid: CLSID_TOPPING.into(),
+                name: "Topping USB Audio Device".into(),
+            }];
+        }
+        vec![
+            AsioDriver {
+                clsid: CLSID_MINIFUSE.into(),
+                name: "MiniFuse ASIO Driver".into(),
+            },
+            AsioDriver {
+                clsid: CLSID_TOPPING.into(),
+                name: "Topping USB Audio Device".into(),
+            },
+        ]
     }
     fn probe_asio_driver(&self, clsid: &str) -> Result<AsioCapabilities, String> {
         let _ = self.push(format!("probe {clsid}"));
@@ -125,6 +143,9 @@ impl Engine for AsioFakeEngine {
                 buffer_size: 256,
             })
         } else if clsid.eq_ignore_ascii_case(CLSID_TOPPING) {
+            if !self.topping_ready.load(Ordering::Relaxed) {
+                return Err("ASIO error (-1000): IASIO::init failed".into());
+            }
             Ok(AsioCapabilities {
                 output_channels: 2,
                 channel_pairs: vec![AsioChannelPair {
@@ -509,6 +530,274 @@ async fn refresh_audio_devices_hands_over_when_saved_asio_driver_appears() {
     wait_call(&engine, &format!("load asio {CLSID_TOPPING}[0:1] {url1}")).await;
 
     tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_refresh_avoids_probing_until_settings_opened() {
+    let engine = Arc::new(AsioFakeEngine::default());
+    engine.drivers_installed.store(true, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("032player-asio-lazy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (tx, rx) = mpsc::channel();
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings {
+                exclusive: false,
+                asio: false,
+                asio_driver: Some(CLSID_MINIFUSE.into()),
+                ..Settings::default()
+            },
+        },
+        move |e| {
+            let _ = tx.send(e);
+        },
+    );
+
+    // Startup refresh enumerates drivers without opening ASIO hardware.
+    core.send(Command::RefreshAudioDevices);
+    wait(&rx, "startup asio state", |e| {
+        matches!(
+            e,
+            Event::AsioState(s)
+                if s.drivers.len() == 2
+                    && s.selected_clsid.as_deref() == Some(CLSID_MINIFUSE)
+                    && !s.ready
+        )
+    });
+    assert!(
+        !engine.calls().iter().any(|c| c.starts_with("probe ")),
+        "startup refresh must not probe hardware: {:?}",
+        engine.calls()
+    );
+
+    // Entering Settings triggers an on-demand probe once.
+    core.send(Command::RefreshAudioSettings);
+    wait(&rx, "settings probed minifuse", |e| {
+        matches!(
+            e,
+            Event::AsioState(s)
+                if s.ready
+                    && s.selected_clsid.as_deref() == Some(CLSID_MINIFUSE)
+                    && s.channel_pairs.len() == 2
+        )
+    });
+    assert_eq!(
+        engine
+            .calls()
+            .iter()
+            .filter(|c| c.as_str() == format!("probe {CLSID_MINIFUSE}"))
+            .count(),
+        1
+    );
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_driver_switch_while_playing_rolls_back_and_preserves_ports() {
+    let server = setup_server().await;
+    let engine = Arc::new(AsioFakeEngine::default());
+    engine.drivers_installed.store(true, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("032player-asio-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (tx, rx) = mpsc::channel();
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings {
+                exclusive: true,
+                asio: true,
+                asio_driver: Some(CLSID_MINIFUSE.into()),
+                ..Settings::default()
+            },
+        },
+        move |e| {
+            let _ = tx.send(e);
+        },
+    );
+
+    core.send(Command::RefreshAudioSettings);
+    wait(
+        &rx,
+        "minifuse probed",
+        |e| matches!(e, Event::AsioState(s) if s.ready && s.channel_pairs.len() == 2),
+    );
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    wait(
+        &rx,
+        "tracks loaded",
+        |e| matches!(e, Event::TracksAppended { items, .. } if items.len() == 3),
+    );
+
+    let url1 = format!("{}/api/v1/tracks/1/stream?mediaToken=media", server.uri());
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    wait_call(&engine, &format!("load asio {CLSID_MINIFUSE}[0:1] {url1}")).await;
+    core.engine_event(EngineEvent::FileLoaded {
+        path: Some(url1.clone()),
+    });
+
+    // Attempt to switch to a disconnected Topping DAC while MiniFuse is actively streaming.
+    engine.topping_ready.store(false, Ordering::Relaxed);
+    core.send(Command::SetAsioDriver(CLSID_TOPPING.into()));
+    wait(
+        &rx,
+        "switch failure notice",
+        |e| matches!(e, Event::Notice(n) if n.contains("切换 ASIO 驱动失败")),
+    );
+    // Selection and cached stereo output ports roll back cleanly to MiniFuse.
+    let target = engine.target.lock().unwrap().clone();
+    assert_eq!(
+        target.as_ref().map(|t| t.clsid.as_str()),
+        Some(CLSID_MINIFUSE)
+    );
+    core.send(Command::RefreshAudioSettings);
+    wait(&rx, "minifuse ports preserved", |e| {
+        matches!(
+            e,
+            Event::AsioState(s)
+                if s.ready
+                    && s.selected_clsid.as_deref() == Some(CLSID_MINIFUSE)
+                    && s.channel_pairs.len() == 2
+        )
+    });
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_asio_migrates_sole_driver_and_idle_switch_probes_once() {
+    let engine = Arc::new(AsioFakeEngine::default());
+    engine.drivers_installed.store(true, Ordering::Relaxed);
+    engine.sole_driver_only.store(true, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("032player-asio-sole-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (tx, rx) = mpsc::channel();
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings {
+                exclusive: true,
+                asio: true,
+                asio_driver: None,
+                ..Settings::default()
+            },
+        },
+        move |e| {
+            let _ = tx.send(e);
+        },
+    );
+
+    // Legacy v0.2.27 `exclusive: true, asio: true` without `asio_driver` auto-migrates
+    // when a single ASIO driver is installed, without probing hardware on startup.
+    core.send(Command::RefreshAudioDevices);
+    wait(&rx, "migrated sole driver", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Asio,
+                asio_available: true,
+                ..
+            }
+        )
+    });
+    assert!(
+        !engine.calls().iter().any(|c| c.starts_with("probe ")),
+        "migration must not probe hardware on startup: {:?}",
+        engine.calls()
+    );
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+
+    // Idle switch to ASIO with an unselected sole driver that is disconnected must not
+    // persist the driver selection; once connected it probes exactly once.
+    let engine2 = Arc::new(AsioFakeEngine::default());
+    engine2.drivers_installed.store(true, Ordering::Relaxed);
+    engine2.sole_driver_only.store(true, Ordering::Relaxed);
+    engine2.topping_ready.store(false, Ordering::Relaxed);
+    let (tx2, rx2) = mpsc::channel();
+    let core2 = client_core::start(
+        engine2.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
+        },
+        move |e| {
+            let _ = tx2.send(e);
+        },
+    );
+    core2.send(Command::RefreshAudioDevices);
+    wait(
+        &rx2,
+        "sole driver discovered",
+        |e| matches!(e, Event::AsioState(s) if s.drivers.len() == 1 && s.selected_clsid.is_none()),
+    );
+    core2.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
+    wait(
+        &rx2,
+        "idle switch failed notice",
+        |e| matches!(e, Event::Notice(n) if n.contains("切换输出模式失败")),
+    );
+    wait(
+        &rx2,
+        "idle switch failed without mutating selection",
+        |e| matches!(e, Event::AsioState(s) if s.selected_clsid.is_none()),
+    );
+
+    engine2.topping_ready.store(true, Ordering::Relaxed);
+    core2.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
+    wait(&rx2, "idle switch succeeded", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Asio,
+                ..
+            }
+        )
+    });
+    wait(&rx2, "caps populated from single probe", |e| {
+        matches!(
+            e,
+            Event::AsioState(s)
+                if s.ready
+                    && s.selected_clsid.as_deref() == Some(CLSID_TOPPING)
+                    && s.channel_pairs.len() == 1
+        )
+    });
+    // One failed probe + one successful probe = 2 total (not 3 from double-probing).
+    assert_eq!(
+        engine2
+            .calls()
+            .iter()
+            .filter(|c| c.as_str() == format!("probe {CLSID_TOPPING}"))
+            .count(),
+        2,
+        "{:?}",
+        engine2.calls()
+    );
+
+    tokio::task::spawn_blocking(move || core2.shutdown())
         .await
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);

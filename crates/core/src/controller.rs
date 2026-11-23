@@ -210,8 +210,12 @@ pub enum Command {
         position_ms: i64,
     },
     SetVolume(f64),
-    /// Answered with [`Event::AudioDevices`].
+    /// Answered with [`Event::AudioDevices`] and [`Event::AsioState`] without
+    /// opening ASIO hardware.
     RefreshAudioDevices,
+    /// Refreshes audio devices / ASIO drivers when Settings opens and probes
+    /// the selected ASIO driver on demand (unless cached or actively streaming).
+    RefreshAudioSettings,
     /// `None` = system default. Answered with [`Event::AudioDevice`].
     SetAudioDevice(Option<String>),
     /// Answered with [`Event::Exclusive`] (the old value on failure).
@@ -887,17 +891,27 @@ enum Internal {
         notice: Option<String>,
         deleted: Option<i64>,
     },
-    AudioDevicesLoaded(Result<Vec<AudioDevice>, String>, Vec<AsioDriver>),
+    AudioDevicesLoaded {
+        devices: Result<Vec<AudioDevice>, String>,
+        drivers: Vec<AsioDriver>,
+        probe_asio: bool,
+    },
     AsioDriversRefreshed(Vec<AsioDriver>),
     AsioDriverProbed {
         clsid: String,
         seq: u64,
         result: Result<AsioCapabilities, String>,
         handover: bool,
+        rollback_clsid: Option<String>,
     },
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
-    ExclusiveModeSet(ExclusiveMode, Result<(), String>),
+    ExclusiveModeSet {
+        mode: ExclusiveMode,
+        auto_clsid: Option<String>,
+        probed: Option<(String, AsioCapabilities)>,
+        result: Result<(), String>,
+    },
     AsioControlPanelOpened(Result<(), String>),
     SaveSettings(u64),
     SaveQueue(u64),
@@ -1704,7 +1718,8 @@ impl Core {
                     self.emit(Event::Notice(e));
                 }
             }
-            Command::RefreshAudioDevices => self.refresh_audio_devices(),
+            Command::RefreshAudioDevices => self.refresh_audio_devices(false),
+            Command::RefreshAudioSettings => self.refresh_audio_devices(true),
             Command::SetAudioDevice(device) => self.set_audio_device(device),
             Command::SetExclusive(enabled) => self.set_exclusive(enabled),
             Command::SetExclusiveMode(mode) => self.set_exclusive_mode(mode),
@@ -2117,8 +2132,12 @@ impl Core {
                     result,
                 );
             }
-            Internal::AudioDevicesLoaded(result, drivers) => {
-                self.handle_audio_devices_loaded(result, drivers);
+            Internal::AudioDevicesLoaded {
+                devices,
+                drivers,
+                probe_asio,
+            } => {
+                self.handle_audio_devices_loaded(devices, drivers, probe_asio);
             }
             Internal::AsioDriversRefreshed(drivers) => self.handle_asio_drivers_refreshed(drivers),
             Internal::AsioDriverProbed {
@@ -2126,14 +2145,18 @@ impl Core {
                 seq,
                 result,
                 handover,
-            } => self.handle_asio_driver_probed(clsid, seq, result, handover),
+                rollback_clsid,
+            } => self.handle_asio_driver_probed(clsid, seq, result, handover, rollback_clsid),
             Internal::AudioDeviceSet(device, result) => {
                 self.handle_audio_device_set(device, result)
             }
             Internal::ExclusiveSet(enabled, result) => self.handle_exclusive_set(enabled, result),
-            Internal::ExclusiveModeSet(mode, result) => {
-                self.handle_exclusive_mode_set(mode, result)
-            }
+            Internal::ExclusiveModeSet {
+                mode,
+                auto_clsid,
+                probed,
+                result,
+            } => self.handle_exclusive_mode_set(mode, auto_clsid, probed, result),
             Internal::AsioControlPanelOpened(result) => {
                 if let Err(e) = result {
                     self.emit(Event::Notice(format!("打开 ASIO 控制面板失败：{e}")));

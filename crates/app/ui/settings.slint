@@ -240,12 +240,11 @@ export component SettingsView inherits Rectangle {
                 description: root.asio-status != ""
                     ? root.asio-status
                     : "从系统已安装的 ASIO 驱动中选择输出设备。";
-                HorizontalLayout {
+                VerticalLayout {
                     y: (parent.height - self.height) / 2;
                     spacing: 8px;
                     ComboBox {
                         width: 240px;
-                        y: (parent.height - self.height) / 2;
                         model: root.asio-drivers;
                         current-index <=> root.asio-driver-index;
                         enabled: !root.output-busy;
@@ -253,20 +252,22 @@ export component SettingsView inherits Rectangle {
                             root.asio-driver-selected(self.current-index);
                         }
                     }
-                    GhostButton {
-                        y: (parent.height - self.height) / 2;
-                        text: "刷新";
-                        enabled: !root.output-busy;
-                        clicked => {
-                            root.refresh-asio-driver();
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        GhostButton {
+                            text: "刷新";
+                            enabled: !root.output-busy;
+                            clicked => {
+                                root.refresh-asio-driver();
+                            }
                         }
-                    }
-                    GhostButton {
-                        y: (parent.height - self.height) / 2;
-                        text: "控制面板";
-                        enabled: !root.output-busy;
-                        clicked => {
-                            root.open-asio-control-panel();
+                        GhostButton {
+                            text: "控制面板";
+                            enabled: !root.output-busy;
+                            clicked => {
+                                root.open-asio-control-panel();
+                            }
                         }
                     }
                 }

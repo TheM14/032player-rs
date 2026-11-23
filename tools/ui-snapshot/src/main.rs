@@ -2082,6 +2082,28 @@ fn main() {
     );
     set(&inst, "audio-device-index", Value::Number(2.0));
     set(&inst, "exclusive", Value::Bool(true));
+    set(&inst, "exclusive-mode", Value::Number(2.0));
+    set(&inst, "asio-available", Value::Bool(true));
+    set(
+        &inst,
+        "asio-drivers",
+        strings(&["MiniFuse ASIO Driver", "Topping USB Audio Device"]),
+    );
+    set(&inst, "asio-driver-index", Value::Number(0.0));
+    set(
+        &inst,
+        "asio-status",
+        s("已就绪 · 4 输出通道 · Int32Lsb · 支持 44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz"),
+    );
+    set(
+        &inst,
+        "asio-channel-pairs",
+        strings(&[
+            "1-2 · MAIN Left / MAIN Right",
+            "3-4 · LOOPBACK Left / LOOPBACK Right",
+        ]),
+    );
+    set(&inst, "asio-channel-pair-index", Value::Number(0.0));
     set(&inst, "tray-available", Value::Bool(true));
     set(
         &inst,

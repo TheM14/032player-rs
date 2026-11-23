@@ -167,6 +167,7 @@ impl Core {
         }
         if opts.clear_asio && self.output.clear_asio_stream() {
             self.emit_output_mode();
+            self.sync_asio_status_after_stop();
         }
     }
 
@@ -550,7 +551,11 @@ impl Core {
         };
         let next_transcode = self.transcode();
         let want = next
-            .filter(|item| self.want_asio_for(&item.track).0 == self.output.asio_active)
+            .filter(|item| {
+                let need_asio = self.want_asio_for(&item.track).0;
+                need_asio == self.output.asio_active
+                    && (!need_asio || self.selected_asio_target() == self.output.active_asio_target)
+            })
             .map(|item| (item.uid, item.track.id))
             .and_then(|(uid, id)| Some((uid, self.track_url_for(id, next_transcode, 0)?)));
         if want == self.pb.preloaded {

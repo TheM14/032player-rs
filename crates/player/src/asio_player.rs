@@ -30,6 +30,9 @@ pub trait AudioSink: Send + 'static {
     fn rendered_frames(&self) -> u64;
     fn output_latency_frames(&self) -> u64;
     fn open_control_panel(&self) -> Result<()>;
+    fn is_control_panel_open(&self) -> bool {
+        false
+    }
     fn take_error(&self) -> Option<String> {
         None
     }
@@ -142,8 +145,17 @@ impl AudioSink for WindowsAsioSink {
         }
     }
 
+    fn is_control_panel_open(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(asio::AsioOutput::is_control_panel_open)
+    }
+
     fn take_error(&self) -> Option<String> {
-        self.active.as_ref().and_then(asio::AsioOutput::take_error)
+        self.active
+            .as_ref()
+            .and_then(asio::AsioOutput::take_error)
+            .map(|e| format_asio_error(&e))
     }
 }
 
@@ -1192,7 +1204,11 @@ fn worker_loop<S: AudioSink>(
                     let rendered = sink.rendered_frames();
                     let paused = shared.paused.load(Ordering::Acquire);
                     let seeking = shared.seeking.load(Ordering::Acquire);
-                    if paused || seeking || rendered != last_rendered_frames {
+                    if paused
+                        || seeking
+                        || sink.is_control_panel_open()
+                        || rendered != last_rendered_frames
+                    {
                         last_rendered_frames = rendered;
                         last_rendered_at = Instant::now();
                     } else if last_rendered_at.elapsed() >= Duration::from_secs(3) {

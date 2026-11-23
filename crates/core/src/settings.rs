@@ -358,8 +358,15 @@ impl Settings {
     /// Returns the saved stereo channel pair `(left, right)` for `clsid`.
     #[must_use]
     pub fn asio_channel_pair(&self, clsid: &str) -> (usize, usize) {
+        let key = normalize_asio_clsid(clsid);
         self.asio_profiles
-            .get(clsid)
+            .get(&key)
+            .or_else(|| {
+                self.asio_profiles
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+                    .map(|(_, v)| v)
+            })
             .filter(|p| p.channel_pair[0] != p.channel_pair[1])
             .map_or((0, 1), |p| (p.channel_pair[0], p.channel_pair[1]))
     }
@@ -369,7 +376,13 @@ impl Settings {
         if left == right {
             return;
         }
-        let profile = self.asio_profiles.entry(clsid.to_owned()).or_default();
+        let key = normalize_asio_clsid(clsid);
+        if key.is_empty() {
+            return;
+        }
+        self.asio_profiles
+            .retain(|k, _| k == &key || !k.eq_ignore_ascii_case(&key));
+        let profile = self.asio_profiles.entry(key).or_default();
         profile.channel_pair = [left, right];
     }
 
@@ -418,11 +431,18 @@ impl Settings {
             .filter(|d| !d.is_empty() && d != "auto");
         settings.asio_driver = settings
             .asio_driver
-            .map(|s| s.trim().to_owned())
+            .map(|s| normalize_asio_clsid(&s))
             .filter(|s| !s.is_empty());
-        for profile in settings.asio_profiles.values_mut() {
+        let mut normalized_profiles = BTreeMap::new();
+        for (clsid, mut profile) in std::mem::take(&mut settings.asio_profiles) {
+            let key = normalize_asio_clsid(&clsid);
+            if key.is_empty() {
+                continue;
+            }
             profile.sanitize();
+            normalized_profiles.insert(key, profile);
         }
+        settings.asio_profiles = normalized_profiles;
         settings
     }
 
@@ -438,6 +458,10 @@ impl Settings {
             e.to_string()
         })
     }
+}
+
+fn normalize_asio_clsid(clsid: &str) -> String {
+    clsid.trim().to_ascii_uppercase()
 }
 
 #[cfg(test)]
@@ -588,6 +612,37 @@ mod tests {
         assert_eq!(
             (reloaded.sidebar_width, reloaded.right_panel.width),
             (OLD_SIDEBAR_WIDTH, OLD_PANEL_WIDTH)
+        );
+
+        // ASIO driver CLSIDs and profile keys normalize case-insensitively without duplicates.
+        fs::write(
+            Settings::path(&dir),
+            br#"{
+                "asioDriver": " {d323b478-a475-b063-6a36-197faf1d0689} ",
+                "asioProfiles": {
+                    "{d323b478-a475-b063-6a36-197faf1d0689}": { "channelPair": [2, 3] }
+                }
+            }"#,
+        )
+        .unwrap();
+        let mut mixed = Settings::load(&dir);
+        assert_eq!(
+            mixed.asio_driver.as_deref(),
+            Some("{D323B478-A475-B063-6A36-197FAF1D0689}")
+        );
+        assert_eq!(
+            mixed.asio_channel_pair("{D323B478-A475-B063-6A36-197FAF1D0689}"),
+            (2, 3)
+        );
+        assert_eq!(
+            mixed.asio_channel_pair("{d323b478-a475-b063-6a36-197faf1d0689}"),
+            (2, 3)
+        );
+        mixed.set_asio_channel_pair("{d323b478-a475-b063-6a36-197faf1d0689}", 4, 5);
+        assert_eq!(mixed.asio_profiles.len(), 1);
+        assert_eq!(
+            mixed.asio_channel_pair("{D323B478-A475-B063-6A36-197FAF1D0689}"),
+            (4, 5)
         );
         let _ = fs::remove_dir_all(&dir);
     }

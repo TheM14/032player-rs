@@ -440,7 +440,7 @@ export component PlayerBar inherits Rectangle {
         min-width: root.side-w;
         alignment: end;
         spacing: 4px;
-        BarButton {
+        exclusive-button := BarButton {
             y: (parent.height - self.height) / 2;
             icon: IconKind.speaker;
             text: root.tight ? "" : root.exclusive-busy ? "切换中…" : root.exclusive-mode == 2 ? (root.asio-fallback ? "WASAPI" : "ASIO") : "独占";
@@ -448,7 +448,7 @@ export component PlayerBar inherits Rectangle {
             enabled: !root.exclusive-busy;
             clicked => {
                 if root.asio-available {
-                    root.select-exclusive-mode(root.exclusive-mode == 0 ? 1 : root.exclusive-mode == 1 ? 2 : 0);
+                    exclusive-menu.show();
                 } else {
                     root.toggle-exclusive(!root.exclusive);
                 }
@@ -527,6 +527,67 @@ export component PlayerBar inherits Rectangle {
     }
 
     } // bar layout
+
+    exclusive-menu := PopupWindow {
+        x: min(exclusive-button.absolute-position.x - root.absolute-position.x, root.width - 210px);
+        y: -self.height - 10px;
+        width: 200px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                Text {
+                    text: "独占输出";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    height: 24px;
+                    vertical-alignment: center;
+                    x: 10px;
+                }
+                for option in [
+                    { label: "关闭", mode: 0 },
+                    { label: "WASAPI 独占", mode: 1 },
+                    { label: "ASIO 独占", mode: 2 },
+                ]: Rectangle {
+                    height: 30px;
+                    border-radius: 6px;
+                    background: exclusive-item-area.has-hover ? Theme.surface-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        Text {
+                            text: option.label;
+                            font-family: Fonts.family(self.text);
+                            color: root.exclusive-mode == option.mode ? Theme.accent-text : Theme.text;
+                            font-weight: root.exclusive-mode == option.mode ? 600 : 400;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        if root.exclusive-mode == option.mode: Icon {
+                            y: (parent.height - self.height) / 2;
+                            kind: IconKind.check;
+                            width: 14px;
+                            height: 14px;
+                            color: Theme.accent-text;
+                        }
+                    }
+                    exclusive-item-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            exclusive-menu.close();
+                            if option.mode != root.exclusive-mode {
+                                root.select-exclusive-mode(option.mode);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     cast-menu := PopupWindow {
         x: min(cast-button.absolute-position.x - root.absolute-position.x, root.width - 280px);

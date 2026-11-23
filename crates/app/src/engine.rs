@@ -328,9 +328,6 @@ impl Engine for HybridEngine {
                 {
                     return Err("所选 ASIO 驱动未安装".into());
                 }
-                if self.active.load(Ordering::Acquire) == ACTIVE_NONE {
-                    player::probe_asio_driver(&target.clsid).map_err(|e| e.to_string())?;
-                }
                 self.exclusive.store(true, Ordering::Release);
                 Ok(())
             }

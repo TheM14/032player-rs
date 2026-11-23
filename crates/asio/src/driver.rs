@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use windows_registry::LOCAL_MACHINE;
+use windows_registry::{CLASSES_ROOT, LOCAL_MACHINE};
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, S_FALSE, S_OK};
 use windows_sys::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED, CoCreateInstance,
@@ -35,9 +35,36 @@ use crate::{
 
 static STREAM_SLOT: StreamSlot = StreamSlot::new();
 static ACTIVE_CALLBACK: CallbackSlot<CallbackState> = CallbackSlot::new();
+static DRIVER_OP_LOCK: Mutex<()> = Mutex::new(());
+static ACTIVE_CLSID: Mutex<Option<String>> = Mutex::new(None);
 static STANDALONE_CPL: Mutex<Option<StandaloneCpl>> = Mutex::new(None);
 
+struct ActiveClsidGuard;
+
+impl ActiveClsidGuard {
+    fn set(clsid: &str) -> Self {
+        *ACTIVE_CLSID.lock().unwrap_or_else(|e| e.into_inner()) = Some(clsid.to_owned());
+        Self
+    }
+}
+
+impl Drop for ActiveClsidGuard {
+    fn drop(&mut self) {
+        *ACTIVE_CLSID.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+struct AtomicFlagReset(Arc<AtomicBool>);
+
+impl Drop for AtomicFlagReset {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 struct StandaloneCpl {
+    clsid: String,
+    alive: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -49,6 +76,29 @@ impl StandaloneCpl {
             let _ = thread.join();
         }
     }
+}
+
+fn active_stream_matches(clsid: &str) -> bool {
+    ACTIVE_CLSID
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        .is_some_and(|active| active.eq_ignore_ascii_case(clsid))
+}
+
+fn standalone_cpl_alive_for(clsid: &str) -> bool {
+    let mut guard = STANDALONE_CPL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(cpl) = guard.as_ref() else {
+        return false;
+    };
+    if !cpl.alive.load(Ordering::Acquire) {
+        if let Some(mut finished) = guard.take() {
+            drop(guard);
+            finished.stop();
+        }
+        return false;
+    }
+    cpl.clsid.eq_ignore_ascii_case(clsid)
 }
 
 fn close_standalone_control_panel() {
@@ -281,8 +331,8 @@ pub fn list_drivers() -> Vec<AsioDriverInfo> {
 }
 
 fn inproc_dll_exists(clsid: &str) -> bool {
-    let path = format!("SOFTWARE\\Classes\\CLSID\\{clsid}\\InprocServer32");
-    let Ok(key) = LOCAL_MACHINE.open(&path) else {
+    let path = format!("CLSID\\{clsid}\\InprocServer32");
+    let Ok(key) = CLASSES_ROOT.open(&path) else {
         return false;
     };
     let Ok(raw_dll) = key.get_string("") else {
@@ -591,6 +641,16 @@ fn c_char_buf_to_string(buf: &[c_char]) -> String {
 }
 
 pub fn probe_driver(clsid: &str) -> Result<AsioCapabilities> {
+    let _op = DRIVER_OP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if active_stream_matches(clsid) {
+        return Err(AsioError::AlreadyActive);
+    }
+    if standalone_cpl_alive_for(clsid) {
+        return Err(AsioError::Driver {
+            code: ASE_NOT_PRESENT,
+            message: "请先关闭该 ASIO 驱动的控制面板".into(),
+        });
+    }
     let clsid = clsid.to_owned();
     thread::Builder::new()
         .name("asio-probe".into())
@@ -645,15 +705,23 @@ pub fn probe_driver(clsid: &str) -> Result<AsioCapabilities> {
 }
 
 pub fn open_control_panel_standalone(clsid: &str) -> Result<()> {
+    let _op = DRIVER_OP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if active_stream_matches(clsid) {
+        return Err(AsioError::AlreadyActive);
+    }
     close_standalone_control_panel();
-    let clsid = clsid.to_owned();
+    let clsid_owned = clsid.to_owned();
+    let clsid_thread = clsid_owned.clone();
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_w = alive.clone();
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_w = shutdown.clone();
     let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
     let thread = thread::Builder::new()
         .name("asio-cpl".into())
         .spawn(move || {
-            let handle = match IAsioHandle::open(&clsid) {
+            let _alive_guard = AtomicFlagReset(alive_w);
+            let handle = match IAsioHandle::open(&clsid_thread) {
                 Ok(h) => h,
                 Err(e) => {
                     let _ = init_tx.send(Err(e));
@@ -688,6 +756,8 @@ pub fn open_control_panel_standalone(clsid: &str) -> Result<()> {
             // Either the panel opened asynchronously or `control_panel()` is running
             // modally on the STA thread; keep the host handle tracked until closed.
             *STANDALONE_CPL.lock().unwrap_or_else(|e| e.into_inner()) = Some(StandaloneCpl {
+                clsid: clsid_owned,
+                alive,
                 shutdown,
                 thread: Some(thread),
             });
@@ -711,7 +781,8 @@ pub struct AsioOutputHandle {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
-    last_error: Arc<Mutex<Option<String>>>,
+    control_panel_open: Arc<AtomicBool>,
+    last_error: Arc<Mutex<Option<AsioError>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -731,6 +802,7 @@ impl AsioOutputHandle {
             config: init.config,
             rendered_frames: init.rendered_frames,
             output_latency: init.output_latency,
+            control_panel_open: init.control_panel_open,
             last_error: init.last_error,
             thread: Some(thread),
         })
@@ -756,7 +828,11 @@ impl AsioOutputHandle {
         self.output_latency.load(Ordering::Relaxed)
     }
 
-    pub fn take_error(&self) -> Option<String> {
+    pub fn is_control_panel_open(&self) -> bool {
+        self.control_panel_open.load(Ordering::Acquire)
+    }
+
+    pub fn take_error(&self) -> Option<AsioError> {
         self.last_error.lock().expect("asio error lock").take()
     }
 
@@ -788,7 +864,8 @@ struct SelfInit {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
-    last_error: Arc<Mutex<Option<String>>>,
+    control_panel_open: Arc<AtomicBool>,
+    last_error: Arc<Mutex<Option<AsioError>>>,
 }
 
 struct ActiveStream {
@@ -798,14 +875,18 @@ struct ActiveStream {
     config: AsioStreamConfig,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
-    // Dropped last (after `ActiveStream::drop` and `IAsioHandle::drop`).
+    // Dropped after `IAsioHandle::drop` releases the COM driver, before `_slot`.
+    _active_clsid: ActiveClsidGuard,
+    // Dropped last (after `ActiveStream::drop`, `IAsioHandle::drop`, and `_active_clsid`).
     _slot: StreamSlotGuard,
 }
 
 impl ActiveStream {
     fn open(target: &AsioTarget, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+        let _op = DRIVER_OP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         close_standalone_control_panel();
         let slot = STREAM_SLOT.try_acquire()?;
+        let active_clsid = ActiveClsidGuard::set(&target.clsid);
         let handle = IAsioHandle::open(&target.clsid)?;
         let (_, outs) = handle.get_channels()?;
         if outs < 2 {
@@ -852,6 +933,7 @@ impl ActiveStream {
             },
             rendered_frames: Arc::new(AtomicU64::new(0)),
             output_latency: Arc::new(AtomicU64::new(0)),
+            _active_clsid: active_clsid,
             _slot: slot,
         };
         stream.setup_and_start(sample_rate, render)?;
@@ -1015,11 +1097,13 @@ fn actor_main(
     let shared_cfg = Arc::new(Mutex::new(stream.config));
     let rendered_frames = stream.rendered_frames.clone();
     let output_latency = stream.output_latency.clone();
+    let control_panel_open = Arc::new(AtomicBool::new(false));
     let last_error = Arc::new(Mutex::new(None));
     let _ = init_tx.send(Ok(SelfInit {
         config: shared_cfg.clone(),
         rendered_frames,
         output_latency,
+        control_panel_open: control_panel_open.clone(),
         last_error: last_error.clone(),
     }));
 
@@ -1035,6 +1119,8 @@ fn actor_main(
                     let _ = reply.send(res);
                 }
                 ActorCmd::OpenControlPanel(reply) => {
+                    control_panel_open.store(true, Ordering::Release);
+                    let _cpl_guard = AtomicFlagReset(control_panel_open.clone());
                     let _ = reply.send(stream.handle.control_panel());
                 }
                 ActorCmd::Shutdown => return,
@@ -1050,7 +1136,7 @@ fn actor_main(
                 Ok(cfg) => *shared_cfg.lock().expect("config lock") = cfg,
                 Err(e) => {
                     tracing::warn!("ASIO reset reconfigure failed: {e}");
-                    *last_error.lock().expect("asio error lock") = Some(e.to_string());
+                    *last_error.lock().expect("asio error lock") = Some(e);
                     return;
                 }
             }

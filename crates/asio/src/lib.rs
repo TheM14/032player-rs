@@ -517,7 +517,7 @@ impl AsioOutput {
     /// Returns and clears any asynchronous fatal error reported by the ASIO
     /// host thread (such as a failed hardware reset after disconnect).
     #[must_use]
-    pub fn take_error(&self) -> Option<String> {
+    pub fn take_error(&self) -> Option<AsioError> {
         #[cfg(windows)]
         {
             self.inner.take_error()
@@ -525,6 +525,20 @@ impl AsioOutput {
         #[cfg(not(windows))]
         {
             None
+        }
+    }
+
+    /// Returns `true` while the driver's native control panel call is actively
+    /// running on the STA host thread.
+    #[must_use]
+    pub fn is_control_panel_open(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.inner.is_control_panel_open()
+        }
+        #[cfg(not(windows))]
+        {
+            false
         }
     }
 

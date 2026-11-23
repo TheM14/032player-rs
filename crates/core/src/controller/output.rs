@@ -1,6 +1,6 @@
 //! Audio output device, exclusive / ASIO routing, and backend handover.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use api::{Track, Transcode};
 
@@ -14,7 +14,8 @@ pub(super) struct OutputState {
     /// An output device or exclusive mode change is running.
     pub(super) busy: bool,
     pub(super) asio_drivers: Vec<AsioDriver>,
-    pub(super) asio_caps: Option<(String, AsioCapabilities)>,
+    /// Cached probe results keyed by normalized uppercase CLSID.
+    pub(super) asio_caps: HashMap<String, AsioCapabilities>,
     pub(super) asio_probe_seq: u64,
     pub(super) asio_status: String,
     pub(super) asio_ready: bool,
@@ -37,6 +38,19 @@ impl OutputState {
         self.active_asio_target = None;
         self.asio_fallback = false;
         changed
+    }
+
+    pub(super) fn cached_asio_caps(&self, clsid: &str) -> Option<&AsioCapabilities> {
+        self.asio_caps.get(&clsid.trim().to_ascii_uppercase())
+    }
+
+    pub(super) fn cache_asio_caps(&mut self, clsid: &str, caps: AsioCapabilities) {
+        self.asio_caps
+            .insert(clsid.trim().to_ascii_uppercase(), caps);
+    }
+
+    pub(super) fn remove_cached_asio_caps(&mut self, clsid: &str) {
+        self.asio_caps.remove(&clsid.trim().to_ascii_uppercase());
     }
 }
 
@@ -79,7 +93,7 @@ impl Core {
         });
     }
 
-    pub(super) fn refresh_audio_devices(&self) {
+    pub(super) fn refresh_audio_devices(&self, probe_asio: bool) {
         let engine = self.engine.clone();
         let tx = self.internal.clone();
         tokio::spawn(async move {
@@ -88,7 +102,11 @@ impl Core {
             })
             .await
             .unwrap_or_else(|e| (Err(e.to_string()), Vec::new()));
-            let _ = tx.send(Internal::AudioDevicesLoaded(devices, drivers));
+            let _ = tx.send(Internal::AudioDevicesLoaded {
+                devices,
+                drivers,
+                probe_asio,
+            });
         });
     }
 
@@ -122,35 +140,71 @@ impl Core {
             self.emit_output_mode();
             return;
         }
+        let mut auto_clsid: Option<String> = None;
+        let mut probe_clsid: Option<String> = None;
         if mode == ExclusiveMode::Asio {
             if !self.output.asio_available {
                 self.emit(Event::Notice("未检测到已安装的 ASIO 驱动".into()));
                 self.emit_output_mode();
                 return;
             }
-            if self.selected_asio_target().is_none() {
-                if self.output.asio_drivers.len() == 1 {
-                    let sole = self.output.asio_drivers[0].clsid.clone();
-                    self.update_settings(|s| s.asio_driver = Some(sole));
-                    self.sync_engine_asio_target();
-                } else {
-                    self.emit(Event::Notice("请先在设置中选择要使用的 ASIO 驱动".into()));
-                    self.emit_output_mode();
-                    self.emit_asio_state();
-                    return;
-                }
-            } else {
+            if let Some(target) = self.selected_asio_target() {
                 self.sync_engine_asio_target();
+                if self.pb.idle {
+                    probe_clsid = Some(target.clsid);
+                }
+            } else if self.output.asio_drivers.len() == 1 {
+                let sole = self.output.asio_drivers[0].clsid.clone();
+                let (left, right) = self.settings.asio_channel_pair(&sole);
+                let _ = self.engine.set_asio_target(Some(AsioTarget {
+                    clsid: sole.clone(),
+                    left_channel: left,
+                    right_channel: right,
+                }));
+                if self.pb.idle {
+                    probe_clsid = Some(sole.clone());
+                }
+                auto_clsid = Some(sole);
+            } else {
+                self.emit(Event::Notice("请先在设置中选择要使用的 ASIO 驱动".into()));
+                self.emit_output_mode();
+                self.emit_asio_state();
+                return;
             }
         }
-        if mode == self.effective_exclusive_mode() && mode == self.settings.exclusive_mode() {
+        if auto_clsid.is_none()
+            && mode == self.effective_exclusive_mode()
+            && mode == self.settings.exclusive_mode()
+        {
             self.emit_output_mode();
             return;
         }
-        self.change_output(
-            move |e| e.set_exclusive_mode(mode),
-            move |r| Internal::ExclusiveModeSet(mode, r),
-        );
+
+        self.output.busy = true;
+        let engine = self.engine.clone();
+        let tx = self.internal.clone();
+        tokio::spawn(async move {
+            let (probed, result) = tokio::task::spawn_blocking(move || {
+                let probed = if let Some(clsid) = probe_clsid {
+                    match engine.probe_asio_driver(&clsid) {
+                        Ok(caps) => Some((clsid, caps)),
+                        Err(e) => return (None, Err(e)),
+                    }
+                } else {
+                    None
+                };
+                let res = engine.set_exclusive_mode(mode);
+                (probed, res)
+            })
+            .await
+            .unwrap_or_else(|e| (None, Err(e.to_string())));
+            let _ = tx.send(Internal::ExclusiveModeSet {
+                mode,
+                auto_clsid,
+                probed,
+                result,
+            });
+        });
     }
 
     pub(super) fn set_asio_driver(&mut self, clsid: String) {
@@ -174,15 +228,26 @@ impl Core {
             self.emit_asio_state();
             return;
         }
+        let rollback_clsid = if self.output.asio_active {
+            self.output
+                .active_asio_target
+                .as_ref()
+                .map(|t| t.clsid.clone())
+        } else {
+            None
+        };
         self.update_settings(|s| s.asio_driver = Some(canonical));
-        self.output.asio_caps = None;
         self.output.asio_ready = false;
-        self.sync_engine_asio_target();
+        // Keep the engine bound to the actively streaming ASIO driver until the
+        // new driver probe succeeds and hands over.
+        if !self.output.asio_active {
+            self.sync_engine_asio_target();
+        }
         self.emit_output_mode();
         let handover = self.effective_exclusive_mode() == ExclusiveMode::Asio
             && !self.pb.idle
             && !self.casting();
-        self.probe_selected_asio_driver(true, handover);
+        self.probe_selected_asio_driver(true, handover, rollback_clsid);
     }
 
     pub(super) fn set_asio_channel_pair(&mut self, left: usize, right: usize) {
@@ -194,6 +259,12 @@ impl Core {
             self.emit_asio_state();
             return;
         };
+        if let Some(caps) = self.output.cached_asio_caps(&clsid)
+            && (left >= caps.output_channels || right >= caps.output_channels)
+        {
+            self.emit_asio_state();
+            return;
+        }
         if self.settings.asio_channel_pair(&clsid) == (left, right) {
             self.emit_asio_state();
             return;
@@ -216,7 +287,9 @@ impl Core {
     }
 
     pub(super) fn open_asio_control_panel(&self) {
-        self.sync_engine_asio_target();
+        if !self.output.asio_active {
+            self.sync_engine_asio_target();
+        }
         let engine = self.engine.clone();
         let tx = self.internal.clone();
         tokio::spawn(async move {
@@ -235,8 +308,7 @@ impl Core {
             .iter()
             .find(|d| d.clsid.eq_ignore_ascii_case(saved))?;
         let (mut left, mut right) = self.settings.asio_channel_pair(&driver.clsid);
-        if let Some((clsid, caps)) = &self.output.asio_caps
-            && clsid.eq_ignore_ascii_case(&driver.clsid)
+        if let Some(caps) = self.output.cached_asio_caps(&driver.clsid)
             && (left >= caps.output_channels || right >= caps.output_channels || left == right)
         {
             if let Some(first) = caps.channel_pairs.first() {
@@ -284,14 +356,18 @@ impl Core {
         let selected_channels = selected_clsid
             .as_deref()
             .map_or((0, 1), |c| self.settings.asio_channel_pair(c));
-        let (channel_pairs, supported_sample_rates) =
-            match (&selected_clsid, &self.output.asio_caps) {
-                (Some(sel), Some((cached, caps))) if sel.eq_ignore_ascii_case(cached) => (
-                    caps.channel_pairs.clone(),
-                    caps.supported_sample_rates.clone(),
-                ),
-                _ => (Vec::new(), Vec::new()),
-            };
+        let (channel_pairs, supported_sample_rates) = selected_clsid
+            .as_deref()
+            .and_then(|sel| self.output.cached_asio_caps(sel))
+            .map_or_else(
+                || (Vec::new(), Vec::new()),
+                |caps| {
+                    (
+                        caps.channel_pairs.clone(),
+                        caps.supported_sample_rates.clone(),
+                    )
+                },
+            );
         self.emit(Event::AsioState(AsioStateView {
             drivers: self.output.asio_drivers.clone(),
             selected_clsid,
@@ -303,9 +379,78 @@ impl Core {
         }));
     }
 
-    pub(super) fn probe_selected_asio_driver(&mut self, force: bool, handover: bool) {
+    fn apply_probed_asio_caps(&mut self, clsid: String, caps: AsioCapabilities) {
+        let (left, right) = self.settings.asio_channel_pair(&clsid);
+        if (left >= caps.output_channels || right >= caps.output_channels || left == right)
+            && let Some(first) = caps.channel_pairs.first()
+        {
+            self.update_settings(|s| {
+                s.set_asio_channel_pair(&clsid, first.left, first.right);
+            });
+        }
+        self.output.asio_ready = true;
+        self.output.asio_status = format_asio_capabilities(&caps);
+        self.output.cache_asio_caps(&clsid, caps);
+    }
+
+    /// Recomputes `asio_status` / `asio_ready` from cached capabilities and
+    /// active playback state without opening any COM hardware instance.
+    fn refresh_asio_status_without_probe(&mut self) {
+        let Some(saved) = self.settings.asio_driver.as_deref() else {
+            self.output.asio_ready = false;
+            self.output.asio_status = if self.output.asio_drivers.is_empty() {
+                "未检测到已安装的 ASIO 驱动".into()
+            } else {
+                "请选择要使用的 ASIO 驱动".into()
+            };
+            return;
+        };
+        let Some(driver) = self
+            .output
+            .asio_drivers
+            .iter()
+            .find(|d| d.clsid.eq_ignore_ascii_case(saved))
+        else {
+            self.output.asio_ready = false;
+            self.output.asio_status = "已保存的 ASIO 驱动未安装，请重新选择".into();
+            return;
+        };
+        if let Some(status) = self
+            .output
+            .cached_asio_caps(&driver.clsid)
+            .map(format_asio_capabilities)
+        {
+            self.output.asio_ready = true;
+            self.output.asio_status = status;
+        } else if self.output.asio_active
+            && self
+                .output
+                .active_asio_target
+                .as_ref()
+                .is_some_and(|t| t.clsid.eq_ignore_ascii_case(&driver.clsid))
+        {
+            self.output.asio_ready = true;
+            self.output.asio_status = "正在通过该 ASIO 驱动播放".into();
+        } else {
+            self.output.asio_ready = false;
+            self.output.asio_status.clear();
+        }
+    }
+
+    pub(super) fn sync_asio_status_after_stop(&mut self) {
+        if self.output.asio_status == "正在通过该 ASIO 驱动播放" {
+            self.refresh_asio_status_without_probe();
+            self.emit_asio_state();
+        }
+    }
+
+    pub(super) fn probe_selected_asio_driver(
+        &mut self,
+        force: bool,
+        handover: bool,
+        rollback_clsid: Option<String>,
+    ) {
         let Some(saved) = self.settings.asio_driver.clone() else {
-            self.output.asio_caps = None;
             self.output.asio_ready = false;
             self.output.asio_status = if self.output.asio_drivers.is_empty() {
                 "未检测到已安装的 ASIO 驱动".into()
@@ -322,7 +467,6 @@ impl Core {
             .find(|d| d.clsid.eq_ignore_ascii_case(&saved))
             .cloned()
         else {
-            self.output.asio_caps = None;
             self.output.asio_ready = false;
             self.output.asio_status = "已保存的 ASIO 驱动未安装，请重新选择".into();
             self.emit_asio_state();
@@ -337,26 +481,28 @@ impl Core {
                 .as_ref()
                 .is_some_and(|t| t.clsid.eq_ignore_ascii_case(&driver.clsid))
         {
+            self.output.asio_probe_seq = self.output.asio_probe_seq.wrapping_add(1);
             self.output.asio_ready = true;
-            if self
-                .output
-                .asio_caps
-                .as_ref()
-                .is_none_or(|(c, _)| !c.eq_ignore_ascii_case(&driver.clsid))
-            {
-                self.output.asio_status = "正在通过该 ASIO 驱动播放".into();
-            }
+            self.output.asio_status = self.output.cached_asio_caps(&driver.clsid).map_or_else(
+                || "正在通过该 ASIO 驱动播放".into(),
+                format_asio_capabilities,
+            );
+            self.sync_engine_asio_target();
             self.emit_asio_state();
+            if handover {
+                self.maybe_handover_backend();
+            }
             return;
         }
 
         if !force
-            && self
+            && let Some(status) = self
                 .output
-                .asio_caps
-                .as_ref()
-                .is_some_and(|(c, _)| c.eq_ignore_ascii_case(&driver.clsid))
+                .cached_asio_caps(&driver.clsid)
+                .map(format_asio_capabilities)
         {
+            self.output.asio_ready = true;
+            self.output.asio_status = status;
             self.emit_asio_state();
             if handover {
                 self.maybe_handover_backend();
@@ -384,6 +530,7 @@ impl Core {
                 seq,
                 result,
                 handover,
+                rollback_clsid,
             });
         });
     }
@@ -433,11 +580,24 @@ impl Core {
         &mut self,
         result: Result<Vec<AudioDevice>, String>,
         drivers: Vec<AsioDriver>,
+        probe_asio: bool,
     ) {
         let prev_mode = self.effective_exclusive_mode();
         self.output.asio_drivers = drivers;
         self.output.asio_available = !self.output.asio_drivers.is_empty();
-        self.sync_engine_asio_target();
+        // Migrate legacy v0.2.27 configs (`exclusive: true, asio: true` without
+        // `asioDriver`) seamlessly when a single ASIO driver is installed.
+        if self.settings.exclusive
+            && self.settings.asio
+            && self.settings.asio_driver.is_none()
+            && self.output.asio_drivers.len() == 1
+        {
+            let sole = self.output.asio_drivers[0].clsid.clone();
+            self.update_settings(|s| s.asio_driver = Some(sole));
+        }
+        if !self.output.asio_active {
+            self.sync_engine_asio_target();
+        }
         if self.effective_exclusive_mode() != prev_mode {
             self.maybe_handover_backend();
         }
@@ -446,19 +606,29 @@ impl Core {
             Err(e) => tracing::warn!("audio devices: {e}"),
         }
         self.emit_output_mode();
-        self.probe_selected_asio_driver(false, false);
+        if probe_asio {
+            self.probe_selected_asio_driver(false, false, None);
+        } else {
+            self.refresh_asio_status_without_probe();
+            self.emit_asio_state();
+        }
     }
 
     pub(super) fn handle_asio_drivers_refreshed(&mut self, drivers: Vec<AsioDriver>) {
         let prev_mode = self.effective_exclusive_mode();
         self.output.asio_drivers = drivers;
         self.output.asio_available = !self.output.asio_drivers.is_empty();
-        self.sync_engine_asio_target();
+        if !self.output.asio_active {
+            self.sync_engine_asio_target();
+        }
         if self.effective_exclusive_mode() != prev_mode {
             self.maybe_handover_backend();
         }
         self.emit_output_mode();
-        self.probe_selected_asio_driver(true, false);
+        let handover = self.effective_exclusive_mode() == ExclusiveMode::Asio
+            && !self.pb.idle
+            && !self.casting();
+        self.probe_selected_asio_driver(true, handover, None);
     }
 
     pub(super) fn handle_asio_driver_probed(
@@ -467,23 +637,14 @@ impl Core {
         seq: u64,
         result: Result<AsioCapabilities, String>,
         handover: bool,
+        rollback_clsid: Option<String>,
     ) {
         if seq != self.output.asio_probe_seq {
             return;
         }
         match result {
             Ok(caps) => {
-                let (left, right) = self.settings.asio_channel_pair(&clsid);
-                if (left >= caps.output_channels || right >= caps.output_channels || left == right)
-                    && let Some(first) = caps.channel_pairs.first()
-                {
-                    self.update_settings(|s| {
-                        s.set_asio_channel_pair(&clsid, first.left, first.right);
-                    });
-                }
-                self.output.asio_ready = true;
-                self.output.asio_status = format_asio_capabilities(&caps);
-                self.output.asio_caps = Some((clsid, caps));
+                self.apply_probed_asio_caps(clsid, caps);
                 self.sync_engine_asio_target();
                 self.emit_asio_state();
                 if handover {
@@ -491,12 +652,25 @@ impl Core {
                 }
             }
             Err(e) => {
-                self.output.asio_ready = false;
-                self.output.asio_caps = None;
-                self.output.asio_status = format!("设备未就绪：{e}");
-                self.emit_asio_state();
-                if handover {
+                self.output.remove_cached_asio_caps(&clsid);
+                if handover
+                    && self.output.asio_active
+                    && let Some(prev) = rollback_clsid
+                {
+                    self.update_settings(|s| s.asio_driver = Some(prev));
+                    self.sync_engine_asio_target();
+                    self.refresh_asio_status_without_probe();
+                    self.emit_output_mode();
+                    self.emit_asio_state();
+                    self.sync_preload();
                     self.emit(Event::Notice(format!("切换 ASIO 驱动失败：{e}")));
+                } else {
+                    self.output.asio_ready = false;
+                    self.output.asio_status = format!("设备未就绪：{e}");
+                    self.emit_asio_state();
+                    if handover {
+                        self.emit(Event::Notice(format!("切换 ASIO 驱动失败：{e}")));
+                    }
                 }
             }
         }
@@ -539,22 +713,41 @@ impl Core {
     pub(super) fn handle_exclusive_mode_set(
         &mut self,
         mode: ExclusiveMode,
+        auto_clsid: Option<String>,
+        probed: Option<(String, AsioCapabilities)>,
         result: Result<(), String>,
     ) {
         self.output.busy = false;
-        match result {
+        let ok = match result {
             Ok(()) => {
-                self.update_settings(|s| s.set_exclusive_mode(mode));
-                self.maybe_handover_backend();
-                if mode == ExclusiveMode::Asio {
-                    self.probe_selected_asio_driver(false, false);
+                if let Some(clsid) = auto_clsid {
+                    self.update_settings(|s| s.asio_driver = Some(clsid));
                 }
+                if let Some((clsid, caps)) = probed {
+                    self.apply_probed_asio_caps(clsid, caps);
+                }
+                self.update_settings(|s| s.set_exclusive_mode(mode));
+                self.sync_engine_asio_target();
+                self.maybe_handover_backend();
+                true
             }
-            Err(e) => self.emit(Event::Notice(format!("切换输出模式失败：{e}"))),
-        }
+            Err(e) => {
+                self.sync_engine_asio_target();
+                if mode == ExclusiveMode::Asio && auto_clsid.is_none() {
+                    self.output.asio_ready = false;
+                    self.output.asio_status = format!("设备未就绪：{e}");
+                }
+                self.emit(Event::Notice(format!("切换输出模式失败：{e}")));
+                false
+            }
+        };
         self.emit(Event::Exclusive(self.settings.exclusive));
         self.emit_output_mode();
-        self.emit_asio_state();
+        if ok && mode == ExclusiveMode::Asio {
+            self.probe_selected_asio_driver(false, false, None);
+        } else {
+            self.emit_asio_state();
+        }
     }
 }
 

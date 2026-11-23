@@ -488,7 +488,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         }));
     });
     let c = commander.clone();
-    window.on_settings_opened(move || c.send(Command::RefreshAudioDevices));
+    window.on_settings_opened(move || c.send(Command::RefreshAudioSettings));
     let c = commander.clone();
     let weak = window.as_weak();
     window.on_audio_device_selected(move |index| {
