@@ -1,4 +1,5 @@
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import { GridId, TrackListId } from "ids.slint";
 import {
     GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, SearchField, Tab,
 } from "controls.slint";
@@ -448,9 +449,9 @@ export component SearchPage inherits VerticalLayout {
     in property <[AlbumRow]> album-rows;
     in property <[TrackRow]> track-rows;
     in property <[AlbumRow]> composer-rows;
-    callback card-layout-changed(int, int, length);
-    callback card-action(int, string, int, int);
-    callback track-action(int, string, int, int);
+    callback card-layout-changed(GridId, int, length);
+    callback card-action(GridId, string, int, int);
+    callback track-action(TrackListId, string, int, int);
 
     property <length> pad: Shell.pad;
     property <length> content-w: max(200px, root.width - 2 * root.pad);
@@ -1001,10 +1002,10 @@ export component SearchPage inherits VerticalLayout {
         empty-text: "没有找到歌手";
         playlists: root.playlists;
         layout-changed(n, size) => {
-            root.card-layout-changed(4, n, size);
+            root.card-layout-changed(GridId.search-artists, n, size);
         }
         action(what, id, arg) => {
-            root.card-action(4, what, id, arg);
+            root.card-action(GridId.search-artists, what, id, arg);
         }
     }
     if SearchState.active-query != "" && SearchState.tab == 2: CardGrid {
@@ -1016,10 +1017,10 @@ export component SearchPage inherits VerticalLayout {
         empty-text: "没有找到专辑";
         playlists: root.playlists;
         layout-changed(n, size) => {
-            root.card-layout-changed(5, n, size);
+            root.card-layout-changed(GridId.search-albums, n, size);
         }
         action(what, id, arg) => {
-            root.card-action(5, what, id, arg);
+            root.card-action(GridId.search-albums, what, id, arg);
         }
     }
     if SearchState.active-query != "" && SearchState.tab == 3: TrackList {
@@ -1032,7 +1033,7 @@ export component SearchPage inherits VerticalLayout {
         playing-id: root.playing-id;
         playlists: root.playlists;
         action(what, i, arg) => {
-            root.track-action(3, what, i, arg);
+            root.track-action(TrackListId.search, what, i, arg);
         }
     }
     if SearchState.active-query != "" && SearchState.tab == 4: CardGrid {
@@ -1044,10 +1045,10 @@ export component SearchPage inherits VerticalLayout {
         empty-text: "没有找到作曲家";
         playlists: root.playlists;
         layout-changed(n, size) => {
-            root.card-layout-changed(23, n, size);
+            root.card-layout-changed(GridId.search-composers, n, size);
         }
         action(what, id, arg) => {
-            root.card-action(23, what, id, arg);
+            root.card-action(GridId.search-composers, what, id, arg);
         }
     }
 }

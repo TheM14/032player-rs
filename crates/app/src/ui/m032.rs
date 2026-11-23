@@ -15,11 +15,11 @@ use super::{Route, Ui, int, track_row};
 use crate::cards::{Card, image_key, physical_box};
 use crate::{
     AlbumWorkRow, AppWindow, FactRow, Home, HomeRow, HomeStats, Lib032, LyricLine, LyricsResult,
-    LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, SeriesInfo, SeriesPane, WorkInfo,
-    WorkUseRow, YearBar,
+    LyricsSearch, MixInfo, MixTag, NamedItem, PersonRow, SeriesInfo, SeriesPane, TrackListId,
+    WorkInfo, WorkUseRow, YearBar,
 };
 
-/// Card grids of the 032 pages (see app.slint).
+/// Card grids of the 032 pages (see `ids.slint`).
 pub(super) const GRID_WORKS: usize = 8;
 pub(super) const GRID_SERIES: usize = 9;
 pub(super) const GRID_HOME_WORKS: usize = 10;
@@ -36,32 +36,11 @@ pub(super) const PAGE_WORKS: i32 = 21;
 pub(super) const PAGE_SERIES: i32 = 22;
 pub(super) const PAGE_HISTORY: i32 = 23;
 
-/// Track list ids of app.slint.
-pub(super) fn track_list(id: i32) -> TrackList {
-    match id {
-        1 => TrackList::Favorites,
-        2 => TrackList::Detail,
-        3 => TrackList::Search,
-        4 => TrackList::Spotlight(SpotlightTab::Recent),
-        5 => TrackList::Spotlight(SpotlightTab::Listening),
-        6 => TrackList::Spotlight(SpotlightTab::Random),
-        7 => TrackList::HomeResume,
-        8 => TrackList::HomeRecent,
-        9 => TrackList::HomeSongs,
-        10 => TrackList::History,
-        11 => TrackList::Related,
-        12 => TrackList::ArtistFavorites,
-        13 => TrackList::SearchPreview,
-        14 => TrackList::ArtistCredits,
-        _ => TrackList::Library,
-    }
-}
-
-fn spotlight_list(tab: SpotlightTab) -> i32 {
+fn spotlight_list(tab: SpotlightTab) -> TrackListId {
     match tab {
-        SpotlightTab::Listening => 5,
-        SpotlightTab::Random => 6,
-        _ => 4,
+        SpotlightTab::Listening => TrackListId::SpotlightListening,
+        SpotlightTab::Random => TrackListId::SpotlightRandom,
+        _ => TrackListId::SpotlightRecent,
     }
 }
 

@@ -1,5 +1,6 @@
 //! Window-local shortcuts. Bubble handling lets focused editors consume typing first.
 use super::*;
+use client_core::Settings;
 use client_core::shortcuts::{ACTIONS, Shortcuts};
 
 fn key_name(e: &slint::language::KeyEvent) -> Option<String> {

@@ -1,5 +1,6 @@
 import { ComboBox, ScrollView } from "std-widgets.slint";
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import { DetailKind, GridId } from "ids.slint";
 import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
     BigTitle, RoundIconButton,
@@ -22,7 +23,7 @@ export struct ListQuery {
 export struct ReleaseGroupRow {
     title: string,
     count: int,
-    grid: int,
+    grid: GridId,
     rows: [AlbumRow],
 }
 
@@ -71,7 +72,7 @@ export struct FactRow {
 export struct DetailInfo {
     // Small text above the title ("专辑", "单曲", ...); empty: by kind.
     kicker: string,
-    kind: int,
+    kind: DetailKind,
     id: int,
     title: string,
     subtitle: string,
@@ -390,13 +391,13 @@ export component DetailHeader inherits Rectangle {
     callback action(string, int);
     property <length> pad: Shell.pad;
     property <length> art: round(Shell.detail-art / 1phx) * 1phx;
-    property <bool> adaptive: root.info.kind != 1;
+    property <bool> adaptive: root.info.kind != DetailKind.artist;
     property <length> art-w: root.adaptive ? ArtFit.width(root.art, root.art, root.cover) : root.art;
     property <length> art-h: root.adaptive ? ArtFit.height(root.art, root.art, root.cover) : root.art;
     property <length> gap: Shell.tier == 2 ? 48px : Shell.tier == 1 ? 36px : 28px;
     property <length> top: Shell.tier == 2 ? 56px : 44px;
     property <length> bottom: Shell.tier == 2 ? 40px : 28px;
-    property <string> kicker: root.info.kicker != "" ? root.info.kicker : root.info.kind == 0 ? "专辑" : root.info.kind == 1 ? "艺人" : root.info.kind == 2 ? "歌单" : "相似歌曲";
+    property <string> kicker: root.info.kicker != "" ? root.info.kicker : root.info.kind == DetailKind.album ? "专辑" : root.info.kind == DetailKind.artist ? "艺人" : root.info.kind == DetailKind.playlist ? "歌单" : "相似歌曲";
     height: max(root.art-h, info-col.preferred-height) + root.top + root.bottom;
 
     HorizontalLayout {
@@ -410,14 +411,14 @@ export component DetailHeader inherits Rectangle {
             width: root.art-w;
             height: root.art-h;
             y: (parent.height - self.height) / 2;
-            border-radius: root.info.kind == 1 ? root.art / 2 : 0px;
+            border-radius: root.info.kind == DetailKind.artist ? root.art / 2 : 0px;
             background: root.cover.width == 0 ? Theme.raised : transparent;
             clip: true;
             drop-shadow-blur: 48px;
             drop-shadow-offset-y: 28px;
             drop-shadow-color: #000000b0;
             Rectangle {
-                border-radius: root.info.kind == 1 ? root.art / 2 : 0px;
+                border-radius: root.info.kind == DetailKind.artist ? root.art / 2 : 0px;
                 clip: true;
                 Image {
                     source: root.cover;
@@ -583,7 +584,7 @@ export component DetailHeader inherits Rectangle {
                         }
                     }
                     // The artist's favorite tracks (its "收藏的歌曲").
-                    if root.info.kind == 1 && root.favorite-count > 0: GhostButton {
+                    if root.info.kind == DetailKind.artist && root.favorite-count > 0: GhostButton {
                         height: 40px;
                         text: "播放收藏";
                         has-icon: true;
@@ -592,27 +593,27 @@ export component DetailHeader inherits Rectangle {
                             root.action("play-favorites", 0);
                         }
                     }
-                    if root.info.kind == 0 || root.info.kind == 1: RoundIconButton {
+                    if root.info.kind == DetailKind.album || root.info.kind == DetailKind.artist: RoundIconButton {
                         kind: root.info.favorite ? IconKind.heart : IconKind.heart-outline;
                         active: root.info.favorite;
                         clicked => {
                             root.action("favorite", root.info.favorite ? 0 : 1);
                         }
                     }
-                    if root.info.kind == 3: GhostButton {
+                    if root.info.kind == DetailKind.similar: GhostButton {
                         height: 40px;
                         text: "另存为歌单";
                         clicked => {
                             root.action("new-playlist", 0);
                         }
                     }
-                    if root.info.kind != 2 && root.info.kind != 3: add-button := RoundIconButton {
+                    if root.info.kind != DetailKind.playlist && root.info.kind != DetailKind.similar: add-button := RoundIconButton {
                         kind: IconKind.list-plus;
                         clicked => {
                             add-menu.show();
                         }
                     }
-                    if root.info.kind != 1: RoundIconButton {
+                    if root.info.kind != DetailKind.artist: RoundIconButton {
                         kind: IconKind.more;
                         clicked => {
                             more-menu.show();
@@ -690,25 +691,25 @@ export component DetailHeader inherits Rectangle {
                         root.action("last", 0);
                     }
                 }
-                if root.info.kind == 2: MenuRow {
+                if root.info.kind == DetailKind.playlist: MenuRow {
                     text: "编辑名称和简介";
                     clicked => {
                         root.action("edit", 0);
                     }
                 }
-                if root.info.kind == 2 && root.artwork-upload: MenuRow {
+                if root.info.kind == DetailKind.playlist && root.artwork-upload: MenuRow {
                     text: "更换封面…";
                     clicked => {
                         root.action("artwork", 0);
                     }
                 }
-                if root.info.kind == 2 && root.artwork-upload && root.info.custom-artwork: MenuRow {
+                if root.info.kind == DetailKind.playlist && root.artwork-upload && root.info.custom-artwork: MenuRow {
                     text: "恢复默认封面";
                     clicked => {
                         root.action("artwork-reset", 0);
                     }
                 }
-                if root.info.kind == 2: MenuRow {
+                if root.info.kind == DetailKind.playlist: MenuRow {
                     text: "删除歌单";
                     danger: true;
                     clicked => {

@@ -1,0 +1,955 @@
+// 032 pages: home, works, series, daily mixes, playback history and the
+// lyrics search dialog. Their data lives in the globals `Home`, `Lib032`
+// and `LyricsSearch`, set from Rust; actions go through the callbacks of
+// the components (forwarded by app.slint) or of the globals.
+
+import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import { GridId, TrackListId } from "ids.slint";
+import { PlayingBars,
+    Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
+    RoundIconButton,
+} from "controls.slint";
+import { ArtistLinks, CreditPart, AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns, ContextMenuEntry, ContextMenuState } from "views.slint";
+import { CardRows, PageHeader } from "library.slint";
+
+// A small row with a cover on the home page (接着听, 最近播放, 主题曲,
+// 今日推荐). `percent` < 0: no progress bar. `link`: the work of a song.
+// `covers`: 2x2 mosaic of a daily mix (four covers, else `cover` is used).
+export struct HomeRow {
+    index: int,
+    id: int,
+    title: string,
+    subtitle: string,
+    cover: image,
+    album-id: int,
+    artist-id: int,
+    artists: [CreditPart],
+    favorite: bool,
+    tag: string,
+    tag-accent: bool,
+    link: string,
+    link-id: int,
+    note: string,
+    percent: int,
+    duration: string,
+    dimmed: bool,
+    covers: [image],
+}
+
+// An album tab of the spotlight. `tab`: 0 recent, 1 listening, 3 random;
+// `list`: track list id of its preview tracks.
+export struct AlbumPane {
+    tab: int,
+    list: TrackListId,
+    album-id: int,
+    title: string,
+    artist: string,
+    artist-id: int,
+    artists: [CreditPart],
+    facts: string,
+    spec: string,
+    note: string,
+    resume: string,
+    more: string,
+    favorite: bool,
+    cover: image,
+    track-count: int,
+}
+
+export struct SeriesPane {
+    is-series: bool,
+    series-id: int,
+    first-work-id: int,
+    title: string,
+    by: string,
+    facts: string,
+    album-count: int,
+}
+
+export struct NamedItem {
+    id: int,
+    title: string,
+    meta: string,
+    year: string,
+    cover: image,
+}
+
+export struct YearBar {
+    year: int,
+    count: int,
+    height: int,
+}
+
+export struct HomeStats {
+    albums: int,
+    tracks: int,
+    works: int,
+    last-scan: string,
+    pending: int,
+}
+
+export struct WorkInfo {
+    id: int,
+    title: string,
+    translated: string,
+    reading: string,
+    facts: string,
+    bangumi-url: string,
+    series-id: int,
+    series-title: string,
+    series-meta: string,
+    album-count: int,
+    collected: int,
+}
+
+export struct SeriesInfo {
+    id: int,
+    title: string,
+    renamed: bool,
+    facts: string,
+    member-count: int,
+    album-count: int,
+    playing: bool,
+}
+
+export struct MixTag {
+    label: string,
+    style: bool,
+}
+
+export struct MixInfo {
+    id: int,
+    title: string,
+    description: string,
+    kicker: string,
+    subtitle: string,
+    // 1 like, -1 dislike.
+    rating: int,
+    disliked-note: string,
+    current: bool,
+    replacements-left: int,
+    saved-playlist-id: int,
+    track-count: int,
+}
+
+export struct LyricsResult {
+    title: string,
+    artist: string,
+    meta: string,
+    score: string,
+}
+
+// The 032 home.
+export global Home {
+    in property <bool> loading: true;
+    // The server has no home endpoint.
+    in property <bool> unavailable;
+    in property <bool> empty;
+    // Spotlight: tab labels and ids (0 recent, 1 listening, 2 series, 3 random).
+    in property <[string]> tab-labels;
+    in property <[int]> tab-ids;
+    in property <int> tab;
+    in property <AlbumPane> pane;
+    in property <[TrackRow]> pane-tracks;
+    in property <SeriesPane> series;
+    in property <[image]> series-fan;
+    // Spotlight cover size (logical), set by the page; `action("hero-art")`
+    // reloads the art at a new size.
+    in-out property <length> hero-art: 220px;
+    in property <[NamedItem]> series-works;
+    in property <[NamedItem]> series-albums;
+    in property <[HomeRow]> mixes;
+    in property <bool> mixes-generating;
+    in property <[HomeRow]> recent;
+    in property <[HomeRow]> resume;
+    in property <[AlbumRow]> recent-albums;
+    in property <[AlbumRow]> works;
+    in property <int> works-count;
+    in property <int> works-pages;
+    // 0 all, 1 anime, 2 game, 3 movie.
+    in property <int> works-type;
+    in property <int> works-reset-seq;
+    in property <[HomeRow]> songs;
+    in property <int> songs-count;
+    in property <int> songs-pages;
+    in property <[YearBar]> years;
+    in property <int> year;
+    in property <int> year-index: -1;
+    in property <int> year-total;
+    in property <[AlbumRow]> chronicle;
+    in property <int> chronicle-reset-seq;
+    in property <[AlbumRow]> playlists;
+    in property <HomeStats> stats;
+    callback tab-selected(int);
+    // play-pane, append-pane, resume, favorite, reroll, open-album,
+    // play-series, open-series, works-type (type), works-next, songs-next,
+    // year (year), year-all, mix-play (id), mix-open (id)
+    callback action(string, int);
+}
+
+// The works, series, history and 032 detail pages.
+export global Lib032 {
+    in property <[AlbumRow]> works;
+    in property <int> works-total;
+    in property <bool> works-loading;
+    in property <[string]> work-types: ["全部类型", "动画", "电视剧", "电影", "游戏", "广告", "其他"];
+    callback query-works(string, int, int);
+    in property <[AlbumRow]> series;
+    in property <int> series-total;
+    in property <bool> series-loading;
+    in property <bool> series-supported: true;
+    callback query-series(string);
+    in property <[TrackRow]> history;
+    in property <int> history-total;
+    in property <bool> history-loading;
+    in property <WorkInfo> work;
+    in property <image> work-poster;
+    in property <[AlbumRow]> work-albums;
+    in property <SeriesInfo> series-info;
+    in property <image> series-poster;
+    in property <[AlbumRow]> series-members;
+    in property <[AlbumRow]> series-albums;
+    in property <MixInfo> mix;
+    in property <[image]> mix-covers;
+    in property <[MixTag]> mix-tags;
+    in-out property <[bool]> mix-reasons: [false, false, false, false, false];
+    in property <[HomeRow]> mix-others;
+    // (action, argument) on the open work / series / mix page: play, shuffle,
+    // last, web, bangumi, series, like, dislike, undo, replace, save, saved.
+    callback detail-action(string, int);
+    // Opens a page of the 032 web console in the browser.
+    callback open-web(string);
+}
+
+export global LyricsSearch {
+    in-out property <string> name;
+    in-out property <string> artist;
+    in property <[LyricsResult]> results;
+    in property <bool> searching;
+    in-out property <int> selected: -1;
+    in property <[string]> preview;
+    callback search(string, string);
+    callback select(int);
+    callback apply(int);
+}
+
+export component LinkText inherits Text {
+    callback clicked();
+    in property <bool> enabled: true;
+    color: link-area.has-hover && root.enabled ? Theme.accent : Theme.text-dim;
+    font-size: 13px;
+    vertical-alignment: center;
+    link-area := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component Pill inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent;
+    width: pill-text.preferred-width + 14px;
+    height: 20px;
+    border-radius: 5px;
+    background: root.accent ? Theme.accent-dim : Theme.raised;
+    pill-text := Text {
+        text: root.text;
+        font-family: Fonts.family(self.text);
+        color: root.accent ? Theme.accent-text : Theme.text-dim;
+        font-size: 11.5px;
+        font-weight: 700;
+    }
+}
+
+// "◆ OP": a work use (theme songs, track tags).
+export component UseTag inherits Rectangle {
+    in property <string> text;
+    in property <bool> accent: true;
+    width: use-row.preferred-width;
+    height: 24px;
+    border-radius: 12px;
+    background: root.accent ? Theme.accent-dim : Theme.raised;
+    use-row := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        Text {
+            text: "◆";
+            color: root.accent ? Theme.accent-text : Theme.text-dim;
+            font-size: 9px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            font-family: Fonts.family(self.text);
+            color: root.accent ? Theme.accent-text : Theme.text-dim;
+            font-size: 11.5px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Section title (26 / 780), a faint note, a rule to the right edge, and
+// tools at the end (v3 Editorial `.rule`).
+export component SectionHead inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> count;
+    spacing: 16px;
+    height: 40px;
+    Text {
+        text: root.title;
+        font-family: Fonts.family(self.text);
+        color: Theme.text;
+        font-size: Shell.tier == 2 ? 26px : Shell.tier == 1 ? 22px : 20px;
+        font-weight: 780;
+        letter-spacing: -0.4px;
+        vertical-alignment: center;
+    }
+    if root.count != "": Text {
+        text: root.count;
+        font-family: Fonts.family(self.text);
+        color: Theme.text-faint;
+        font-size: 13px;
+        font-weight: 500;
+        vertical-alignment: center;
+        overflow: elide;
+        max-width: 360px;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+        min-width: 24px;
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+    }
+    @children
+}
+
+// Small segmented choice in a section head (works type).
+export component SegItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    y: (40px - self.height) / 2;
+    height: 28px;
+    width: seg-label.preferred-width + 20px;
+    border-radius: 8px;
+    background: root.selected ? Theme.raised : seg-area.has-hover ? Theme.surface-hover : transparent;
+    seg-label := Text {
+        text: root.text;
+        color: root.selected ? Theme.text : Theme.text-dim;
+        font-size: 13.5px;
+        font-weight: root.selected ? 600 : 400;
+    }
+    seg-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Home "按作品漫游" card: a 2:3 poster beside type · year, the title (three
+// lines), the uses, the series and "收录 N 首". `card.artist` is
+// "动画 · 2023", `card.note` the uses, `card.badge` the series,
+// `card.added` the track count.
+export component WorkCardH inherits Rectangle {
+    in property <AlbumCard> card;
+    // Poster width.
+    in property <length> art: 128px;
+    in property <length> card-width: 294px;
+    callback action(string, int);
+    width: root.card-width;
+    height: root.art * 1.5 + 24px;
+    border-radius: 12px;
+    background: area.has-hover ? Theme.surface-hover : Theme.surface;
+
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "播放", icon: IconKind.play, what: "play" },
+                { kind: 1 },
+                { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+            ],
+            [],
+        );
+    }
+
+    area := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+        clicked => {
+            root.action("open", 0);
+        }
+    }
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 16px;
+        Rectangle {
+            width: root.art;
+            height: root.art * 1.5;
+            border-radius: 6px;
+            background: Theme.raised;
+            drop-shadow-blur: 18px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #00000055;
+            Rectangle {
+                border-radius: 6px;
+                clip: true;
+                if root.card.cover.width == 0: Text {
+                    text: "作";
+                    color: Theme.text-faint;
+                    font-size: 22px;
+                }
+                Image {
+                    source: root.card.cover;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
+            }
+            if root.card.playing: Rectangle {
+                x: parent.width - 30px;
+                y: 8px;
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.bg.with-alpha(0.78);
+                PlayingBars {
+                    width: 11px;
+                    height: 11px;
+                }
+            }
+            if area.has-hover: Rectangle {
+                x: parent.width - 42px;
+                y: parent.height - 42px;
+                width: 34px;
+                height: 34px;
+                border-radius: 17px;
+                background: play-area.has-hover ? Theme.accent.brighter(15%) : Theme.accent;
+                Icon {
+                    kind: IconKind.play;
+                    width: 14px;
+                    height: 14px;
+                    color: #ffffff;
+                }
+                play-area := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                    clicked => {
+                        root.action("play", 0);
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 8px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.card.artist;
+                font-family: Fonts.family(self.text);
+                color: Theme.accent-text;
+                font-size: 12.5px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.card.title;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 16.5px;
+                font-weight: 750;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 66px;
+            }
+            if root.card.note != "": HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                Pill {
+                    text: root.card.note;
+                    accent: true;
+                    max-width: root.card-width - root.art - 40px;
+                }
+            }
+            if root.card.badge != "": Text {
+                text: "系列：" + root.card.badge;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 12.5px;
+                overflow: elide;
+            }
+            Rectangle {
+                vertical-stretch: 1;
+            }
+            if root.card.added != "": Text {
+                text: root.card.added;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 12.5px;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// One row of cards that pages sideways with arrow buttons (no nested
+// scrolling inside the page). `kind` 5: horizontal work cards (`size` is
+// the poster width, `card-w` the card width).
+component ShelfArrow inherits Rectangle {
+    in property <bool> left;
+    callback clicked();
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: arrow-area.has-hover ? Theme.surface-hover : Theme.raised;
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 4px;
+    drop-shadow-color: #00000066;
+    Icon {
+        kind: root.left ? IconKind.back : IconKind.chevron-right;
+        width: 18px;
+        height: 18px;
+        color: Theme.text;
+    }
+    arrow-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component CardShelf inherits Rectangle {
+    in property <[AlbumRow]> rows;
+    in property <int> kind;
+    in property <length> size: 150px;
+    in property <length> card-w: 294px;
+    in property <length> side: Shell.pad;
+    in property <length> gap: root.kind == 5 ? 20px : 18px;
+    in property <[PlaylistChoice]> playlists;
+    in property <int> reset-seq: 0;
+    callback layout-changed(length);
+    callback action(string, int, int);
+    property <length> offset: 0px;
+    property <length> content: row.preferred-width;
+    // Cards scroll inside the page padding (clipped at the content edge).
+    property <length> view-w: root.width - 2 * root.side;
+    property <length> max-offset: max(0px, root.content - root.view-w);
+    property <length> art-h: root.kind == 5 ? root.size * 1.5 + 24px : root.kind == 3 || root.kind == 4 ? root.size * 1.5 : root.size;
+    height: root.art-h + (root.kind == 5 ? 12px : 90px);
+    init => {
+        root.layout-changed(root.size);
+    }
+    changed size => {
+        root.layout-changed(root.size);
+    }
+    changed reset-seq => {
+        root.offset = 0px;
+    }
+    changed max-offset => {
+        root.offset = min(root.offset, root.max-offset);
+    }
+    changed width => {
+        root.offset = min(root.offset, root.max-offset);
+    }
+
+    Rectangle {
+        x: root.side;
+        width: root.view-w;
+        clip: true;
+        row := HorizontalLayout {
+            x: -root.offset;
+            width: max(root.view-w, self.preferred-width);
+            spacing: root.gap;
+            alignment: start;
+            animate x { duration: 250ms; easing: ease-out; }
+            for r in root.rows: HorizontalLayout {
+                spacing: root.gap;
+                for card in r.items: HorizontalLayout {
+                    if root.kind == 5: WorkCardH {
+                        card: card;
+                        art: root.size;
+                        card-width: root.card-w;
+                        action(what, arg) => {
+                            root.action(what, card.id, arg);
+                        }
+                    }
+                    if root.kind != 5: CardView {
+                        card: card;
+                        kind: root.kind;
+                        size: root.size;
+                        playlists: root.playlists;
+                        action(what, arg) => {
+                            root.action(what, card.id, arg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.offset > 0: ShelfArrow {
+        x: root.side + 8px;
+        y: (root.art-h - self.height) / 2;
+        left: true;
+        clicked => {
+            root.offset = max(0px, root.offset - root.view-w * 0.8);
+        }
+    }
+    if root.offset < root.max-offset: ShelfArrow {
+        x: root.width - root.side - 8px - self.width;
+        y: (root.art-h - self.height) / 2;
+        clicked => {
+            root.offset = min(root.max-offset, root.offset + root.view-w * 0.8);
+        }
+    }
+}
+
+export component Cover inherits Rectangle {
+    in property <image> source;
+    in property <string> placeholder: "032";
+    in property <length> radius: 5px;
+    in property <bool> adaptive: true;
+    Rectangle {
+        width: root.adaptive ? ArtFit.width(parent.width, parent.height, root.source) : parent.width;
+        height: root.adaptive ? ArtFit.height(parent.width, parent.height, root.source) : parent.height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: root.radius;
+        background: root.source.width == 0 ? Theme.raised : transparent;
+        clip: true;
+        if root.source.width == 0: Text {
+            text: root.placeholder;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 12px;
+        }
+        Image {
+            source: root.source;
+            width: 100%;
+            height: 100%;
+            image-fit: ImageFit.cover;
+        }
+    }
+}
+
+// A row of 今日推荐 (`mix`), 最近播放, 主题曲 (`item.tag`), or a 接着听 card
+// (`card`). (action, argument): play, album (id), link (id), last, open,
+// and the track menu actions.
+export component HomeRowView inherits Rectangle {
+    in property <HomeRow> item;
+    in property <bool> playing;
+    in property <bool> mix;
+    in property <bool> card;
+    in property <bool> show-add;
+    // Narrow layouts drop the work link and the time column.
+    in property <bool> hide-link;
+    in property <bool> hide-note;
+    in property <[PlaylistChoice]> playlists;
+    callback action(string, int);
+    property <bool> song: root.item.tag != "";
+    property <length> art: root.card ? 84px : root.mix ? (Shell.tier == 0 ? 52px : 64px) : 48px;
+    height: root.card ? 108px : root.mix ? (Shell.tier == 0 ? 66px : 80px) : root.song ? 68px : 64px;
+    border-radius: root.card ? 12px : 0px;
+    background: root.card ? (row-area.has-hover ? Theme.surface-hover : Theme.surface) : row-area.has-hover ? Theme.surface-hover.with-alpha(0.6) : transparent;
+    opacity: root.item.dimmed ? 0.55 : 1;
+
+    property <int> menu-token: 0;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.action(ContextMenuState.fired-what, ContextMenuState.fired-arg);
+        }
+    }
+    function open-menu(wx: length, wy: length) {
+        if !root.mix {
+            root.menu-token = ContextMenuState.show(
+                wx,
+                wy,
+                [
+                    { label: "播放", icon: IconKind.play, what: "play" },
+                    { kind: 1 },
+                    { label: "下一首播放", icon: IconKind.queue, what: "next" },
+                    { label: "添加到队列末尾", icon: IconKind.list-plus, what: "last" },
+                    { kind: 1 },
+                    { kind: 2, label: "添加到歌单", icon: IconKind.plus },
+                    {
+                        label: root.item.favorite ? "取消收藏" : "收藏",
+                        icon: root.item.favorite ? IconKind.heart : IconKind.heart-outline,
+                        what: "favorite",
+                        arg: root.item.favorite ? 0 : 1,
+                        accent-icon: root.item.favorite,
+                    },
+                    { kind: 1 },
+                    { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                    { kind: 1, hidden: root.item.album-id <= 0 && root.item.artist-id <= 0 },
+                    { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.item.album-id, hidden: root.item.album-id <= 0 },
+                    { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.item.artist-id, hidden: root.item.artist-id <= 0 },
+                ],
+                root.playlists,
+            );
+        }
+    }
+
+    row-area := TouchArea {
+        mouse-cursor: root.mix ? pointer : default;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+        clicked => {
+            if root.mix {
+                root.action("open", 0);
+            }
+        }
+        double-clicked => {
+            root.action(root.mix ? "open" : "play", 0);
+        }
+    }
+
+    if !root.card: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        padding: root.card ? 12px : 0px;
+        spacing: root.card ? 16px : root.mix ? 16px : 16px;
+        Rectangle {
+            property <length> img-w: root.item.covers.length < 4 ? ArtFit.width(root.art, root.art, root.item.cover) : root.art;
+            property <length> img-h: root.item.covers.length < 4 ? ArtFit.height(root.art, root.art, root.item.cover) : root.art;
+            width: root.art;
+            height: root.art;
+            y: (parent.height - self.height) / 2;
+            if root.item.covers.length < 4: Cover {
+                radius: root.mix || root.card ? 6px : 5px;
+                source: root.item.cover;
+                placeholder: root.mix ? "♪" : "032";
+            }
+            if root.item.covers.length >= 4: Rectangle {
+                border-radius: 6px;
+                background: Theme.raised;
+                clip: true;
+                for img[i] in root.item.covers: Image {
+                    x: mod(i, 2) * parent.width / 2;
+                    y: floor(i / 2) * parent.height / 2;
+                    width: parent.width / 2;
+                    height: parent.height / 2;
+                    source: img;
+                    image-fit: ImageFit.cover;
+                }
+            }
+            Rectangle {
+                width: parent.img-w;
+                height: parent.img-h;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                if !root.card: Rectangle {
+                    border-radius: 5px;
+                    background: art-area.has-hover || root.playing ? #0000008c : transparent;
+                    if root.playing && !art-area.has-hover: PlayingBars {
+                        width: 16px;
+                        height: 14px;
+                        bar-color: #ffffff;
+                    }
+                    Icon {
+                        visible: art-area.has-hover;
+                        kind: IconKind.play;
+                        width: 16px;
+                        height: 16px;
+                        color: #ffffff;
+                    }
+                }
+                // 接着听: a white play button on the cover.
+                if root.card: Rectangle {
+                    x: parent.width - 36px;
+                    y: parent.height - 36px;
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 15px;
+                    background: art-area.has-hover ? #ffffff : #ffffffeb;
+                    if root.playing: PlayingBars {
+                        width: 12px;
+                        height: 11px;
+                    }
+                    if !root.playing: Icon {
+                        kind: IconKind.play;
+                        width: 13px;
+                        height: 13px;
+                        color: #111113;
+                    }
+                }
+                art-area := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                    clicked => {
+                        root.action("play", 0);
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: root.mix ? 4px : 3px;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            Text {
+                text: root.item.title;
+                font-family: Fonts.family(self.text);
+                color: root.playing ? Theme.accent-text : Theme.text;
+                font-size: root.card ? 15.5px : root.mix ? (Shell.tier == 0 ? 14.5px : 16px) : 15px;
+                font-weight: root.card || root.mix ? 650 : 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.item.subtitle;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: root.mix ? 13.5px : 13px;
+                overflow: elide;
+            }
+            if root.item.percent >= 0: HorizontalLayout {
+                padding-top: root.card ? 9px : 2px;
+                spacing: 10px;
+                Rectangle {
+                    height: 3px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 2px;
+                    background: Theme.raised;
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * min(100, root.item.percent) / 100;
+                        border-radius: 2px;
+                        background: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.item.duration;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    font-weight: 500;
+                }
+            }
+        }
+        if root.song: VerticalLayout {
+            alignment: center;
+            UseTag {
+                text: root.item.tag;
+                accent: root.item.tag-accent;
+            }
+        }
+        if root.item.link != "" && !root.hide-link: Rectangle {
+            width: 240px;
+            Text {
+                x: 0;
+                width: min(self.preferred-width, parent.width);
+                text: root.item.link;
+                font-family: Fonts.family(self.text);
+                color: link-area.has-hover ? Theme.text : Theme.text-dim;
+                font-size: 13.5px;
+                overflow: elide;
+                vertical-alignment: center;
+                link-area := TouchArea {
+                    mouse-cursor: pointer;
+                    pointer-event(e) => {
+                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                            root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                    clicked => {
+                        root.action("link", root.item.link-id);
+                    }
+                }
+            }
+        }
+        if !root.card && !root.mix && !root.song && !root.hide-note && (root.item.note != "" || root.playing): Text {
+            text: root.playing ? "正在播放" : root.item.note;
+            font-family: Fonts.family(self.text);
+            color: root.playing ? Theme.accent-text : Theme.text-faint;
+            font-size: 13px;
+            font-weight: 500;
+            width: 100px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        if !root.card && root.item.percent < 0 && root.item.duration != "": Text {
+            text: root.item.duration;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+            width: 48px;
+            horizontal-alignment: right;
+        }
+        if root.show-add: Rectangle {
+            width: 28px;
+            Icon {
+                kind: IconKind.list-plus;
+                width: 18px;
+                height: 18px;
+                color: add-area.has-hover ? Theme.text : Theme.text-faint;
+            }
+            add-area := TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        root.open-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+                clicked => {
+                    root.action("last", 0);
+                }
+            }
+        }
+        if root.mix: Rectangle {
+            width: 24px;
+            Icon {
+                kind: IconKind.chevron-right;
+                width: 18px;
+                height: 18px;
+                color: row-area.has-hover ? Theme.text : Theme.text-faint;
+            }
+        }
+    }
+}
+

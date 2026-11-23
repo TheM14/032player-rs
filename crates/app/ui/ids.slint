@@ -1,0 +1,69 @@
+// Strongly-typed UI identifiers replacing bare integer magic numbers across
+// Slint components and Rust callbacks.
+
+export enum GridId {
+    albums,
+    artists,
+    fav-albums,
+    fav-artists,
+    search-artists,
+    search-albums,
+    releases-0,
+    playlists,
+    works,
+    series,
+    home-works,
+    home-albums,
+    chronicle,
+    home-playlists,
+    work-albums,
+    members,
+    series-albums,
+    releases-1,
+    releases-2,
+    releases-3,
+    releases-4,
+    releases-5,
+    releases-6,
+    search-composers,
+}
+
+export enum TrackListId {
+    library,
+    favorites,
+    detail,
+    search,
+    spotlight-recent,
+    spotlight-listening,
+    spotlight-random,
+    home-resume,
+    home-recent,
+    home-songs,
+    history,
+    related,
+    artist-favorites,
+    search-preview,
+    artist-credits,
+}
+
+export enum DetailKind {
+    album,
+    artist,
+    playlist,
+    similar,
+    work,
+    series,
+    daily-mix,
+    versions,
+}
+
+export enum DialogKind {
+    none,
+    new-playlist,
+    edit-playlist,
+    delete-playlist,
+    clear-history,
+    lyrics-search,
+    track-info,
+    pick-artist,
+}

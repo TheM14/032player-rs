@@ -79,7 +79,7 @@ fn card(i: usize, added: &str) -> Value {
         ("note", s("")),
         ("added", s(added)),
         ("playing", Value::Bool(i == 1)),
-        ("disc-count", n(if i % 4 == 0 { 2.0 } else { 1.0 })),
+        ("disc-count", n(if i.is_multiple_of(4) { 2.0 } else { 1.0 })),
         ("cover", Value::Image(art(c))),
     ])
 }
@@ -612,7 +612,7 @@ fn facts(items: &[(&str, &str)]) -> Value {
 fn detail(title: &str) -> Value {
     st(&[
         ("kicker", s("")),
-        ("kind", n(0.0)),
+        ("kind", super::ev("DetailKind", "album")),
         ("id", n(3.0)),
         ("title", s(title)),
         ("subtitle", s("キタニタツヤ")),
@@ -698,7 +698,7 @@ fn pane_tracks() -> Value {
 fn pane(title: &str) -> Value {
     st(&[
         ("tab", n(0.0)),
-        ("list", n(4.0)),
+        ("list", super::ev("TrackListId", "spotlight-recent")),
         ("album-id", n(3.0)),
         ("title", s(title)),
         ("artist", s("キタニタツヤ")),
@@ -715,7 +715,14 @@ fn pane(title: &str) -> Value {
 }
 
 /// Card layouts reported by the UI: grid -> (columns, most cards).
-type Layouts = Rc<RefCell<HashMap<i32, (usize, usize)>>>;
+type Layouts = Rc<RefCell<HashMap<String, (usize, usize)>>>;
+
+fn grid_arg(args: &[Value], i: usize) -> String {
+    match args.get(i) {
+        Some(Value::EnumerationValue(_, v)) => v.clone(),
+        _ => String::new(),
+    }
+}
 
 #[allow(clippy::cast_possible_truncation)]
 fn int_arg(args: &[Value], i: usize) -> i32 {
@@ -746,9 +753,9 @@ fn fill_grids(inst: &ComponentInstance, layouts: &Layouts) {
     if std::env::var_os("UI_SNAPSHOT_DEBUG").is_some() {
         eprintln!("layouts {:?}", *l);
     }
-    let (cols, _) = l.get(&0).copied().unwrap_or((6, 0));
+    let (cols, _) = l.get("albums").copied().unwrap_or((6, 0));
     set(inst, "album-rows", rows(&album_cards(24), cols, 0));
-    let (cols, max) = l.get(&11).copied().unwrap_or((4, 8));
+    let (cols, max) = l.get("home-albums").copied().unwrap_or((4, 8));
     let max = if max == 0 { cols * 2 } else { max };
     set_g(
         inst,
@@ -992,7 +999,7 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
     let layouts: Layouts = Rc::default();
     let l = layouts.clone();
     inst.set_callback("card-layout-changed", move |args| {
-        let grid = int_arg(args, 0);
+        let grid = grid_arg(args, 0);
         let cols = usize::try_from(int_arg(args, 1).max(1)).unwrap_or(1);
         l.borrow_mut().entry(grid).or_insert((cols, 0)).0 = cols;
         Value::Void
@@ -1000,7 +1007,7 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
     .unwrap();
     let l = layouts.clone();
     inst.set_callback("card-limit-changed", move |args| {
-        let grid = int_arg(args, 0);
+        let grid = grid_arg(args, 0);
         let max = usize::try_from(int_arg(args, 1).max(0)).unwrap_or(0);
         l.borrow_mut().entry(grid).or_insert((1, max)).1 = max;
         Value::Void
@@ -1020,7 +1027,7 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
                 settle(window, size);
                 fill_grids(&inst, &layouts);
             }
-            let cols = layouts.borrow().get(&0).copied().unwrap_or((4, 0)).0;
+            let cols = layouts.borrow().get("albums").copied().unwrap_or((4, 0)).0;
             let mut cards = album_cards(24);
             for (i, card) in cards.iter_mut().take(3).enumerate() {
                 if let Value::Struct(card) = card {
@@ -1045,13 +1052,13 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
     // Exercise both split-button hover regions with actual pointer events.
     if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("play-hover") {
         let size = PhysicalSize::new(1280, 800);
-        for (kind, name) in [(1.0, "artist"), (7.0, "versions")] {
+        for (kind, name) in [("artist", "artist"), ("versions", "versions")] {
             set(&inst, "page", n(10.0));
             let mut info = match detail("須田景凪") {
                 Value::Struct(info) => info,
                 _ => unreachable!(),
             };
-            info.set_field("kind".into(), n(kind));
+            info.set_field("kind".into(), super::ev("DetailKind", kind));
             set(&inst, "detail", Value::Struct(info));
             let base = format!("{out}/{name}-play-idle.png");
             shot(&inst, window, &layouts, size, &base);
@@ -1086,7 +1093,7 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
                     .save(format!("{out}/{name}-play-{state}-detail.png"))
                     .unwrap();
             }
-            if kind == 1.0 {
+            if kind == "artist" {
                 let position = slint::LogicalPosition::new((x + width - 15) as f32, y as f32 + 2.0);
                 let button = slint::platform::PointerEventButton::Left;
                 window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
@@ -1154,7 +1161,7 @@ pub fn run(def: &ComponentDefinition, window: &MinimalSoftwareWindow, out: &str)
             window.set_size(size);
             fill_grids(&inst, &layouts);
         }
-        let cols = layouts.borrow().get(&0).copied().unwrap_or((5, 0)).0;
+        let cols = layouts.borrow().get("albums").copied().unwrap_or((5, 0)).0;
         let mut cards = album_cards(10);
         for (idx, img) in [
             (0, square.clone()),

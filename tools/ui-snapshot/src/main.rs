@@ -341,6 +341,25 @@ fn list_query(sort: f64, desc: bool) -> Value {
     Value::Struct(q)
 }
 
+fn ev(ty: &str, variant: &str) -> Value {
+    Value::EnumerationValue(ty.into(), variant.into())
+}
+
+fn detail_kind(kind: f64) -> Value {
+    let variant = match kind as i32 {
+        0 => "album",
+        1 => "artist",
+        2 => "playlist",
+        3 => "similar",
+        4 => "work",
+        5 => "series",
+        6 => "daily-mix",
+        7 => "versions",
+        _ => "album",
+    };
+    ev("DetailKind", variant)
+}
+
 fn detail(
     kind: f64,
     title: &str,
@@ -351,7 +370,7 @@ fn detail(
 ) -> Value {
     let mut d = Struct::default();
     d.set_field("kicker".into(), s(""));
-    d.set_field("kind".into(), Value::Number(kind));
+    d.set_field("kind".into(), detail_kind(kind));
     d.set_field("id".into(), Value::Number(1.0));
     d.set_field("title".into(), s(title));
     d.set_field("subtitle".into(), s(subtitle));
@@ -592,8 +611,7 @@ fn create(def: &slint_interpreter::ComponentDefinition) -> ComponentInstance {
                     }
                 };
                 Some(
-                    fonts::text_width(&name, size, weight)
-                        + fonts::text_width(&separator, size, 400),
+                    fonts::text_width(name, size, weight) + fonts::text_width(separator, size, 400),
                 )
             })
             .collect()
@@ -956,7 +974,7 @@ fn album_artist_regression(
     let recorded = hits.clone();
     inst.set_callback("card-action", move |args| {
         if let [
-            Value::Number(grid),
+            Value::EnumerationValue(_, grid),
             Value::String(action),
             Value::Number(id),
             Value::Number(arg),
@@ -964,7 +982,7 @@ fn album_artist_regression(
         {
             recorded
                 .borrow_mut()
-                .push((*grid as i32, action.to_string(), *id as i32, *arg as i32));
+                .push((grid.clone(), action.to_string(), *id as i32, *arg as i32));
         }
         Value::Void
     })
@@ -982,12 +1000,12 @@ fn album_artist_regression(
     assert_eq!(
         hits.borrow().as_slice(),
         &[
-            (0, "artist".into(), 2, 5),
-            (0, "artist".into(), 2, 6),
-            (0, "artist".into(), 2, 7),
-            (0, "open".into(), 0, 0),
-            (0, "open".into(), 0, 0),
-            (0, "play".into(), 0, 0),
+            ("albums".into(), "artist".into(), 2, 5),
+            ("albums".into(), "artist".into(), 2, 6),
+            ("albums".into(), "artist".into(), 2, 7),
+            ("albums".into(), "open".into(), 0, 0),
+            ("albums".into(), "open".into(), 0, 0),
+            ("albums".into(), "play".into(), 0, 0),
         ],
         "Album card links, hover popup, cover, title and play button"
     );
@@ -997,7 +1015,7 @@ fn album_artist_regression(
     click(170.0, 700.0, left);
     assert_eq!(
         hits.borrow_mut().pop(),
-        Some((0, "artists".into(), 0, 5)),
+        Some(("albums".into(), "artists".into(), 0, 5)),
         "Right-click on a name must open the album card context menu"
     );
     hits.borrow_mut().clear();
@@ -1059,9 +1077,9 @@ fn album_artist_regression(
     assert_eq!(
         hits.borrow().as_slice(),
         &[
-            (11, "artist".into(), 0, 5),
-            (11, "artist".into(), 2, 6),
-            (12, "artist".into(), 0, 5),
+            ("home-albums".into(), "artist".into(), 0, 5),
+            ("home-albums".into(), "artist".into(), 2, 6),
+            ("chronicle".into(), "artist".into(), 0, 5),
         ],
         "Home recent and chronicle card links and hover popup"
     );
@@ -1114,21 +1132,21 @@ fn main() {
         set(&inst, "np-artists", artists.clone());
         set(&inst, "np-album", s("VA compilation"));
         set(&inst, "page", n(1.0));
-        if let Value::Model(rows) = tracks() {
-            if let Some(Value::Struct(mut row)) = rows.row_data(0) {
-                row.set_field("artist".into(), s("Mori Calliope feat. 常闇トワ"));
-                row.set_field("artists".into(), artists);
-                set(&inst, "tracks", model(vec![Value::Struct(row)]));
-            }
+        if let Value::Model(rows) = tracks()
+            && let Some(Value::Struct(mut row)) = rows.row_data(0)
+        {
+            row.set_field("artist".into(), s("Mori Calliope feat. 常闇トワ"));
+            row.set_field("artists".into(), artists);
+            set(&inst, "tracks", model(vec![Value::Struct(row)]));
         }
         render(&window, size, &format!("{out}/multi-artists.png"));
         let clicks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let recorded = clicks.clone();
         inst.set_callback("track-action", move |args| {
-            if let [_, Value::String(action), _, Value::Number(id)] = args {
-                if action == "artist" {
-                    recorded.borrow_mut().push(*id as i32);
-                }
+            if let [_, Value::String(action), _, Value::Number(id)] = args
+                && action == "artist"
+            {
+                recorded.borrow_mut().push(*id as i32);
             }
             Value::Void
         })
@@ -1852,7 +1870,7 @@ fn main() {
                 st(&[
                     ("title", s(title)),
                     ("count", n(*count as f64)),
-                    ("grid", n(i as f64)),
+                    ("grid", ev("GridId", &format!("releases-{i}"))),
                     ("rows", album_rows_n(5, *count)),
                 ])
             })
@@ -1949,7 +1967,7 @@ fn main() {
         model(vec![st(&[
             ("title", s("幕后参与")),
             ("count", n(2.0)),
-            ("grid", n(0.0)),
+            ("grid", ev("GridId", "releases-0")),
             ("rows", album_rows_n(5, 2)),
         ])]),
     );
@@ -1963,18 +1981,18 @@ fn main() {
         use slint::LogicalPosition;
         use slint::platform::{PointerEventButton, WindowEvent};
 
-        let clicked_row = Rc::new(std::cell::Cell::new(None));
+        let clicked_row = Rc::new(std::cell::RefCell::new(None));
         let recorded = clicked_row.clone();
         inst.set_callback("track-action", move |args| {
             if let [
-                Value::Number(list),
+                Value::EnumerationValue(_, list),
                 Value::String(action),
                 Value::Number(index),
                 _,
             ] = args
                 && action == "favorite"
             {
-                recorded.set(Some((*list, *index)));
+                *recorded.borrow_mut() = Some((list.clone(), *index));
             }
             Value::Void
         })
@@ -1996,7 +2014,7 @@ fn main() {
             &format!("{out}/artist-credits-page-2.png"),
         );
         click(835.0, 333.0);
-        assert_eq!(clicked_row.get(), Some((14.0, 10.0)));
+        assert_eq!(*clicked_row.borrow(), Some(("artist-credits".into(), 10.0)));
         return;
     }
     set(&inst, "artist-pure-credit", Value::Bool(false));
@@ -2034,11 +2052,11 @@ fn main() {
         "detail",
         detail(2.0, "夜间播放", "", "40 首 · 2 小时 41 分钟", "", "客厅"),
     );
-    set(&inst, "dialog", Value::Number(2.0));
+    set(&inst, "dialog", ev("DialogKind", "edit-playlist"));
     set(&inst, "dialog-name", s("夜间播放"));
     set(&inst, "dialog-description", s("客厅"));
     render(&window, size, &format!("{out}/playlist.png"));
-    set(&inst, "dialog", Value::Number(0.0));
+    set(&inst, "dialog", ev("DialogKind", "none"));
 
     set(&inst, "page", Value::Number(2.0));
     set(&inst, "notice", s(""));
@@ -2124,9 +2142,9 @@ fn main() {
             .collect(),
         ),
     );
-    set(&inst, "dialog", n(6.0));
+    set(&inst, "dialog", ev("DialogKind", "track-info"));
     render(&window, size, &format!("{out}/track-info.png"));
-    set(&inst, "dialog", n(0.0));
+    set(&inst, "dialog", ev("DialogKind", "none"));
 
     // 032 home.
     set(&inst, "has-home", Value::Bool(true));
@@ -2152,7 +2170,7 @@ fn main() {
         "pane",
         st(&[
             ("tab", n(1.0)),
-            ("list", n(5.0)),
+            ("list", ev("TrackListId", "spotlight-listening")),
             ("album-id", n(3.0)),
             ("title", s("BanG Dream! It's MyGO!!!!! ORIGINAL SOUNDTRACK")),
             ("artist", s("MyGO!!!!!")),
@@ -2505,11 +2523,11 @@ fn main() {
     );
     set_g(&inst, "LyricsSearch", "selected", n(0.0));
     set_g(&inst, "LyricsSearch", "preview", lyrics_strings());
-    set(&inst, "dialog", n(5.0));
+    set(&inst, "dialog", ev("DialogKind", "lyrics-search"));
     render(&window, size, &format!("{out}/lyrics-search.png"));
 
     // Sonos output: the chip in the player bar, then the 投放 menu.
-    set(&inst, "dialog", n(0.0));
+    set(&inst, "dialog", ev("DialogKind", "none"));
     set(&inst, "page", n(0.0));
     let room = |id: &str, name: &str, detail: &str| {
         st(&[("id", s(id)), ("name", s(name)), ("detail", s(detail))])
@@ -2549,7 +2567,7 @@ fn main() {
     set_g(&inst, "CastState", "output-label", s(""));
 
     // 032 Light.
-    set(&inst, "dialog", n(0.0));
+    set(&inst, "dialog", ev("DialogKind", "none"));
     set(&inst, "theme-mode", n(2.0));
     set(&inst, "page", n(0.0));
     set(&inst, "panel-open", Value::Bool(true));

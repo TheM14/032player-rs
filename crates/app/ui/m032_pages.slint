@@ -1,0 +1,1115 @@
+import { ComboBox, CheckBox, ListView } from "std-widgets.slint";
+import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import { GridId, TrackListId } from "ids.slint";
+import {
+    Playback, PlayingBars, Field, PrimaryButton, IconButton, IconKind, Icon, SearchField,
+    GhostButton, Tab, BigTitle, RoundIconButton,
+} from "controls.slint";
+import {
+    ArtistLinks, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList,
+    ContextMenuEntry, ContextMenuState,
+} from "views.slint";
+import { CardRows, PageHeader } from "library.slint";
+import {
+    Home, Lib032, LyricsSearch, LinkText, Pill, SectionHead, UseTag, HomeRowView, Cover,
+} from "m032_shared.slint";
+
+// Virtualized poster / card grid with an empty hint.
+component CardGridPoster inherits Rectangle {
+    in property <[AlbumRow]> rows;
+    in-out property <length> scroll-y;
+    in property <int> kind;
+    in property <[PlaylistChoice]> playlists;
+    in property <string> empty-text;
+    in property <string> empty-hint;
+    in property <bool> loading;
+    callback layout-changed(int, length);
+    callback action(string, int, int);
+    property <length> pad: Shell.pad;
+    property <length> gap: Shell.tier == 2 ? 26px : 22px;
+    property <length> row-gap: Shell.tier == 2 ? 36px : 28px;
+    out property <int> columns: max(1, floor((self.width - 2 * root.pad + root.gap) / (160px + root.gap)));
+    // Whole physical pixels, so covers decoded at this size draw 1:1.
+    out property <length> card-size: floor(((self.width - 2 * root.pad - (root.columns - 1) * root.gap) / root.columns) / 1phx) * 1phx;
+    changed card-size => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+    init => {
+        root.layout-changed(root.columns, root.card-size);
+    }
+
+    if root.rows.length == 0: VerticalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text {
+            text: root.loading ? "加载中…" : root.empty-text;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            horizontal-alignment: center;
+        }
+        if !root.loading && root.empty-hint != "": Text {
+            text: root.empty-hint;
+            font-family: Fonts.family(self.text);
+            color: Theme.text-faint;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+    }
+
+    ListView {
+        content-y <=> root.scroll-y;
+        for row in root.rows: HorizontalLayout {
+            padding-left: root.pad;
+            padding-right: root.pad;
+            spacing: root.gap;
+            alignment: start;
+            height: (root.kind == 3 || root.kind == 4 ? root.card-size * 1.5 : root.card-size) + 91px + root.row-gap;
+            for card in row.items: CardView {
+                card: card;
+                kind: root.kind;
+                size: root.card-size;
+                playlists: root.playlists;
+                action(what, arg) => {
+                    root.action(what, card.id, arg);
+                }
+            }
+        }
+    }
+}
+
+// Works page: search, type and sort, a poster grid (grid 8).
+export component WorksPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    property <string> search;
+    property <int> kind;
+    property <int> sort;
+    function commit() {
+        root.scroll-y = 0px;
+        Lib032.query-works(root.search, root.kind, root.sort);
+    }
+
+    debounce := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.commit();
+        }
+    }
+
+    PageHeader {
+        title: "作品";
+        count: Lib032.works-total > 0 ? Lib032.works-total + " 个作品" : "";
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            height: 40px;
+            SearchField {
+                width: 300px;
+                height: 40px;
+                placeholder: "原文、译名、假名或罗马音…";
+                text <=> root.search;
+                edited => {
+                    debounce.restart();
+                }
+                accepted => {
+                    debounce.running = false;
+                    root.commit();
+                }
+            }
+            ComboBox {
+                width: 150px;
+                height: 40px;
+                model: Lib032.work-types;
+                current-index: root.kind;
+                selected => {
+                    root.kind = self.current-index;
+                    root.commit();
+                }
+            }
+            for label[i] in ["标题", "年份", "最近更新"]: Tab {
+                y: 3px;
+                text: label;
+                selected: root.sort == i;
+                clicked => {
+                    root.sort = i;
+                    root.commit();
+                }
+            }
+        }
+    }
+
+    CardGridPoster {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: Lib032.works;
+        kind: 3;
+        loading: Lib032.works-loading;
+        empty-text: root.search == "" ? "还没有作品" : "没有找到匹配的作品";
+        empty-hint: "扫描含 OP/ED/OST 标签的音乐，或在网页端新建作品。";
+        playlists: root.playlists;
+        layout-changed(n, size) => {
+            root.card-layout(n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(what, id, arg);
+        }
+    }
+}
+
+// Series page: search and a poster grid (grid 9).
+export component SeriesPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    property <string> search;
+
+    debounce := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.scroll-y = 0px;
+            Lib032.query-series(root.search);
+        }
+    }
+
+    PageHeader {
+        title: "系列";
+        count: Lib032.series-total > 0 ? Lib032.series-total + " 个系列" : "";
+        if Lib032.series-supported: HorizontalLayout {
+            alignment: start;
+            height: 40px;
+            SearchField {
+                width: 300px;
+                height: 40px;
+                placeholder: "系列名或成员名…";
+                text <=> root.search;
+                edited => {
+                    debounce.restart();
+                }
+                accepted => {
+                    debounce.running = false;
+                    root.scroll-y = 0px;
+                    Lib032.query-series(root.search);
+                }
+            }
+        }
+    }
+
+    if !Lib032.series-supported: VerticalLayout {
+        alignment: center;
+        spacing: 8px;
+        Text {
+            text: "此服务端暂不支持系列接口";
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "升级 032 服务端，或在网页中管理系列。";
+            color: Theme.text-faint;
+            font-size: 13px;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            GhostButton {
+                text: "在网页中打开";
+                clicked => {
+                    Lib032.open-web("/admin/series");
+                }
+            }
+        }
+    }
+
+    if Lib032.series-supported: CardGridPoster {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: Lib032.series;
+        kind: 4;
+        loading: Lib032.series-loading;
+        empty-text: "没有找到系列";
+        empty-hint: "自动归组或在网页端手动新建后，系列会出现在这里。";
+        layout-changed(n, size) => {
+            root.card-layout(n, size);
+        }
+        action(what, id, arg) => {
+            root.card-action(what, id, arg);
+        }
+    }
+}
+
+// Playback history (track list 10).
+export component HistoryPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
+    in property <int> playing-id;
+    in property <[PlaylistChoice]> playlists;
+    callback track-action(string, int, int);
+    callback clear();
+
+    PageHeader {
+        title: "播放记录";
+        count: Lib032.history-total > 0 ? Lib032.history-total + " 首有播放记录的歌曲" : "";
+        HorizontalLayout {
+            height: 40px;
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if Lib032.history-total > 0: GhostButton {
+                height: 40px;
+                text: "清空播放历史";
+                clicked => {
+                    root.clear();
+                }
+            }
+        }
+    }
+
+    TrackList {
+        vertical-stretch: 1;
+        scroll-y <=> root.scroll-y;
+        rows: Lib032.history;
+        mode: 3;
+        loading: Lib032.history-loading;
+        empty-text: "还没有播放记录";
+        playing-id: root.playing-id;
+        playlists: root.playlists;
+        action(what, i, arg) => {
+            root.track-action(what, i, arg);
+        }
+    }
+}
+
+component DetailHero inherits HorizontalLayout {
+    in property <image> poster;
+    in property <length> poster-w: 160px;
+    in property <length> poster-h: 240px;
+    padding-left: Shell.pad;
+    padding-right: Shell.pad;
+    padding-top: 48px;
+    spacing: 24px;
+    Cover {
+        width: root.poster-w;
+        height: root.poster-h;
+        source: root.poster;
+        placeholder: "作";
+        adaptive: false;
+    }
+    VerticalLayout {
+        alignment: end;
+        spacing: 6px;
+        horizontal-stretch: 1;
+        @children
+    }
+}
+
+// Work page: hero, series banner, linked albums (grid 14) and tracks
+// collected on other albums (track list 2).
+export component WorkPage inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
+    in property <[TrackRow]> tracks;
+    in property <bool> loading;
+    in property <int> playing-id;
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(string, int, int);
+    callback card-layout(int, length);
+    callback card-row-shown(int);
+    callback track-action(string, int, int);
+    callback navigate(int, int);
+    property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
+    content-height: page.preferred-height;
+
+    page := VerticalLayout {
+        width: root.width;
+        alignment: start;
+        spacing: 16px;
+        padding-bottom: 32px;
+
+        DetailHero {
+            poster: Lib032.work-poster;
+            Text {
+                text: "作品";
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
+            Text {
+                text: root.loading && Lib032.work.title == "" ? "加载中…" : Lib032.work.title;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            if Lib032.work.translated != "": Text {
+                text: Lib032.work.translated;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 16px;
+            }
+            if Lib032.work.reading != "": Text {
+                text: Lib032.work.reading;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
+            Text {
+                text: Lib032.work.facts;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+                GhostButton {
+                    text: "在网页中打开";
+                    clicked => {
+                        Lib032.detail-action("web", 0);
+                    }
+                }
+                if Lib032.work.bangumi-url != "": GhostButton {
+                    text: "在 Bangumi 查看 ↗";
+                    clicked => {
+                        Lib032.detail-action("bangumi", 0);
+                    }
+                }
+            }
+        }
+
+        if Lib032.work.series-id > 0: HorizontalLayout {
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
+            Rectangle {
+                height: 52px;
+                border-radius: 10px;
+                background: banner-area.has-hover ? Theme.surface-hover : Theme.surface;
+                banner-area := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.navigate(14, Lib032.work.series-id);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            text: "所属系列";
+                            accent: true;
+                        }
+                    }
+                    Text {
+                        text: Lib032.work.series-title;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: Lib032.work.series-meta;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-dim;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "›";
+                        color: Theme.text-faint;
+                        font-size: 18px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
+            SectionHead {
+                title: "关联专辑";
+                count: Lib032.work.album-count + " 张整张关联专辑";
+            }
+        }
+        if !root.loading && Lib032.work-albums.length == 0: Text {
+            x: Shell.pad;
+            text: "尚无关联专辑";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.work-albums;
+            kind: 0;
+            playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(row);
+            }
+            layout-changed(n, size) => {
+                root.card-layout(n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(what, id, arg);
+            }
+        }
+
+        VerticalLayout {
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
+            spacing: 2px;
+            SectionHead {
+                title: "收录于精选集 / 原创专辑";
+                count: Lib032.work.collected + " 首曲目";
+            }
+            Text {
+                text: "曲目级关联、但专辑本身未整张关联本作品的曲目：";
+                color: Theme.text-faint;
+                font-size: 13px;
+            }
+        }
+        if !root.loading && root.tracks.length == 0: Text {
+            x: Shell.pad;
+            text: "还没有独立收录曲目";
+            color: Theme.text-faint;
+        }
+        for track in root.tracks: TrackRowView {
+            track: track;
+            mode: 0;
+            playing: track.id == root.playing-id;
+            playlists: root.playlists;
+            title-w: root.flex * 0.42;
+            artist-w: root.flex * 0.24;
+            album-w: root.flex * 0.34;
+            action(what, arg) => {
+                root.track-action(what, track.index, arg);
+            }
+        }
+    }
+}
+
+// Series page: hero, members (grid 15) and albums (grid 16).
+export component SeriesDetailPage inherits Flickable {
+    in-out property <length> scroll-y;
+    content-y <=> root.scroll-y;
+    in property <bool> loading;
+    in property <[PlaylistChoice]> playlists;
+    callback card-action(GridId, string, int, int);
+    callback card-layout(GridId, int, length);
+    callback card-row-shown(GridId, int);
+    content-height: page.preferred-height;
+
+    page := VerticalLayout {
+        width: root.width;
+        alignment: start;
+        spacing: 16px;
+        padding-bottom: 32px;
+
+        DetailHero {
+            poster: Lib032.series-poster;
+            Text {
+                text: "系列";
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                if Lib032.series-info.playing: PlayingBars {
+                    width: 18px;
+                    height: 18px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.loading && Lib032.series-info.title == "" ? "加载中…" : Lib032.series-info.title;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text;
+                    font-size: 28px;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                if Lib032.series-info.renamed: VerticalLayout {
+                    alignment: center;
+                    Pill {
+                        text: "已改名";
+                    }
+                }
+            }
+            Text {
+                text: Lib032.series-info.facts;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 13px;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+                GhostButton {
+                    text: "在网页中打开";
+                    clicked => {
+                        Lib032.detail-action("web", 0);
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
+            SectionHead {
+                title: "系列成员";
+                count: Lib032.series-info.member-count + " 部作品";
+            }
+        }
+        if !root.loading && Lib032.series-members.length == 0: Text {
+            x: Shell.pad;
+            text: "该系列暂无成员作品";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.series-members;
+            kind: 3;
+            playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(GridId.members, row);
+            }
+            layout-changed(n, size) => {
+                root.card-layout(GridId.members, n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(GridId.members, what, id, arg);
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Shell.pad;
+            padding-right: Shell.pad;
+            SectionHead {
+                title: "系列专辑";
+                count: Lib032.series-info.album-count + " 张专辑";
+            }
+        }
+        if !root.loading && Lib032.series-albums.length == 0: Text {
+            x: Shell.pad;
+            text: "尚无关联专辑";
+            color: Theme.text-faint;
+        }
+        CardRows {
+            width: root.width;
+            rows: Lib032.series-albums;
+            kind: 0;
+            playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(GridId.series-albums, row);
+            }
+            layout-changed(n, size) => {
+                root.card-layout(GridId.series-albums, n, size);
+            }
+            action(what, id, arg) => {
+                root.card-action(GridId.series-albums, what, id, arg);
+            }
+        }
+    }
+}
+
+// Daily mix page: hero, tracks (track list 2, mode 4) and the feedback
+// column (rating, 换一个, 另存为歌单, today's other mixes).
+export component MixPage inherits VerticalLayout {
+    in-out property <length> scroll-y;
+    in property <[TrackRow]> tracks;
+    in property <bool> loading;
+    in property <int> playing-id;
+    in property <int> playing-mix: -1;
+    in property <[PlaylistChoice]> playlists;
+    callback track-action(string, int, int);
+    callback open-mix(int);
+    callback play-mix(int);
+    property <bool> reasons-open;
+    property <int> mix-id: Lib032.mix.id;
+    changed mix-id => {
+        root.reasons-open = false;
+    }
+    property <image> no-image;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        padding-left: Shell.pad;
+        padding-right: Shell.pad;
+        padding-top: 48px;
+        padding-bottom: 16px;
+        spacing: 24px;
+        Rectangle {
+            width: 180px;
+            height: 180px;
+            border-radius: Theme.radius;
+            background: Lib032.mix-covers.length >= 4 ? Theme.raised : transparent;
+            clip: true;
+            if Lib032.mix-covers.length < 4: Cover {
+                radius: Theme.radius;
+                source: Lib032.mix-covers.length > 0 ? Lib032.mix-covers[0] : root.no-image;
+                placeholder: "♪";
+            }
+            if Lib032.mix-covers.length >= 4: Rectangle {
+                for img[i] in Lib032.mix-covers: Image {
+                    x: mod(i, 2) * 90px;
+                    y: floor(i / 2) * 90px;
+                    width: 90px;
+                    height: 90px;
+                    source: img;
+                    image-fit: ImageFit.cover;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: end;
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: Lib032.mix.kicker;
+                font-family: Fonts.family(self.text);
+                color: Theme.accent;
+                font-size: 13px;
+            }
+            Text {
+                text: root.loading && Lib032.mix.title == "" ? "加载中…" : Lib032.mix.title;
+                font-family: Fonts.family(self.text);
+                color: Theme.text;
+                font-size: 28px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            if Lib032.mix.description != "": Text {
+                text: Lib032.mix.description;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-dim;
+                font-size: 13px;
+                wrap: word-wrap;
+                max-height: 36px;
+                overflow: elide;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                for tag in Lib032.mix-tags: Pill {
+                    text: tag.label;
+                    accent: tag.style;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 6px;
+                PrimaryButton {
+                    text: "播放全部";
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        Lib032.detail-action("play", 0);
+                    }
+                }
+                GhostButton {
+                    text: "随机播放";
+                    has-icon: true;
+                    icon: IconKind.shuffle;
+                    clicked => {
+                        Lib032.detail-action("shuffle", 0);
+                    }
+                }
+                GhostButton {
+                    text: "加入播放队列";
+                    clicked => {
+                        Lib032.detail-action("last", 0);
+                    }
+                }
+            }
+            Text {
+                text: Lib032.mix.subtitle;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 13px;
+            }
+        }
+    }
+
+    HorizontalLayout {
+        vertical-stretch: 1;
+        spacing: 0px;
+        TrackList {
+            width: root.width - 280px;
+            scroll-y <=> root.scroll-y;
+            rows: root.tracks;
+            mode: 4;
+            loading: root.loading;
+            playing-id: root.playing-id;
+            playlists: root.playlists;
+            action(what, i, arg) => {
+                root.track-action(what, i, arg);
+            }
+        }
+        Flickable {
+            width: 280px;
+            content-height: aside.preferred-height;
+            aside := VerticalLayout {
+                width: parent.width;
+                padding-right: 24px;
+                spacing: 16px;
+                alignment: start;
+                Rectangle {
+                    border-radius: 10px;
+                    background: Theme.surface;
+                    height: feedback.preferred-height;
+                    feedback := VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "这个歌单怎么样？";
+                            color: Theme.text;
+                            font-weight: 600;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            GhostButton {
+                                text: "喜欢";
+                                active: Lib032.mix.rating == 1;
+                                clicked => {
+                                    Lib032.detail-action(Lib032.mix.rating == 1 ? "undo" : "like", 0);
+                                }
+                            }
+                            GhostButton {
+                                text: Lib032.mix.rating == -1 ? "不喜欢" : "不喜欢…";
+                                active: Lib032.mix.rating == -1;
+                                clicked => {
+                                    if Lib032.mix.rating == -1 {
+                                        Lib032.detail-action("undo", 0);
+                                    } else {
+                                        root.reasons-open = !root.reasons-open;
+                                    }
+                                }
+                            }
+                        }
+                        if Lib032.mix.disliked-note != "": Text {
+                            text: Lib032.mix.disliked-note;
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.reasons-open && Lib032.mix.rating != -1: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "哪里不满意？（可多选，也可不选）";
+                                color: Theme.text-dim;
+                                font-size: 13px;
+                            }
+                            for label[i] in ["太重复", "不喜欢这个主题", "歌不好听", "风格太跳", "歌和主题不符"]: CheckBox {
+                                text: label;
+                                checked: Lib032.mix-reasons[i];
+                                toggled => {
+                                    Lib032.mix-reasons[i] = self.checked;
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: "提交";
+                                    clicked => {
+                                        root.reasons-open = false;
+                                        Lib032.detail-action("dislike", 0);
+                                    }
+                                }
+                            }
+                        }
+                        if Lib032.mix.current: VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: "换一个";
+                                    enabled: Lib032.mix.replacements-left > 0;
+                                    clicked => {
+                                        Lib032.detail-action("replace", 0);
+                                    }
+                                }
+                            }
+                            Text {
+                                text: Lib032.mix.replacements-left > 0 ? "今天还可以换 " + Lib032.mix.replacements-left + " 次" : "今天的次数已用完";
+                                font-family: Fonts.family(self.text);
+                                color: Theme.text-faint;
+                                font-size: 12px;
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: Lib032.mix.saved-playlist-id > 0 ? "再存一份为歌单" : "另存为歌单";
+                                    clicked => {
+                                        Lib032.detail-action("save", 0);
+                                    }
+                                }
+                            }
+                            if Lib032.mix.saved-playlist-id > 0: HorizontalLayout {
+                                alignment: start;
+                                LinkText {
+                                    text: "查看已保存的歌单";
+                                    clicked => {
+                                        Lib032.detail-action("saved", Lib032.mix.saved-playlist-id);
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: "“不再推荐”和评价从下一次生成开始生效。";
+                            color: Theme.text-faint;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if Lib032.mix-others.length > 0: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "今天的其他推荐";
+                        color: Theme.text;
+                        font-weight: 600;
+                    }
+                    for m in Lib032.mix-others: HomeRowView {
+                        item: m;
+                        mix: true;
+                        playing: m.id == root.playing-mix;
+                        action(what, arg) => {
+                            if what == "play" {
+                                root.play-mix(m.id);
+                            } else {
+                                root.open-mix(m.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Online lyrics search: results on the left, the selected one's lyrics on
+// the right; 确定 uses it for this track on the server.
+export component LyricsSearchDialog inherits Rectangle {
+    callback close();
+    background: #00000099;
+
+    TouchArea { }
+
+    debounce := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+        }
+    }
+
+    Rectangle {
+        width: min(760px, root.width - 64px);
+        height: min(560px, root.height - 64px);
+        border-radius: 12px;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            Text {
+                text: "搜索歌词";
+                color: Theme.text;
+                font-size: 18px;
+                font-weight: 700;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                vertical-stretch: 0;
+                Field {
+                    label: "歌曲名";
+                    text <=> LyricsSearch.name;
+                    edited => {
+                        debounce.restart();
+                    }
+                    accepted => {
+                        debounce.running = false;
+                        LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+                    }
+                }
+                Field {
+                    label: "艺人";
+                    text <=> LyricsSearch.artist;
+                    edited => {
+                        debounce.restart();
+                    }
+                    accepted => {
+                        debounce.running = false;
+                        LyricsSearch.search(LyricsSearch.name, LyricsSearch.artist);
+                    }
+                }
+            }
+            HorizontalLayout {
+                vertical-stretch: 1;
+                spacing: 12px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if LyricsSearch.results.length == 0: Text {
+                        text: LyricsSearch.searching ? "搜索中…" : "没有结果";
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-faint;
+                    }
+                    ListView {
+                        for r[i] in LyricsSearch.results: Rectangle {
+                            height: 62px;
+                            border-radius: Theme.radius;
+                            background: i == LyricsSearch.selected ? Theme.accent-dim : r-area.has-hover ? Theme.surface-hover : transparent;
+                            r-area := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    LyricsSearch.selected = i;
+                                    LyricsSearch.select(i);
+                                }
+                            }
+                            HorizontalLayout {
+                                padding: 8px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    Text {
+                                        text: r.title;
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.artist;
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text-dim;
+                                        font-size: 13px;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.meta;
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text-faint;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                    }
+                                }
+                                Text {
+                                    text: r.score;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-dim;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 280px;
+                    border-radius: Theme.radius;
+                    background: Theme.bg;
+                    if LyricsSearch.preview.length == 0: Text {
+                        text: LyricsSearch.selected < 0 ? "选择一条结果预览歌词" : "加载中…";
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-faint;
+                        font-size: 13px;
+                    }
+                    ListView {
+                        for line in LyricsSearch.preview: Text {
+                            height: 24px;
+                            text: line;
+                            font-family: Fonts.family(self.text);
+                            color: Theme.text-dim;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Text {
+                    text: "选中的歌词会保存到服务端，对所有设备生效。";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                GhostButton {
+                    text: "取消";
+                    clicked => {
+                        root.close();
+                    }
+                }
+                PrimaryButton {
+                    text: "确定";
+                    enabled: LyricsSearch.selected >= 0;
+                    width: 96px;
+                    height: 32px;
+                    clicked => {
+                        LyricsSearch.apply(LyricsSearch.selected);
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}

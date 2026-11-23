@@ -1,0 +1,670 @@
+import { ArtFit, Fonts, Theme } from "theme.slint";
+import { ValueBar, IconButton, IconKind, Icon, CastState } from "controls.slint";
+import { ArtistLayout, ArtistLinks, CreditPart } from "views.slint";
+
+// Player bar button (36px hot area, icon 20; `chip`: a filled pill with a
+// label, for the exclusive / sleep states).
+component BarButton inherits Rectangle {
+    in property <IconKind> icon;
+    in property <string> text;
+    in property <bool> on;
+    in property <bool> chip;
+    in property <bool> enabled: true;
+    in property <length> icon-size: 20px;
+    callback clicked();
+    height: 36px;
+    width: max(36px, bar-row.preferred-width);
+    border-radius: 10px;
+    background: root.chip ? (bar-area.has-hover ? Theme.accent-dim.with-alpha(0.3) : Theme.accent-dim) : bar-area.has-hover ? Theme.surface-hover : transparent;
+    opacity: root.enabled ? 1 : 0.5;
+    bar-row := HorizontalLayout {
+        padding-left: root.text == "" ? 8px : 9px;
+        padding-right: root.text == "" ? 8px : 10px;
+        spacing: 7px;
+        alignment: center;
+        Icon {
+            kind: root.icon;
+            width: root.chip ? 17px : root.icon-size;
+            height: root.chip ? 17px : root.icon-size;
+            y: (parent.height - self.height) / 2;
+            color: root.on || root.chip ? Theme.accent-text : bar-area.has-hover ? Theme.text : Theme.text-dim;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            font-family: Fonts.family(self.text);
+            color: root.on || root.chip ? Theme.accent-text : Theme.text-dim;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+    bar-area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A row of the 投放 menu: this computer or a Sonos room.
+component CastMenuRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> active;
+    in property <IconKind> icon: IconKind.speaker;
+    callback clicked();
+    height: 44px;
+    border-radius: 6px;
+    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Icon {
+            kind: root.active ? IconKind.check : root.icon;
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            color: root.active ? Theme.accent-text : Theme.text-dim;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.name;
+                font-family: Fonts.family(self.text);
+                color: root.active ? Theme.accent-text : Theme.text;
+                font-size: 13.5px;
+                font-weight: root.active ? 600 : 400;
+                overflow: elide;
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+    }
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component BarSep inherits Rectangle {
+    width: 17px;
+    Rectangle {
+        x: 8px;
+        width: 1px;
+        height: 22px;
+        background: Theme.border;
+    }
+}
+
+// Bottom player bar across the window: now playing (left), transport and
+// progress (center, 820 / 600 / 480 wide by `tier`), then [exclusive,
+// cast, sleep] | [lyrics, queue, full screen] | [volume].
+export component PlayerBar inherits Rectangle {
+    in property <bool> has-track;
+    in property <string> title;
+    in property <string> artist;
+    in property <[CreditPart]> artists;
+    in property <string> album;
+    in property <string> quality;
+    in property <image> cover;
+    // The right panel shows the cover: the bar leaves it out (D4).
+    in property <bool> show-cover: true;
+    // Window breakpoint: 2 wide, 1 medium, 0 narrow.
+    in property <int> tier: 2;
+    in property <int> position-ms;
+    in property <int> duration-ms;
+    in property <string> position-text;
+    in property <string> duration-text;
+    in property <bool> paused: true;
+    in property <bool> buffering;
+    in property <float> volume: 100;
+    in property <bool> lyrics-open;
+    in property <bool> queue-open;
+    in property <bool> shuffle;
+    // 0 off, 1 all, 2 one.
+    in property <int> repeat;
+    in property <bool> favorite;
+    callback toggle-favorite();
+    callback open-album();
+    callback open-artist(int);
+    // Exclusive output (WASAPI / ASIO), switchable while playing; `exclusive-busy`
+    // while a change is applied.
+    in property <bool> exclusive;
+    in property <int> exclusive-mode;
+    in property <bool> asio-available;
+    in property <bool> asio-fallback;
+    in property <bool> exclusive-busy;
+    callback toggle-exclusive(bool);
+    callback select-exclusive-mode(int);
+    in property <bool> sleep-active;
+    // Remaining time or the mode, next to the button.
+    in property <string> sleep-label;
+    // (0 off, 1 end of track, 2 end of album, 3 minutes; minutes)
+    callback set-sleep(int, int);
+    callback toggle-pause();
+    callback toggle-queue();
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback next();
+    callback previous();
+    callback seek(int);
+    callback volume-changed(float);
+    callback toggle-lyrics();
+    // The cover and the expand button open / close the full-screen player.
+    in property <bool> full-open;
+    callback toggle-full();
+    property <length> pad: root.tier == 2 ? 24px : root.tier == 1 ? 16px : 14px;
+    // Center column; narrow windows keep about 560px for the sides.
+    property <length> center-w: max(300px, min(root.tier == 2 ? 820px : root.tier == 1 ? 600px : 480px, root.width - 2 * root.pad - 32px - 560px));
+    property <length> side-w: (root.width - 2 * root.pad - 32px - root.center-w) / 2;
+    // The right group: compact when narrow (shorter volume, icon-only chips).
+    property <bool> compact: root.side-w < 460px;
+    property <bool> tight: root.side-w < 300px;
+    height: root.tier == 2 ? 92px : root.tier == 1 ? 84px : 80px;
+    background: Theme.chrome;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+    padding-left: root.pad;
+    padding-right: root.pad;
+    spacing: 16px;
+
+    // Now playing.
+    HorizontalLayout {
+        horizontal-stretch: 1;
+        min-width: 0px;
+        spacing: 14px;
+        alignment: start;
+        if root.show-cover: Rectangle {
+            width: 56px;
+            height: 56px;
+            y: (parent.height - self.height) / 2;
+            Rectangle {
+                width: ArtFit.width(56px, 56px, root.cover);
+                height: ArtFit.height(56px, 56px, root.cover);
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 8px;
+                background: root.cover.width == 0 ? Theme.raised : transparent;
+                clip: true;
+                Image {
+                    source: root.cover;
+                    width: 100%;
+                    height: 100%;
+                    image-fit: ImageFit.cover;
+                }
+                cover-area := TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.toggle-full();
+                    }
+                }
+                if cover-area.has-hover: Rectangle {
+                    background: #00000066;
+                    Icon {
+                        kind: root.full-open ? IconKind.chevron-down : IconKind.expand;
+                        width: 20px;
+                        height: 20px;
+                        color: #ffffff;
+                    }
+                }
+            }
+        }
+
+        // Title with the heart, then the quality tag and "artist · album".
+        VerticalLayout {
+            alignment: center;
+            spacing: 5px;
+            horizontal-stretch: 1;
+            min-width: 0px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 10px;
+                Text {
+                    text: root.has-track ? root.title : "未在播放";
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text;
+                    font-size: 16px;
+                    font-weight: 650;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.has-track: Rectangle {
+                    width: 22px;
+                    Icon {
+                        kind: root.favorite ? IconKind.heart : IconKind.heart-outline;
+                        width: 18px;
+                        height: 18px;
+                        color: root.favorite || fav-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                    }
+                    fav-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.toggle-favorite();
+                        }
+                    }
+                }
+            }
+            if root.has-track: HorizontalLayout {
+                spacing: 10px;
+                if root.quality != "": Rectangle {
+                    horizontal-stretch: 0;
+                    width: quality-text.preferred-width + 14px;
+                    height: 20px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 5px;
+                    background: Theme.raised;
+                    quality-text := Text {
+                        text: root.quality;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text-dim;
+                        font-size: 11.5px;
+                        font-weight: 600;
+                    }
+                }
+                HorizontalLayout {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    alignment: start;
+                    ArtistLinks {
+                        fallback: root.artist;
+                        artists: root.artists;
+                        font-size: 13.5px;
+                        open(id) => { root.open-artist(id); }
+                    }
+                    if root.album != "": Text {
+                        text: " · ";
+                        color: Theme.text-dim;
+                        font-size: 13.5px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    if root.album != "": Text {
+                        text: root.album;
+                        font-family: Fonts.family(self.text);
+                        color: album-area.has-hover ? Theme.text : Theme.text-dim;
+                        font-size: 13.5px;
+                        overflow: elide;
+                        min-width: ArtistLayout.cap-width(root.album, 13.5px, 36px);
+                        vertical-alignment: center;
+                        album-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-album();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Transport + progress.
+    VerticalLayout {
+        horizontal-stretch: 0;
+        width: root.center-w;
+        alignment: center;
+        spacing: 8px;
+        HorizontalLayout {
+            alignment: center;
+            spacing: root.tier == 0 ? 18px : 24px;
+            BarButton {
+                icon: IconKind.shuffle;
+                on: root.shuffle;
+                y: (parent.height - self.height) / 2;
+                clicked => {
+                    root.toggle-shuffle();
+                }
+            }
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                y: (parent.height - self.height) / 2;
+                opacity: root.has-track ? 1 : 0.4;
+                Icon {
+                    kind: IconKind.previous;
+                    width: 24px;
+                    height: 24px;
+                    color: Theme.text;
+                }
+                TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.previous();
+                    }
+                }
+            }
+            Rectangle {
+                width: 46px;
+                height: 46px;
+                border-radius: 23px;
+                background: play-area.pressed ? Theme.text.darker(15%) : Theme.text;
+                opacity: root.has-track ? 1 : 0.5;
+                Icon {
+                    kind: root.paused ? IconKind.play : IconKind.pause;
+                    width: 20px;
+                    height: 20px;
+                    color: Theme.bg;
+                }
+                play-area := TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.toggle-pause();
+                    }
+                }
+            }
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                y: (parent.height - self.height) / 2;
+                opacity: root.has-track ? 1 : 0.4;
+                Icon {
+                    kind: IconKind.next;
+                    width: 24px;
+                    height: 24px;
+                    color: Theme.text;
+                }
+                TouchArea {
+                    enabled: root.has-track;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.next();
+                    }
+                }
+            }
+            BarButton {
+                icon: root.repeat == 2 ? IconKind.repeat-one : IconKind.repeat;
+                on: root.repeat != 0;
+                y: (parent.height - self.height) / 2;
+                clicked => {
+                    root.cycle-repeat();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: seek-bar.dragging ? root.preview-text : root.position-text;
+                width: root.duration-ms >= 3600000 ? 58px : 44px;
+                color: Theme.text-faint;
+                font-size: 12px;
+                font-weight: 500;
+                vertical-alignment: center;
+            }
+            seek-bar := ValueBar {
+                enabled: root.has-track && root.duration-ms > 0;
+                value: root.duration-ms > 0 ? root.position-ms / root.duration-ms : 0;
+                fill: Theme.text;
+                knob: root.has-track && root.duration-ms > 0;
+                live(v) => {
+                    root.preview-ms = v * root.duration-ms;
+                }
+                committed(v) => {
+                    root.seek(v * root.duration-ms);
+                }
+            }
+            Text {
+                text: root.buffering ? "缓冲中" : root.duration-text;
+                width: root.duration-ms >= 3600000 ? 58px : 44px;
+                color: Theme.text-faint;
+                font-size: 12px;
+                font-weight: 500;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // [Exclusive, cast, sleep] | [lyrics, queue, full screen] | [volume].
+    HorizontalLayout {
+        horizontal-stretch: 0;
+        min-width: root.side-w;
+        alignment: end;
+        spacing: 4px;
+        BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.speaker;
+            text: root.tight ? "" : root.exclusive-busy ? "切换中…" : root.exclusive-mode == 2 ? (root.asio-fallback ? "WASAPI" : "ASIO") : "独占";
+            chip: root.exclusive || root.exclusive-mode != 0;
+            enabled: !root.exclusive-busy;
+            clicked => {
+                if root.asio-available {
+                    root.select-exclusive-mode(root.exclusive-mode == 0 ? 1 : root.exclusive-mode == 1 ? 2 : 0);
+                } else {
+                    root.toggle-exclusive(!root.exclusive);
+                }
+            }
+        }
+        // Sonos output: the room's name while playing there.
+        cast-button := BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.cast;
+            text: root.compact ? "" : CastState.output-label;
+            chip: CastState.output-id != "";
+            clicked => {
+                CastState.refresh();
+                cast-menu.show();
+            }
+        }
+        sleep-button := BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.sleep;
+            text: root.sleep-active ? root.sleep-label : "";
+            chip: root.sleep-active;
+            clicked => {
+                sleep-menu.show();
+            }
+        }
+        BarSep { }
+        BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.lyrics;
+            on: root.lyrics-open;
+            clicked => {
+                root.toggle-lyrics();
+            }
+        }
+        BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.queue;
+            on: root.queue-open;
+            clicked => {
+                root.toggle-queue();
+            }
+        }
+        BarButton {
+            y: (parent.height - self.height) / 2;
+            icon: IconKind.expand;
+            on: root.full-open;
+            enabled: root.has-track || root.full-open;
+            clicked => {
+                root.toggle-full();
+            }
+        }
+        if !root.tight: BarSep { }
+        HorizontalLayout {
+            spacing: 10px;
+            padding-left: 4px;
+            Icon {
+                kind: IconKind.volume;
+                width: 20px;
+                height: 20px;
+                y: (parent.height - self.height) / 2;
+                color: Theme.text-dim;
+            }
+            ValueBar {
+                width: root.tight ? 56px : root.compact ? 70px : 110px;
+                y: (parent.height - self.height) / 2;
+                value: root.volume / 100;
+                fill: Theme.text-dim;
+                live(v) => {
+                    root.volume-changed(v * 100);
+                }
+                committed(v) => {
+                    root.volume-changed(v * 100);
+                }
+            }
+        }
+    }
+
+    } // bar layout
+
+    cast-menu := PopupWindow {
+        x: min(cast-button.absolute-position.x - root.absolute-position.x, root.width - 280px);
+        y: -self.height - 10px;
+        width: 270px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                HorizontalLayout {
+                    height: 28px;
+                    padding-left: 10px;
+                    padding-right: 8px;
+                    Text {
+                        text: "播放到";
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: CastState.searching ? "搜索中…" : "重新搜索";
+                        font-family: Fonts.family(self.text);
+                        color: CastState.searching ? Theme.text-faint : refresh-area.has-hover ? Theme.text : Theme.accent-text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        refresh-area := TouchArea {
+                            enabled: !CastState.searching;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                CastState.refresh();
+                            }
+                        }
+                    }
+                }
+                CastMenuRow {
+                    name: "本机";
+                    detail: "mpv 输出（独占 / 输出设备）";
+                    icon: IconKind.volume;
+                    active: CastState.output-id == "";
+                    clicked => {
+                        CastState.select("");
+                        cast-menu.close();
+                    }
+                }
+                for room in CastState.rooms: CastMenuRow {
+                    name: room.name;
+                    detail: room.detail;
+                    icon: IconKind.cast;
+                    active: room.id == CastState.output-id;
+                    clicked => {
+                        CastState.select(room.id);
+                        cast-menu.close();
+                    }
+                }
+                if CastState.hint != "": Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    text: CastState.hint;
+                    font-family: Fonts.family(self.text);
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if CastState.hint != "": Rectangle {
+                    height: 6px;
+                }
+            }
+        }
+    }
+
+    sleep-menu := PopupWindow {
+        x: min(sleep-button.absolute-position.x - root.absolute-position.x, root.width - 190px);
+        y: -self.height - 10px;
+        width: 180px;
+        Rectangle {
+            background: Theme.raised;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border;
+            VerticalLayout {
+                padding: 6px;
+                Text {
+                    text: "睡眠定时";
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    height: 24px;
+                    vertical-alignment: center;
+                    x: 10px;
+                }
+                for option in [
+                    { label: "本曲结束后", mode: 1, minutes: 0 },
+                    { label: "本专辑结束后", mode: 2, minutes: 0 },
+                    { label: "5 分钟", mode: 3, minutes: 5 },
+                    { label: "10 分钟", mode: 3, minutes: 10 },
+                    { label: "15 分钟", mode: 3, minutes: 15 },
+                    { label: "30 分钟", mode: 3, minutes: 30 },
+                    { label: "45 分钟", mode: 3, minutes: 45 },
+                    { label: "1 小时", mode: 3, minutes: 60 },
+                    { label: "2 小时", mode: 3, minutes: 120 },
+                    { label: "3 小时", mode: 3, minutes: 180 },
+                    { label: "4 小时", mode: 3, minutes: 240 },
+                    { label: "关闭定时", mode: 0, minutes: 0 },
+                ]: Rectangle {
+                    visible: option.mode != 0 || root.sleep-active;
+                    height: self.visible ? 30px : 0px;
+                    border-radius: 6px;
+                    background: item-area.has-hover ? Theme.surface-hover : transparent;
+                    Text {
+                        x: 10px;
+                        text: option.label;
+                        font-family: Fonts.family(self.text);
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        height: 100%;
+                    }
+                    item-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.set-sleep(option.mode, option.minutes);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Seek preview while dragging.
+    property <int> preview-ms;
+    property <int> preview-secs: max(0, floor(root.preview-ms / 1000));
+    property <int> preview-h: floor(root.preview-secs / 3600);
+    property <int> preview-m: mod(floor(root.preview-secs / 60), 60);
+    property <int> preview-s: mod(root.preview-secs, 60);
+    property <string> preview-text: root.preview-h > 0
+        ? root.preview-h + ":" + (root.preview-m < 10 ? "0" : "") + root.preview-m + ":" + (root.preview-s < 10 ? "0" : "") + root.preview-s
+        : root.preview-m + ":" + (root.preview-s < 10 ? "0" : "") + root.preview-s;
+}

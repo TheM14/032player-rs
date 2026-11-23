@@ -1,10 +1,12 @@
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
+import { GridId, TrackListId, DetailKind, DialogKind } from "ids.slint";
 import { Palette, ScrollView } from "std-widgets.slint";
 import {
     TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ArtistLinks,
-    ArtistLayout, LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel, PlayerBar,
+    ArtistLayout, LoginView, CardGrid, TrackList, TrackRowView, LyricsPanel, LyricsTools, QueuePanel,
     ContextMenuOverlay, ContextMenuState,
 } from "views.slint";
+import { PlayerBar } from "player_bar.slint";
 import {
     ListQuery, DetailInfo, ListToolbar, PageHeader, CardRows, DetailHeader, ArtistHeader, PromptDialog,
     ConfirmDialog, ReleaseGroupRow, CreditRoleTab, AlbumWorkRow, WorkUseRow, PersonRow, FactRow,
@@ -24,6 +26,7 @@ import {
     SearchState, SearchBestMatch, SearchCompactCard, SearchPreviewTrack, SearchPage,
 } from "search.slint";
 
+export { GridId, TrackListId, DetailKind, DialogKind }
 export { Fonts, Playback, CastState, CastRoomRow, ArtistLayout }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, CreditRoleTab, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
@@ -370,22 +373,15 @@ export component AppWindow inherits Window {
     // The server has /browse (sort direction, random, album year ranges).
     in property <bool> browse;
 
-    // Card grids (`grid` ids): 0 albums, 1 artists, 2 favorite albums,
-    // 3 favorite artists, 4 search artists, 5 search albums, 6 artist
-    // releases, 7 playlists, 8 works, 9 series, 10 home works, 11 home
-    // recent albums, 12 chronicle, 13 home playlists, 14 work albums,
-    // 15 series members, 16 series albums.
-    callback card-layout-changed(int, int, length);
+    callback card-layout-changed(GridId, int, length);
     // (grid, most cards shown; 0: all)
-    callback card-limit-changed(int, int);
+    callback card-limit-changed(GridId, int);
     // (grid, row): a row of a lazy grid scrolled into view.
-    callback card-row-shown(int, int);
+    callback card-row-shown(GridId, int);
     // (grid, action, id, argument)
-    callback card-action(int, string, int, int);
-    // Track lists (`list` ids): 0 tracks page, 1 favorites, 2 detail,
-    // 3 search, 4-6 spotlight tabs (recent, listening, random), 7 接着听,
-    // 8 最近播放, 9 主题曲, 10 history. (list, action, row index, argument)
-    callback track-action(int, string, int, int);
+    callback card-action(GridId, string, int, int);
+    // (list, action, row index, argument)
+    callback track-action(TrackListId, string, int, int);
     in property <[PlaylistChoice]> playlist-choices;
     in property <[CreditPart]> artist-choices;
     callback artist-chosen(int);
@@ -425,8 +421,8 @@ export component AppWindow inherits Window {
     in property <int> track-total;
     in property <bool> tracks-loading;
     callback shuffle-all();
-    // Play a whole track list (`list` ids) in order, or shuffled.
-    callback play-list(int, bool);
+    // Play a whole track list in order, or shuffled.
+    callback play-list(TrackListId, bool);
 
     // Artists.
     in property <[AlbumRow]> artist-rows;
@@ -495,10 +491,8 @@ export component AppWindow inherits Window {
     in property <bool> playlist-artwork;
     callback detail-action(string, int);
 
-    // Dialogs: 0 none, 1 new playlist, 2 edit playlist, 3 delete playlist,
-    // 4 clear playback history, 5 lyrics search, 6 track info.
     in property <[FactRow]> info-rows;
-    in-out property <int> dialog: 0;
+    in-out property <DialogKind> dialog: DialogKind.none;
     in-out property <string> dialog-name;
     in-out property <string> dialog-description;
     in-out property <string> dialog-message;
@@ -749,8 +743,8 @@ export component AppWindow inherits Window {
                 ContextMenuState.close();
                 return accept;
             }
-            if root.dialog != 0 && e.text == Key.Escape {
-                root.dialog = 0;
+            if root.dialog != DialogKind.none && e.text == Key.Escape {
+                root.dialog = DialogKind.none;
                 return accept;
             }
             return reject;
@@ -763,9 +757,9 @@ export component AppWindow inherits Window {
                 }
                 return reject;
             }
-            if root.dialog != 0 {
+            if root.dialog != DialogKind.none {
                 if e.text == Key.Escape {
-                    root.dialog = 0;
+                    root.dialog = DialogKind.none;
                     return accept;
                 }
                 return reject;
@@ -943,7 +937,7 @@ export component AppWindow inherits Window {
                                     width: sidebar.rail ? 50px : sidebar.width - 29px;
                                     height: sidebar.rail ? 50px : 54px;
                                     border-radius: 10px;
-                                    background: root.page == 10 && root.detail.kind == 2 && root.detail.id == p.id ? Theme.raised : p-area.has-hover ? Theme.surface-hover : transparent;
+                                    background: root.page == 10 && root.detail.kind == DetailKind.playlist && root.detail.id == p.id ? Theme.raised : p-area.has-hover ? Theme.surface-hover : transparent;
                                     HorizontalLayout {
                                         padding-left: sidebar.rail ? 4px : 12px;
                                         padding-right: sidebar.rail ? 4px : 12px;
@@ -1119,10 +1113,10 @@ export component AppWindow inherits Window {
                         empty-text: "没有专辑";
                         playlists: root.playlist-choices;
                         layout-changed(n, size) => {
-                            root.card-layout-changed(0, n, size);
+                            root.card-layout-changed(GridId.albums, n, size);
                         }
                         action(what, id, arg) => {
-                            root.card-action(0, what, id, arg);
+                            root.card-action(GridId.albums, what, id, arg);
                         }
                     }
                 }
@@ -1166,7 +1160,7 @@ export component AppWindow inherits Window {
                         playing-id: root.playing-id;
                         playlists: root.playlist-choices;
                         action(what, i, arg) => {
-                            root.track-action(0, what, i, arg);
+                            root.track-action(TrackListId.library, what, i, arg);
                         }
                     }
                 }
@@ -1270,10 +1264,10 @@ export component AppWindow inherits Window {
                             root.query-changed(artists-page.target, root.page == 24 ? root.q-all-artists : root.q-artists);
                         }
                         layout-changed(n, size) => {
-                            root.card-layout-changed(1, n, size);
+                            root.card-layout-changed(GridId.artists, n, size);
                         }
                         action(what, id, arg) => {
-                            root.card-action(1, what, id, arg);
+                            root.card-action(GridId.artists, what, id, arg);
                         }
                     }
                 }
@@ -1308,10 +1302,10 @@ export component AppWindow inherits Window {
                         kind: 2;
                         empty-text: "还没有歌单";
                         layout-changed(n, size) => {
-                            root.card-layout-changed(7, n, size);
+                            root.card-layout-changed(GridId.playlists, n, size);
                         }
                         action(what, id, arg) => {
-                            root.card-action(7, what, id, arg);
+                            root.card-action(GridId.playlists, what, id, arg);
                         }
                     }
                 }
@@ -1359,7 +1353,7 @@ export component AppWindow inherits Window {
                                     has-icon: true;
                                     enabled: root.fav-tracks.length > 0;
                                     clicked => {
-                                        root.play-list(1, false);
+                                        root.play-list(TrackListId.favorites, false);
                                     }
                                 }
                                 GhostButton {
@@ -1369,7 +1363,7 @@ export component AppWindow inherits Window {
                                     icon: IconKind.shuffle;
                                     enabled: root.fav-tracks.length > 0;
                                     clicked => {
-                                        root.play-list(1, true);
+                                        root.play-list(TrackListId.favorites, true);
                                     }
                                 }
                             }
@@ -1431,7 +1425,7 @@ export component AppWindow inherits Window {
                             root.query-changed(5, root.q-fav-tracks);
                         }
                         action(what, i, arg) => {
-                            root.track-action(1, what, i, arg);
+                            root.track-action(TrackListId.favorites, what, i, arg);
                         }
                     }
                     if root.fav-tab == 1: CardGrid {
@@ -1446,10 +1440,10 @@ export component AppWindow inherits Window {
                             root.query-changed(4, root.q-fav-albums);
                         }
                         layout-changed(n, size) => {
-                            root.card-layout-changed(2, n, size);
+                            root.card-layout-changed(GridId.fav-albums, n, size);
                         }
                         action(what, id, arg) => {
-                            root.card-action(2, what, id, arg);
+                            root.card-action(GridId.fav-albums, what, id, arg);
                         }
                     }
                     if root.fav-tab == 2: CardGrid {
@@ -1464,10 +1458,10 @@ export component AppWindow inherits Window {
                             root.query-changed(6, root.q-fav-artists);
                         }
                         layout-changed(n, size) => {
-                            root.card-layout-changed(3, n, size);
+                            root.card-layout-changed(GridId.fav-artists, n, size);
                         }
                         action(what, id, arg) => {
-                            root.card-action(3, what, id, arg);
+                            root.card-action(GridId.fav-artists, what, id, arg);
                         }
                     }
                 }
@@ -1492,10 +1486,10 @@ export component AppWindow inherits Window {
                 }
 
                 // Album, playlist, similar: header and a virtualized list.
-                if root.page == 10 && root.detail.kind != 1 && root.detail.kind < 4: detail-page := VerticalLayout {
+                if root.page == 10 && (root.detail.kind == DetailKind.album || root.detail.kind == DetailKind.playlist || root.detail.kind == DetailKind.similar): detail-page := VerticalLayout {
                     // Album info column (Electron: beside the tracks from
                     // the lg breakpoint); narrower pages switch with tabs.
-                    property <bool> album: root.detail.kind == 0;
+                    property <bool> album: root.detail.kind == DetailKind.album;
                     property <bool> has-info: self.album && (root.album-works.length > 0 || root.album-release.length > 0 || root.album-people.length > 0);
                     property <bool> side: pages.width >= 1100px;
                     property <bool> info-tab;
@@ -1549,14 +1543,14 @@ export component AppWindow inherits Window {
                             width: body.width - (body.show-info ? body.info-w : 0px);
                             height: body.height;
                             rows: root.detail-tracks;
-                            mode: root.detail.kind == 0 ? 1 : root.detail.kind == 2 ? 2 : 0;
-                            multi-disc: root.detail.kind == 0 && root.album-multi-disc;
+                            mode: root.detail.kind == DetailKind.album ? 1 : root.detail.kind == DetailKind.playlist ? 2 : 0;
+                            multi-disc: root.detail.kind == DetailKind.album && root.album-multi-disc;
                             loading: root.detail-loading;
-                            empty-text: root.detail.kind == 2 ? "歌单是空的" : "没有曲目";
+                            empty-text: root.detail.kind == DetailKind.playlist ? "歌单是空的" : "没有曲目";
                             playing-id: root.playing-id;
                             playlists: root.playlist-choices;
                             action(what, i, arg) => {
-                                root.track-action(2, what, i, arg);
+                                root.track-action(TrackListId.detail, what, i, arg);
                             }
                         }
                         if body.show-info: AlbumInspector {
@@ -1580,7 +1574,7 @@ export component AppWindow inherits Window {
                 }
 
                 // Artist: one scrolling page with header, bio/facts, releases and favorites.
-                if root.page == 10 && root.detail.kind == 1: artist-flick := Flickable {
+                if root.page == 10 && root.detail.kind == DetailKind.artist: artist-flick := Flickable {
                     content-y <=> root.content-scroll-y;
                     property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
                     content-height: artist-page.preferred-height;
@@ -1650,10 +1644,10 @@ export component AppWindow inherits Window {
                                 root.artist-credit-role-changed(role);
                             }
                             play-all(shuffle) => {
-                                root.play-list(14, shuffle);
+                                root.play-list(TrackListId.artist-credits, shuffle);
                             }
                             track-action(what, idx, arg) => {
-                                root.track-action(14, what, idx, arg);
+                                root.track-action(TrackListId.artist-credits, what, idx, arg);
                             }
                         }
                         for g[gi] in root.artist-groups: group := VerticalLayout {
@@ -1735,10 +1729,10 @@ export component AppWindow inherits Window {
                             playlists: root.playlist-choices;
                             flex: artist-flick.flex;
                             play-all(shuffle) => {
-                                root.play-list(12, shuffle);
+                                root.play-list(TrackListId.artist-favorites, shuffle);
                             }
                             track-action(what, idx, arg) => {
-                                root.track-action(12, what, idx, arg);
+                                root.track-action(TrackListId.artist-favorites, what, idx, arg);
                             }
                         }
                         if !root.artist-pure-credit && root.artist-credit-roles.length > 0: Rectangle {
@@ -1757,17 +1751,17 @@ export component AppWindow inherits Window {
                                 root.artist-credit-role-changed(role);
                             }
                             play-all(shuffle) => {
-                                root.play-list(14, shuffle);
+                                root.play-list(TrackListId.artist-credits, shuffle);
                             }
                             track-action(what, idx, arg) => {
-                                root.track-action(14, what, idx, arg);
+                                root.track-action(TrackListId.artist-credits, what, idx, arg);
                             }
                         }
                     }
                 }
 
                 // Track versions / recordings (same-title tracks across albums).
-                if root.page == 10 && root.detail.kind == 7: versions-scroll := ScrollView {
+                if root.page == 10 && root.detail.kind == DetailKind.versions: versions-scroll := ScrollView {
                     content-y <=> root.content-scroll-y;
                     VerticalLayout {
                         alignment: start;
@@ -1935,7 +1929,7 @@ export component AppWindow inherits Window {
                                 background: Theme.border;
                             }
                             v-row-area := TouchArea {
-                                double-clicked => { root.track-action(2, "play", track.index, 0); }
+                                double-clicked => { root.track-action(TrackListId.detail, "play", track.index, 0); }
                             }
                             HorizontalLayout {
                                 padding-left: Shell.pad;
@@ -1981,7 +1975,7 @@ export component AppWindow inherits Window {
                                         }
                                         v-cover-area := TouchArea {
                                             mouse-cursor: pointer;
-                                            clicked => { root.track-action(2, "play", track.index, 0); }
+                                            clicked => { root.track-action(TrackListId.detail, "play", track.index, 0); }
                                         }
                                     }
                                 }
@@ -2022,7 +2016,7 @@ export component AppWindow inherits Window {
                                                 fallback: track.artist;
                                                 artists: track.artists;
                                                 font-size: 12.5px;
-                                                open(id) => { root.track-action(2, "artist", track.index, id); }
+                                                open(id) => { root.track-action(TrackListId.detail, "artist", track.index, id); }
                                             }
                                         }
                                         if track.album != "": HorizontalLayout {
@@ -2047,7 +2041,7 @@ export component AppWindow inherits Window {
                                                 v-alb-area := TouchArea {
                                                     enabled: track.album-id > 0;
                                                     mouse-cursor: track.album-id > 0 ? pointer : default;
-                                                    clicked => { root.track-action(2, "album", track.index, track.album-id); }
+                                                    clicked => { root.track-action(TrackListId.detail, "album", track.index, track.album-id); }
                                                 }
                                             }
                                         }
@@ -2070,7 +2064,7 @@ export component AppWindow inherits Window {
                                     }
                                     v-heart-area := TouchArea {
                                         mouse-cursor: pointer;
-                                        clicked => { root.track-action(2, "favorite", track.index, track.favorite ? 0 : 1); }
+                                        clicked => { root.track-action(TrackListId.detail, "favorite", track.index, track.favorite ? 0 : 1); }
                                     }
                                 }
                             }
@@ -2107,20 +2101,20 @@ export component AppWindow inherits Window {
                     scroll-y <=> root.content-scroll-y;
                     playlists: root.playlist-choices;
                     card-action(what, id, arg) => {
-                        root.card-action(8, what, id, arg);
+                        root.card-action(GridId.works, what, id, arg);
                     }
                     card-layout(n, size) => {
-                        root.card-layout-changed(8, n, size);
+                        root.card-layout-changed(GridId.works, n, size);
                     }
                 }
 
                 if root.page == 22: SeriesPage {
                     scroll-y <=> root.content-scroll-y;
                     card-action(what, id, arg) => {
-                        root.card-action(9, what, id, arg);
+                        root.card-action(GridId.series, what, id, arg);
                     }
                     card-layout(n, size) => {
-                        root.card-layout-changed(9, n, size);
+                        root.card-layout-changed(GridId.series, n, size);
                     }
                 }
 
@@ -2129,39 +2123,39 @@ export component AppWindow inherits Window {
                     playing-id: root.playing-id;
                     playlists: root.playlist-choices;
                     track-action(what, i, arg) => {
-                        root.track-action(10, what, i, arg);
+                        root.track-action(TrackListId.history, what, i, arg);
                     }
                     clear => {
                         root.content-scroll-y = 0px;
                         root.dialog-message = "这会永久清除全部播放次数和断点位置，不会删除歌曲或收藏。此操作不可撤销。";
-                        root.dialog = 4;
+                        root.dialog = DialogKind.clear-history;
                     }
                 }
 
-                if root.page == 10 && root.detail.kind == 4: WorkPage {
+                if root.page == 10 && root.detail.kind == DetailKind.work: WorkPage {
                     scroll-y <=> root.content-scroll-y;
                     tracks: root.detail-tracks;
                     loading: root.detail-loading;
                     playing-id: root.playing-id;
                     playlists: root.playlist-choices;
                     card-action(what, id, arg) => {
-                        root.card-action(14, what, id, arg);
+                        root.card-action(GridId.work-albums, what, id, arg);
                     }
                     card-layout(n, size) => {
-                        root.card-layout-changed(14, n, size);
+                        root.card-layout-changed(GridId.work-albums, n, size);
                     }
                     card-row-shown(row) => {
-                        root.card-row-shown(14, row);
+                        root.card-row-shown(GridId.work-albums, row);
                     }
                     track-action(what, i, arg) => {
-                        root.track-action(2, what, i, arg);
+                        root.track-action(TrackListId.detail, what, i, arg);
                     }
                     navigate(page, id) => {
                         root.navigate(page, id);
                     }
                 }
 
-                if root.page == 10 && root.detail.kind == 5: SeriesDetailPage {
+                if root.page == 10 && root.detail.kind == DetailKind.series: SeriesDetailPage {
                     scroll-y <=> root.content-scroll-y;
                     loading: root.detail-loading;
                     playlists: root.playlist-choices;
@@ -2176,7 +2170,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.page == 10 && root.detail.kind == 6: MixPage {
+                if root.page == 10 && root.detail.kind == DetailKind.daily-mix: MixPage {
                     scroll-y <=> root.content-scroll-y;
                     tracks: root.detail-tracks;
                     loading: root.detail-loading;
@@ -2184,7 +2178,7 @@ export component AppWindow inherits Window {
                     playing-mix: root.playing-mix;
                     playlists: root.playlist-choices;
                     track-action(what, i, arg) => {
-                        root.track-action(2, what, i, arg);
+                        root.track-action(TrackListId.detail, what, i, arg);
                     }
                     open-mix(id) => {
                         root.navigate(15, id);
@@ -2475,7 +2469,7 @@ export component AppWindow inherits Window {
                 }
                 tool(what) => {
                     if what == "search" {
-                        root.dialog = 5;
+                        root.dialog = DialogKind.lyrics-search;
                     }
                     root.lyrics-tool(what);
                 }
@@ -2645,7 +2639,7 @@ export component AppWindow inherits Window {
             }
             tool(what) => {
                 if what == "search" {
-                    root.dialog = 5;
+                    root.dialog = DialogKind.lyrics-search;
                 }
                 root.lyrics-tool(what);
             }
@@ -2673,7 +2667,7 @@ export component AppWindow inherits Window {
                 on-stage: true;
                 tool(what) => {
                     if what == "search" {
-                        root.dialog = 5;
+                        root.dialog = DialogKind.lyrics-search;
                     }
                     root.lyrics-tool(what);
                 }
@@ -2686,36 +2680,36 @@ export component AppWindow inherits Window {
 
     if ContextMenuState.open: ContextMenuOverlay { }
 
-    if root.dialog == 1 || root.dialog == 2: PromptDialog {
-        title: root.dialog == 1 ? "新建歌单" : "编辑歌单";
-        confirm-text: root.dialog == 1 ? "创建" : "保存";
+    if root.dialog == DialogKind.new-playlist || root.dialog == DialogKind.edit-playlist: PromptDialog {
+        title: root.dialog == DialogKind.new-playlist ? "新建歌单" : "编辑歌单";
+        confirm-text: root.dialog == DialogKind.new-playlist ? "创建" : "保存";
         name <=> root.dialog-name;
         description <=> root.dialog-description;
         confirm(name, description) => {
             root.dialog-confirm(name, description);
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
         cancel => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
     }
 
-    if root.dialog == 4: ConfirmDialog {
+    if root.dialog == DialogKind.clear-history: ConfirmDialog {
         title: "确定清空全部播放记录吗？";
         message: root.dialog-message;
         confirm-text: "永久清空";
         confirm => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
             Lib032.detail-action("clear-history", 0);
         }
         cancel => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
     }
 
-    if root.dialog == 7: Rectangle {
+    if root.dialog == DialogKind.pick-artist: Rectangle {
         background: #00000099;
-        TouchArea { clicked => { root.dialog = 0; } }
+        TouchArea { clicked => { root.dialog = DialogKind.none; } }
         Rectangle {
             width: min(440px, root.width - 64px);
             height: min(artist-menu.preferred-height, root.height - 64px);
@@ -2727,7 +2721,7 @@ export component AppWindow inherits Window {
                 spacing: 8px;
                 HorizontalLayout {
                     Text { text: "选择艺术家"; color: Theme.text; font-size: 18px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
-                    IconButton { kind: IconKind.close; size: 30px; clicked => { root.dialog = 0; } }
+                    IconButton { kind: IconKind.close; size: 30px; clicked => { root.dialog = DialogKind.none; } }
                 }
                 ScrollView {
                     height: min(root.artist-choices.length * 44px, 360px);
@@ -2745,29 +2739,29 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.dialog == 6: InfoDialog {
+    if root.dialog == DialogKind.track-info: InfoDialog {
         rows: root.info-rows;
         close => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
     }
 
-    if root.dialog == 5: LyricsSearchDialog {
+    if root.dialog == DialogKind.lyrics-search: LyricsSearchDialog {
         close => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
     }
 
-    if root.dialog == 3: ConfirmDialog {
+    if root.dialog == DialogKind.delete-playlist: ConfirmDialog {
         title: "删除歌单";
         message: root.dialog-message;
         confirm-text: "删除";
         confirm => {
             root.dialog-confirm("", "");
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
         cancel => {
-            root.dialog = 0;
+            root.dialog = DialogKind.none;
         }
     }
 
