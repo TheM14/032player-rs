@@ -389,6 +389,8 @@ pub enum Feature {
     /// `GET /works/{id}` carries `series` (else a missing field means nothing).
     WorkSeriesInfo,
     UnifiedSearch,
+    /// `GET /browse/artists` supports backstage `role=credit|lyricist|composer|arranger|producer`.
+    ArtistCreditRoles,
 }
 
 impl Feature {
@@ -409,6 +411,7 @@ impl Feature {
             Self::WorkPosters => "workPosters",
             Self::WorkSeriesInfo => "workSeriesInfo",
             Self::UnifiedSearch => "unifiedSearch",
+            Self::ArtistCreditRoles => "artistCreditRoles",
         }
     }
 }

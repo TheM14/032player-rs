@@ -482,3 +482,60 @@ async fn unified_search_overview_and_category_pages() {
     assert_eq!(page.tracks.items[0].id, 8);
     assert_eq!(page.tracks.total, 12);
 }
+
+#[test]
+fn normalize_base_url_strips_query_and_fragment_and_media_url_preserves_subpath() {
+    assert_eq!(
+        api::normalize_base_url("  https://host.example/music/?tab=home#albums ").unwrap(),
+        "https://host.example/music"
+    );
+    assert_eq!(
+        api::normalize_base_url("https://host.example/music#top").unwrap(),
+        "https://host.example/music"
+    );
+
+    let client = Client::new("https://host.example/music/?x=1#y", API, "tok").unwrap();
+    assert_eq!(client.base_url(), "https://host.example/music");
+    assert_eq!(
+        client.stream_url(5).as_str(),
+        "https://host.example/music/api/v1/tracks/5/stream?mediaToken=tok"
+    );
+    assert_eq!(
+        client
+            .image_url("/api/v1/artwork/9?v=2", Some(512))
+            .unwrap()
+            .as_str(),
+        "https://host.example/music/api/v1/artwork/9?v=2&mediaToken=tok&size=512"
+    );
+    // Already-prefixed subpath is not duplicated.
+    assert_eq!(
+        client
+            .image_url("/music/api/v1/artwork/9", Some(256))
+            .unwrap()
+            .as_str(),
+        "https://host.example/music/api/v1/artwork/9?mediaToken=tok&size=256"
+    );
+    // Protocol-relative and backslash-prefixed paths remain cross-origin without token.
+    assert_eq!(
+        client
+            .media_url("//evil.example/poster.jpg", &[])
+            .unwrap()
+            .as_str(),
+        "https://evil.example/poster.jpg"
+    );
+    assert_eq!(
+        client
+            .media_url("/\\evil.example/poster.jpg", &[])
+            .unwrap()
+            .as_str(),
+        "https://evil.example/poster.jpg"
+    );
+    // Root-relative path looking like a scheme stays same-origin under subpath.
+    assert_eq!(
+        client
+            .media_url("/https://evil.example/a", &[])
+            .unwrap()
+            .as_str(),
+        "https://host.example/music/https://evil.example/a?mediaToken=tok"
+    );
+}

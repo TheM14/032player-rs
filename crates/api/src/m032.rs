@@ -821,10 +821,11 @@ impl Client {
         track_id: i64,
         target_language: &str,
     ) -> Result<LyricsTranslation, ApiError> {
-        self.send_json(
+        self.send_json_with_timeout(
             Method::POST,
             &format!("/tracks/{track_id}/lyrics/translation"),
             &serde_json::json!({ "targetLanguage": target_language }),
+            crate::client::TRANSLATE_LYRICS_TIMEOUT,
         )
         .await
     }

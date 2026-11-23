@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::{Method, StatusCode, header};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -86,6 +88,15 @@ pub const MAX_PAGE_SIZE: u32 = 500;
 /// apiRevision this client implements (playback session protocol).
 pub const API_REVISION: i64 = 3;
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const PLAYBACK_EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const WARM_MEDIA_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const TRANSLATE_LYRICS_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// HTTP client for one 032 Music Server.
 ///
 /// The API token goes in the `Authorization` header only; media URLs
@@ -169,14 +180,16 @@ pub fn redact_media_token(input: &str) -> String {
     out
 }
 
-/// Turns a user-entered server URL into the base URL (no trailing slash).
+/// Turns a user-entered server URL into the base URL (no query, fragment, or trailing slash).
 pub fn normalize_base_url(url: &str) -> Result<String, ApiError> {
-    let trimmed = url.trim().trim_end_matches('/');
-    let parsed = Url::parse(trimmed).map_err(|e| ApiError::Url(e.to_string()))?;
+    let trimmed = url.trim();
+    let mut parsed = Url::parse(trimmed).map_err(|e| ApiError::Url(e.to_string()))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
         return Err(ApiError::Url(format!("not an http(s) URL: {trimmed}")));
     }
-    Ok(trimmed.to_owned())
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
 }
 
 fn remove_param(url: &mut Url, key: &str) {
@@ -223,6 +236,8 @@ impl Client {
     ) -> Result<Self, ApiError> {
         let http = reqwest::Client::builder()
             .user_agent(concat!("032player-rs/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .build()?;
         Self::with_http(http, base_url, api_token, media_token)
     }
@@ -271,10 +286,23 @@ impl Client {
         query: &Query,
         body: Option<&(dyn erased::Body + Sync)>,
     ) -> Result<reqwest::Response, ApiError> {
+        self.send_with_timeout(method, path, query, body, DEFAULT_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn send_with_timeout(
+        &self,
+        method: Method,
+        path: &str,
+        query: &Query,
+        body: Option<&(dyn erased::Body + Sync)>,
+        timeout: Duration,
+    ) -> Result<reqwest::Response, ApiError> {
         let url = self.api_url(path, query)?;
         let mut req = self
             .http
             .request(method, url)
+            .timeout(timeout)
             .header(header::ACCEPT, "application/json")
             .bearer_auth(&self.api_token);
         if let Some(body) = body {
@@ -339,8 +367,25 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        self.send_json_with_timeout(method, path, body, DEFAULT_REQUEST_TIMEOUT)
+            .await
+    }
+
+    pub(crate) async fn send_json_with_timeout<B: Serialize + Sync, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &B,
+        timeout: Duration,
+    ) -> Result<T, ApiError> {
         let res = self
-            .send(method, path, &Query::new(), Some(&erased::Json(body)))
+            .send_with_timeout(
+                method,
+                path,
+                &Query::new(),
+                Some(&erased::Json(body)),
+                timeout,
+            )
             .await?;
         decode(res).await
     }
@@ -654,6 +699,7 @@ impl Client {
         let res = self
             .http
             .put(url)
+            .timeout(UPLOAD_TIMEOUT)
             .bearer_auth(&self.api_token)
             .header(header::ACCEPT, "application/json")
             .header(
@@ -717,6 +763,7 @@ impl Client {
         };
         let body = serde_json::to_vec(body).map_err(|e| ApiError::Decode(e.to_string()))?;
         let res = req
+            .timeout(PLAYBACK_EVENT_TIMEOUT)
             .header(header::ACCEPT, "application/json")
             .header(header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -767,7 +814,22 @@ impl Client {
             return None;
         }
         let base = Url::parse(&format!("{}/", self.base_url)).ok()?;
-        let mut url = base.join(path).ok()?;
+        let mut url =
+            if path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\") {
+                let base_prefix = base.path().trim_end_matches('/');
+                if !base_prefix.is_empty()
+                    && (path == base_prefix
+                        || path.starts_with(&format!("{base_prefix}/"))
+                        || path.starts_with(&format!("{base_prefix}?"))
+                        || path.starts_with(&format!("{base_prefix}#")))
+                {
+                    base.join(path).ok()?
+                } else {
+                    Url::parse(&format!("{}{path}", self.base_url)).ok()?
+                }
+            } else {
+                base.join(path).ok()?
+            };
         if !matches!(url.scheme(), "http" | "https") {
             return None;
         }
@@ -829,13 +891,18 @@ impl Client {
 
     /// Fetches a media URL with the shared HTTP client (images, probes).
     pub async fn fetch_media(&self, url: Url) -> Result<reqwest::Response, ApiError> {
-        Ok(self.http.get(url).send().await?)
+        Ok(self
+            .http
+            .get(url)
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .send()
+            .await?)
     }
 
     /// A server-side transcode cache entry (FLAC) is ready: `HEAD` answers
     /// 200 with its length. `HEAD` never starts an encoder.
     pub async fn media_cached(&self, url: Url) -> Result<bool, ApiError> {
-        let res = self.http.head(url).send().await?;
+        let res = self.http.head(url).timeout(PROBE_TIMEOUT).send().await?;
         Ok(res.status() == StatusCode::OK && res.headers().contains_key(header::CONTENT_LENGTH))
     }
 
@@ -846,6 +913,7 @@ impl Client {
         let res = self
             .http
             .get(url)
+            .timeout(WARM_MEDIA_TIMEOUT)
             .header(header::RANGE, "bytes=0-0")
             .send()
             .await?;
@@ -876,6 +944,7 @@ impl Client {
         let res = self
             .http
             .get(url)
+            .timeout(PROBE_TIMEOUT)
             .header(header::RANGE, "bytes=0-0")
             .send()
             .await

@@ -271,6 +271,17 @@ pub enum ArtistRole {
     Producer,
 }
 
+impl ArtistRole {
+    /// True for backstage credit roles (`credit` / `lyricist` / `composer` / `arranger` / `producer`).
+    #[must_use]
+    pub const fn is_credit_role(self) -> bool {
+        matches!(
+            self,
+            Self::Credit | Self::Lyricist | Self::Composer | Self::Arranger | Self::Producer
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArtistListQuery {
     pub role: ArtistRole,
