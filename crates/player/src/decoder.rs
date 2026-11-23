@@ -4,7 +4,7 @@
 
 use std::io;
 
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer, Signal};
+use symphonia::core::audio::{AudioBufferRef, SampleBuffer, Signal, SignalSpec};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CODEC_TYPE_OPUS, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
@@ -36,7 +36,8 @@ pub struct TrackDecoder {
     sample_rate: u32,
     duration_secs: Option<f64>,
     time_base: Option<TimeBase>,
-    scratch: Vec<f32>,
+    /// Reusable interleaved conversion buffer so packets do not reallocate.
+    sample_buf: Option<(SignalSpec, SampleBuffer<f32>)>,
 }
 
 impl TrackDecoder {
@@ -123,7 +124,7 @@ impl TrackDecoder {
             sample_rate,
             duration_secs,
             time_base,
-            scratch: Vec::new(),
+            sample_buf: None,
         })
     }
 
@@ -162,7 +163,7 @@ impl TrackDecoder {
             }
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
-                    to_interleaved_stereo(&decoded, &mut self.scratch, out);
+                    to_interleaved_stereo(&decoded, &mut self.sample_buf, out);
                     if out.is_empty() {
                         continue;
                     }
@@ -222,7 +223,11 @@ impl TrackDecoder {
     }
 }
 
-fn to_interleaved_stereo(decoded: &AudioBufferRef<'_>, scratch: &mut Vec<f32>, out: &mut Vec<f32>) {
+fn to_interleaved_stereo(
+    decoded: &AudioBufferRef<'_>,
+    sample_buf: &mut Option<(SignalSpec, SampleBuffer<f32>)>,
+    out: &mut Vec<f32>,
+) {
     let frames = decoded.frames();
     if frames == 0 {
         return;
@@ -243,25 +248,31 @@ fn to_interleaved_stereo(decoded: &AudioBufferRef<'_>, scratch: &mut Vec<f32>, o
         return;
     }
 
-    let mut sample_buf = SampleBuffer::<f32>::new(frames as u64, spec);
-    sample_buf.copy_interleaved_ref(decoded.clone());
-    let samples = sample_buf.samples();
-    scratch.clear();
-    scratch.extend_from_slice(samples);
+    let needed = frames * channels;
+    let needs_alloc = match sample_buf {
+        Some((cached_spec, buf)) => *cached_spec != spec || buf.capacity() < needed,
+        None => true,
+    };
+    if needs_alloc {
+        *sample_buf = Some((spec, SampleBuffer::<f32>::new(frames as u64, spec)));
+    }
+    let (_, buf) = sample_buf.as_mut().expect("sample buffer initialized");
+    buf.copy_interleaved_ref(decoded.clone());
+    let samples = buf.samples();
 
     out.reserve(frames * 2);
     match channels {
         1 => {
-            for &s in scratch.iter() {
+            for &s in samples {
                 out.push(s);
                 out.push(s);
             }
         }
         2 => {
-            out.extend_from_slice(scratch);
+            out.extend_from_slice(samples);
         }
         _ => {
-            downmix_multichannel(spec.channels, channels, scratch, out);
+            downmix_multichannel(spec.channels, channels, samples, out);
         }
     }
 }

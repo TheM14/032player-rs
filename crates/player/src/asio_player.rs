@@ -367,7 +367,7 @@ struct ActiveTrack {
 
 fn spawn_prefetch(
     url: String,
-    proxy: Option<String>,
+    client: reqwest::Client,
     rt: tokio::runtime::Handle,
 ) -> PrefetchHandle {
     let cancel = CancelToken::new();
@@ -376,7 +376,7 @@ fn spawn_prefetch(
     thread::Builder::new()
         .name("asio-prefetch".into())
         .spawn(move || {
-            let res = open_and_predecode(&url, proxy.as_deref(), rt, cancel_w);
+            let res = open_and_predecode(&url, client, rt, cancel_w);
             let _ = tx.send(res);
         })
         .ok();
@@ -385,12 +385,10 @@ fn spawn_prefetch(
 
 fn open_and_predecode(
     url: &str,
-    proxy: Option<&str>,
+    client: reqwest::Client,
     rt: tokio::runtime::Handle,
     cancel: CancelToken,
 ) -> std::result::Result<PrefetchedTrack, DecodeError> {
-    let client =
-        build_http_client(proxy).map_err(|e| DecodeError::Other(e.without_url().to_string()))?;
     let source = HttpMediaSource::open(client, url, rt, cancel).map_err(|e| {
         if e.kind() == io::ErrorKind::Interrupted {
             DecodeError::Cancelled
@@ -572,6 +570,20 @@ fn worker_loop<S: AudioSink>(
     let mut buffering_reported = false;
     let mut last_pos_emit = Instant::now();
     let mut packet_buf = Vec::new();
+    // Reused across tracks and prefetches; rebuilt only when the proxy changes.
+    let mut cached_http: Option<(Option<String>, reqwest::Client)> = None;
+    let mut get_http_client =
+        |proxy_cfg: &Option<String>| -> std::result::Result<reqwest::Client, DecodeError> {
+            if let Some((cached_proxy, client)) = &cached_http
+                && cached_proxy == proxy_cfg
+            {
+                return Ok(client.clone());
+            }
+            let client = build_http_client(proxy_cfg.as_deref())
+                .map_err(|e| DecodeError::Other(e.without_url().to_string()))?;
+            cached_http = Some((proxy_cfg.clone(), client.clone()));
+            Ok(client)
+        };
 
     let clear_upcoming = |upcoming_url: &mut Option<String>,
                           prefetch: &mut Option<PrefetchHandle>,
@@ -654,7 +666,15 @@ fn worker_loop<S: AudioSink>(
                     );
                     upcoming_url = Some(url.clone());
                     let p = proxy.lock().expect("proxy lock").clone();
-                    prefetch = Some(spawn_prefetch(url, p, rt.handle().clone()));
+                    match get_http_client(&p) {
+                        Ok(client) => {
+                            prefetch = Some(spawn_prefetch(url, client, rt.handle().clone()));
+                        }
+                        Err(e) => {
+                            tracing::warn!("ASIO prefetch client error: {e}");
+                            prefetch_error = Some(e.to_string());
+                        }
+                    }
                 }
                 Cmd::SetPaused(paused) => {
                     shared.paused.store(paused, Ordering::Release);
@@ -760,7 +780,11 @@ fn worker_loop<S: AudioSink>(
                     emit(PlayerEvent::Buffering(true));
                     buffering_reported = true;
 
-                    match open_and_predecode(&url, p.as_deref(), rt.handle().clone(), cancel) {
+                    let open_res = match get_http_client(&p) {
+                        Ok(client) => open_and_predecode(&url, client, rt.handle().clone(), cancel),
+                        Err(e) => Err(e),
+                    };
+                    match open_res {
                         Ok(opened) => {
                             if load_gen.load(Ordering::Acquire) != generation {
                                 shared.seeking.store(false, Ordering::Release);
