@@ -14,8 +14,8 @@ use windows_sys::Win32::System::Com::{
 };
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumThreadWindows, GetDesktopWindow, IsWindowVisible, MSG, PM_REMOVE,
-    PeekMessageW, TranslateMessage,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, EnumThreadWindows, GetDesktopWindow,
+    IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
 };
 use windows_sys::core::{BOOL, GUID};
 
@@ -87,6 +87,7 @@ fn has_visible_thread_window() -> bool {
 
 struct CallbackState {
     iasio: usize, // *mut IAsio as usize (used only for output_ready during callback)
+    supports_output_ready: AtomicBool,
     active: AtomicBool,
     reset_requested: AtomicBool,
     rendered_frames: Arc<AtomicU64>,
@@ -178,11 +179,14 @@ impl CallbackState {
         self.rendered_frames
             .fetch_add(self.frames as u64, Ordering::Relaxed);
 
-        let raw = self.iasio as *mut IAsio;
-        if !raw.is_null() && self.active.load(Ordering::Acquire) {
-            // SAFETY: `raw` remains valid while the caller holds `ACTIVE_CALLBACK`'s read guard.
-            unsafe {
-                let _ = ((*(*raw).vtbl).output_ready)(raw);
+        if self.supports_output_ready.load(Ordering::Relaxed) {
+            let raw = self.iasio as *mut IAsio;
+            if !raw.is_null() && self.active.load(Ordering::Acquire) {
+                // SAFETY: `raw` remains valid while the caller holds `ACTIVE_CALLBACK`'s read guard.
+                let rc = unsafe { ((*(*raw).vtbl).output_ready)(raw) };
+                if rc == ASE_NOT_PRESENT {
+                    self.supports_output_ready.store(false, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -358,8 +362,65 @@ impl Drop for ComGuard {
     }
 }
 
+/// Hidden window owned by the STA thread so driver `init()` and `controlPanel()`
+/// receive an HWND attached to the pumping message loop.
+struct HwndGuard {
+    hwnd: HWND,
+    owned: bool,
+}
+
+impl HwndGuard {
+    fn create() -> Self {
+        let class_name: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "032player-asio\0".encode_utf16().collect();
+        // SAFETY: creates a hidden window using the built-in STATIC class.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if !hwnd.is_null() {
+            Self { hwnd, owned: true }
+        } else {
+            // SAFETY: fallback to the desktop window if hidden window creation fails.
+            let desktop = unsafe { GetDesktopWindow() };
+            Self {
+                hwnd: desktop,
+                owned: false,
+            }
+        }
+    }
+
+    fn as_ptr(&self) -> *mut c_void {
+        self.hwnd
+    }
+}
+
+impl Drop for HwndGuard {
+    fn drop(&mut self) {
+        if self.owned && !self.hwnd.is_null() {
+            // SAFETY: `hwnd` was created on this thread by `CreateWindowExW`.
+            unsafe {
+                DestroyWindow(self.hwnd);
+            }
+        }
+    }
+}
+
 struct IAsioHandle {
     raw: *mut IAsio,
+    _hwnd: HwndGuard,
     _com: ComGuard,
 }
 
@@ -386,9 +447,14 @@ impl IAsioHandle {
                 }),
             ));
         }
-        let handle = Self { raw, _com: com };
-        // SAFETY: `GetDesktopWindow` provides a valid HWND for driver dialogs.
-        let ok = unsafe { ((*(*handle.raw).vtbl).init)(handle.raw, GetDesktopWindow()) };
+        let hwnd = HwndGuard::create();
+        let handle = Self {
+            raw,
+            _hwnd: hwnd,
+            _com: com,
+        };
+        // SAFETY: `handle._hwnd` stays alive for the lifetime of the IASIO handle.
+        let ok = unsafe { ((*(*handle.raw).vtbl).init)(handle.raw, handle._hwnd.as_ptr()) };
         if ok != ASIO_TRUE {
             let msg = handle.error_message();
             return Err(AsioError::Driver {
@@ -651,6 +717,7 @@ pub struct AsioOutputHandle {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -670,6 +737,7 @@ impl AsioOutputHandle {
             config: init.config,
             rendered_frames: init.rendered_frames,
             output_latency: init.output_latency,
+            last_error: init.last_error,
             thread: Some(thread),
         })
     }
@@ -692,6 +760,10 @@ impl AsioOutputHandle {
 
     pub fn output_latency_frames(&self) -> u64 {
         self.output_latency.load(Ordering::Relaxed)
+    }
+
+    pub fn take_error(&self) -> Option<String> {
+        self.last_error.lock().expect("asio error lock").take()
     }
 
     pub fn open_control_panel(&self) -> Result<()> {
@@ -722,6 +794,7 @@ struct SelfInit {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 struct ActiveStream {
@@ -833,6 +906,7 @@ impl ActiveStream {
 
         let state = Arc::new(CallbackState {
             iasio: self.handle.raw as usize,
+            supports_output_ready: AtomicBool::new(true),
             active: AtomicBool::new(true),
             reset_requested: AtomicBool::new(false),
             rendered_frames: self.rendered_frames.clone(),
@@ -878,6 +952,9 @@ impl ActiveStream {
     }
 
     fn reconfigure(&mut self, sample_rate: f64) -> Result<AsioStreamConfig> {
+        if !self.handle.can_sample_rate(sample_rate) {
+            return Err(AsioError::UnsupportedSampleRate(sample_rate));
+        }
         let render = self.teardown_buffers().ok_or(AsioError::Stopped)?;
         let current = self.handle.get_sample_rate().unwrap_or(0.0);
         if (current - sample_rate).abs() > 0.5
@@ -889,13 +966,6 @@ impl ActiveStream {
         }
         self.setup_and_start(sample_rate, render)?;
         Ok(self.config)
-    }
-
-    fn sync_rendered_frames(&self) {
-        if let Some(state) = self.cb_state.as_ref() {
-            // Keep monotonic rendered frames up to date for observers.
-            let _ = state;
-        }
     }
 }
 
@@ -922,10 +992,12 @@ fn actor_main(
     let shared_cfg = Arc::new(Mutex::new(stream.config));
     let rendered_frames = stream.rendered_frames.clone();
     let output_latency = stream.output_latency.clone();
+    let last_error = Arc::new(Mutex::new(None));
     let _ = init_tx.send(Ok(SelfInit {
         config: shared_cfg.clone(),
         rendered_frames,
         output_latency,
+        last_error: last_error.clone(),
     }));
 
     loop {
@@ -949,16 +1021,17 @@ fn actor_main(
         if let Some(state) = stream.cb_state.as_ref()
             && state.reset_requested.swap(false, Ordering::AcqRel)
         {
-            let target_rate = stream
-                .handle
-                .get_sample_rate()
-                .unwrap_or(stream.config.sample_rate);
+            let target_rate = stream.config.sample_rate;
             tracing::info!(sample_rate = target_rate, "ASIO reset requested by driver");
-            if let Ok(cfg) = stream.reconfigure(target_rate) {
-                *shared_cfg.lock().expect("config lock") = cfg;
+            match stream.reconfigure(target_rate) {
+                Ok(cfg) => *shared_cfg.lock().expect("config lock") = cfg,
+                Err(e) => {
+                    tracing::warn!("ASIO reset reconfigure failed: {e}");
+                    *last_error.lock().expect("asio error lock") = Some(e.to_string());
+                    return;
+                }
             }
         }
-        stream.sync_rendered_frames();
         thread::sleep(Duration::from_millis(5));
     }
 }

@@ -30,6 +30,21 @@ pub trait AudioSink: Send + 'static {
     fn rendered_frames(&self) -> u64;
     fn output_latency_frames(&self) -> u64;
     fn open_control_panel(&self) -> Result<()>;
+    fn take_error(&self) -> Option<String> {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn format_asio_error(err: &asio::AsioError) -> String {
+    match err {
+        asio::AsioError::UnsupportedSampleRate(rate) => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let hz = rate.round().max(0.0) as u32;
+            format!("当前 ASIO 设备不支持 {hz} Hz 采样率")
+        }
+        other => other.to_string(),
+    }
 }
 
 #[cfg(windows)]
@@ -51,16 +66,43 @@ impl WindowsAsioSink {
 
 #[cfg(windows)]
 impl AudioSink for WindowsAsioSink {
-    fn start(&mut self, sample_rate: f64, mut render: RenderFn) -> Result<()> {
+    fn start(&mut self, sample_rate: f64, render: RenderFn) -> Result<()> {
         self.active = None;
-        let out = asio::AsioOutput::start(
-            &self.clsid,
-            sample_rate,
-            Box::new(move |ctx, buf| render(ctx.frames, buf)),
-        )
-        .map_err(|e| PlayerError::Mpv(e.to_string()))?;
-        self.active = Some(out);
-        Ok(())
+        let shared_render = Arc::new(Mutex::new(render));
+        // Retry briefly on transient device-busy errors during WASAPI -> ASIO handover.
+        let delays_ms = [0_u64, 80, 160];
+        let mut last_err = None;
+        for delay in delays_ms {
+            if delay > 0 {
+                thread::sleep(Duration::from_millis(delay));
+            }
+            let cb = shared_render.clone();
+            match asio::AsioOutput::start(
+                &self.clsid,
+                sample_rate,
+                Box::new(move |ctx, buf| {
+                    if let Ok(mut f) = cb.try_lock() {
+                        f(ctx.frames, buf);
+                    } else {
+                        buf.fill(0.0);
+                    }
+                }),
+            ) {
+                Ok(out) => {
+                    self.active = Some(out);
+                    return Ok(());
+                }
+                Err(e @ asio::AsioError::Driver { .. }) => {
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    return Err(PlayerError::Mpv(format_asio_error(&e)));
+                }
+            }
+        }
+        Err(PlayerError::Mpv(format_asio_error(
+            last_err.as_ref().expect("retry recorded an error"),
+        )))
     }
 
     fn set_sample_rate(&mut self, sample_rate: f64) -> Result<()> {
@@ -70,7 +112,7 @@ impl AudioSink for WindowsAsioSink {
         active
             .set_sample_rate(sample_rate)
             .map(|_| ())
-            .map_err(|e| PlayerError::Mpv(e.to_string()))
+            .map_err(|e| PlayerError::Mpv(format_asio_error(&e)))
     }
 
     fn stop(&mut self) {
@@ -93,11 +135,15 @@ impl AudioSink for WindowsAsioSink {
         if let Some(active) = self.active.as_ref() {
             active
                 .open_control_panel()
-                .map_err(|e| PlayerError::Mpv(e.to_string()))
+                .map_err(|e| PlayerError::Mpv(format_asio_error(&e)))
         } else {
             asio::open_control_panel_standalone(&self.clsid)
-                .map_err(|e| PlayerError::Mpv(e.to_string()))
+                .map_err(|e| PlayerError::Mpv(format_asio_error(&e)))
         }
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.active.as_ref().and_then(asio::AsioOutput::take_error)
     }
 }
 
@@ -569,6 +615,8 @@ fn worker_loop<S: AudioSink>(
     let mut prefetch_error: Option<String> = None;
     let mut buffering_reported = false;
     let mut last_pos_emit = Instant::now();
+    let mut last_rendered_frames = 0_u64;
+    let mut last_rendered_at = Instant::now();
     let mut packet_buf = Vec::new();
     // Reused across tracks and prefetches; rebuilt only when the proxy changes.
     let mut cached_http: Option<(Option<String>, reqwest::Client)> = None;
@@ -883,6 +931,8 @@ fn worker_loop<S: AudioSink>(
                             buffering_reported = false;
                             emit(PlayerEvent::Buffering(false));
                             last_pos_emit = Instant::now();
+                            last_rendered_frames = sink.rendered_frames();
+                            last_rendered_at = Instant::now();
                             active = Some(track);
                         }
                         Err(DecodeError::Cancelled) => {
@@ -1117,6 +1167,8 @@ fn worker_loop<S: AudioSink>(
                             emit(PlayerEvent::Duration(dur));
                         }
                         last_pos_emit = Instant::now();
+                        last_rendered_frames = sink.rendered_frames();
+                        last_rendered_at = Instant::now();
                         active = Some(next_active);
                     }
                 } else if let Some(err) = prefetch_error.take()
@@ -1130,6 +1182,41 @@ fn worker_loop<S: AudioSink>(
                 } else {
                     // Queue finished with no next track: release exclusive ASIO ownership.
                     stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
+                }
+            }
+
+            // Check async driver error or stalled hardware callbacks (e.g. device unplugged).
+            if active.is_some() {
+                let mut fatal_err = sink.take_error();
+                if fatal_err.is_none() {
+                    let rendered = sink.rendered_frames();
+                    let paused = shared.paused.load(Ordering::Acquire);
+                    let seeking = shared.seeking.load(Ordering::Acquire);
+                    if paused || seeking || rendered != last_rendered_frames {
+                        last_rendered_frames = rendered;
+                        last_rendered_at = Instant::now();
+                    } else if last_rendered_at.elapsed() >= Duration::from_secs(3) {
+                        fatal_err = Some("ASIO 硬件输出中断（设备可能已断开）".into());
+                    }
+                }
+                if let Some(err) = fatal_err {
+                    clear_upcoming(
+                        &mut upcoming_url,
+                        &mut prefetch,
+                        &mut prefetched_ready,
+                        &mut prefetch_error,
+                    );
+                    active = None;
+                    stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
+                    if buffering_reported {
+                        buffering_reported = false;
+                        emit(PlayerEvent::Buffering(false));
+                    }
+                    emit(PlayerEvent::EndFile {
+                        reason: EndReason::Error,
+                        error: Some(err),
+                    });
+                    continue 'worker;
                 }
             }
 

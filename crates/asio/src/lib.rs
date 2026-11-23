@@ -138,18 +138,7 @@ impl AsioSampleType {
 
     #[must_use]
     pub const fn is_supported(self) -> bool {
-        matches!(
-            self,
-            Self::Int16Lsb
-                | Self::Int24Lsb
-                | Self::Int32Lsb
-                | Self::Float32Lsb
-                | Self::Float64Lsb
-                | Self::Int32Lsb16
-                | Self::Int32Lsb18
-                | Self::Int32Lsb20
-                | Self::Int32Lsb24
-        )
+        !matches!(self, Self::Unknown(_))
     }
 }
 
@@ -190,6 +179,52 @@ pub fn write_stereo_channel_buffers(
 fn write_sample(sample_type: AsioSampleType, sample: f32, dst: &mut [u8]) {
     let clamped = f64::from(sample).clamp(-1.0, 1.0);
     match sample_type {
+        AsioSampleType::Int16Msb => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 32_767.0).round() as i16;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Int24Msb => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 8_388_607.0).round() as i32;
+            let b = v.to_be_bytes();
+            dst[0] = b[1];
+            dst[1] = b[2];
+            dst[2] = b[3];
+        }
+        AsioSampleType::Int32Msb => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 2_147_483_647.0).round() as i32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Float32Msb => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = clamped as f32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Float64Msb => {
+            dst.copy_from_slice(&clamped.to_be_bytes());
+        }
+        AsioSampleType::Int32Msb16 => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 32_767.0).round() as i32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Int32Msb18 => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 131_071.0).round() as i32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Int32Msb20 => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 524_287.0).round() as i32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
+        AsioSampleType::Int32Msb24 => {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = (clamped * 8_388_607.0).round() as i32;
+            dst.copy_from_slice(&v.to_be_bytes());
+        }
         AsioSampleType::Int16Lsb => {
             #[allow(clippy::cast_possible_truncation)]
             let v = (clamped * 32_767.0).round() as i16;
@@ -409,6 +444,20 @@ impl AsioOutput {
         }
     }
 
+    /// Returns and clears any asynchronous fatal error reported by the ASIO
+    /// host thread (such as a failed hardware reset after disconnect).
+    #[must_use]
+    pub fn take_error(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            self.inner.take_error()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
     /// Opens the driver's native control panel on the active STA instance.
     pub fn open_control_panel(&self) -> Result<()> {
         #[cfg(windows)]
@@ -471,5 +520,23 @@ mod tests {
         // Bogus zero bounds fall back safely.
         assert_eq!(choose_buffer_frames(0, 0, 0, 0), 512);
         assert_eq!(choose_buffer_frames(0, 0, 256, 0), 256);
+    }
+
+    #[test]
+    fn sample_packing_msb() {
+        let input = [1.0_f32, -1.0];
+        let mut l16 = [0u8; 2];
+        let mut r16 = [0u8; 2];
+        write_stereo_channel_buffers(AsioSampleType::Int16Msb, &input, &mut l16, &mut r16, 1)
+            .unwrap();
+        assert_eq!(i16::from_be_bytes(l16), 32_767);
+        assert_eq!(i16::from_be_bytes(r16), -32_767);
+
+        let mut l24 = [0u8; 3];
+        let mut r24 = [0u8; 3];
+        write_stereo_channel_buffers(AsioSampleType::Int24Msb, &input, &mut l24, &mut r24, 1)
+            .unwrap();
+        assert_eq!(&l24, &[0x7f, 0xff, 0xff]);
+        assert_eq!(&r24, &[0x80, 0x00, 0x01]);
     }
 }
