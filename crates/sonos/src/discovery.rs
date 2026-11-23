@@ -42,11 +42,11 @@ pub async fn discover(
         let http = http.clone();
         tasks.spawn(async move {
             let text = tokio::time::timeout(DESCRIPTION_TIMEOUT, async {
-                http.get(&location).send().await?.text().await
+                let res = http.get(&location).send().await.ok()?;
+                read_text_limited(res, MAX_DESCRIPTION_BYTES).await
             })
             .await
-            .ok()?
-            .ok()?;
+            .ok()??;
             parse_description(&location, &text)
         });
     }
@@ -152,6 +152,32 @@ fn search_addresses() -> Vec<Ipv4Addr> {
     out
 }
 
+const MAX_DESCRIPTION_BYTES: usize = 512 * 1024;
+const MAX_SSDP_LOCATIONS: usize = 128;
+
+async fn read_text_limited(mut res: reqwest::Response, max_bytes: usize) -> Option<String> {
+    if res
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = res.chunk().await.ok()? {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn is_valid_ssdp_location(raw: &str) -> bool {
+    url::Url::parse(raw)
+        .ok()
+        .is_some_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+}
+
 async fn ssdp_search(timeout: Duration) -> BTreeSet<String> {
     let request = format!(
         "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: {ST_ZONE_PLAYER}\r\n\r\n"
@@ -186,8 +212,13 @@ async fn ssdp_search(timeout: Duration) -> BTreeSet<String> {
                     let Ok((n, _)) = socket.recv_from(&mut buf).await else {
                         break;
                     };
+                    if found.len() >= MAX_SSDP_LOCATIONS {
+                        break;
+                    }
                     let payload = String::from_utf8_lossy(&buf[..n]);
-                    if let Some(location) = header_value(&payload, "LOCATION") {
+                    if let Some(location) = header_value(&payload, "LOCATION")
+                        && is_valid_ssdp_location(&location)
+                    {
                         found.insert(location);
                     }
                 }
@@ -199,7 +230,12 @@ async fn ssdp_search(timeout: Duration) -> BTreeSet<String> {
     let mut locations = BTreeSet::new();
     while let Some(result) = tasks.join_next().await {
         if let Ok(found) = result {
-            locations.extend(found);
+            for loc in found {
+                if locations.len() >= MAX_SSDP_LOCATIONS {
+                    break;
+                }
+                locations.insert(loc);
+            }
         }
     }
     locations
@@ -534,5 +570,46 @@ mod tests {
             .unwrap();
         let ids: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["RINCON_S1", "RINCON_S2"]);
+    }
+
+    #[tokio::test]
+    async fn ssdp_location_validation_and_description_size_limit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        assert!(is_valid_ssdp_location(
+            "http://192.168.1.10:1400/xml/device_description.xml"
+        ));
+        assert!(is_valid_ssdp_location("https://sonos.local/desc.xml"));
+        assert!(!is_valid_ssdp_location("file:///etc/passwd"));
+        assert!(!is_valid_ssdp_location("ftp://192.168.1.10/desc.xml"));
+        assert!(!is_valid_ssdp_location("http://"));
+        assert!(!is_valid_ssdp_location("/relative/desc.xml"));
+        assert!(!is_valid_ssdp_location(""));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for body in [vec![b'a'; 128], vec![b'b'; 16]] {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut req = [0u8; 1024];
+                let _ = sock.read(&mut req).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+            }
+        });
+
+        let http = crate::http_client();
+        let url = format!("http://{addr}/desc.xml");
+        let over = http.get(&url).send().await.unwrap();
+        assert_eq!(read_text_limited(over, 64).await, None);
+        let ok = http.get(&url).send().await.unwrap();
+        assert_eq!(read_text_limited(ok, 64).await, Some("b".repeat(16)));
     }
 }

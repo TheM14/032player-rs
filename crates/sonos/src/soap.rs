@@ -138,7 +138,8 @@ pub(crate) fn format_duration(ms: i64) -> String {
     format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
-/// `H+:MM:SS(.fff)` in ms; anything else (`NOT_IMPLEMENTED`, empty) is 0.
+/// `H+:MM:SS(.fff)` in ms; anything else (`NOT_IMPLEMENTED`, empty, non-finite,
+/// negative, or overflowing) is 0.
 pub(crate) fn parse_duration(value: &str) -> i64 {
     let parts: Vec<&str> = value.trim().split(':').collect();
     let [h, m, s] = parts.as_slice() else {
@@ -147,9 +148,20 @@ pub(crate) fn parse_duration(value: &str) -> i64 {
     let (Ok(h), Ok(m), Ok(s)) = (h.parse::<i64>(), m.parse::<i64>(), s.parse::<f64>()) else {
         return 0;
     };
+    if h < 0 || m < 0 || !s.is_finite() || s < 0.0 || s > 86_400.0 {
+        return 0;
+    }
     #[allow(clippy::cast_possible_truncation)]
     let frac = (s * 1000.0).round() as i64;
-    h * 3_600_000 + m * 60_000 + frac
+    let Some(h_ms) = h.checked_mul(3_600_000) else {
+        return 0;
+    };
+    let Some(m_ms) = m.checked_mul(60_000) else {
+        return 0;
+    };
+    h_ms.checked_add(m_ms)
+        .and_then(|v| v.checked_add(frac))
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -193,6 +205,10 @@ mod tests {
         assert_eq!(parse_duration("1:00:01.500"), 3_601_500);
         assert_eq!(parse_duration("NOT_IMPLEMENTED"), 0);
         assert_eq!(parse_duration(""), 0);
+        assert_eq!(parse_duration("0:00:NaN"), 0);
+        assert_eq!(parse_duration("0:00:inf"), 0);
+        assert_eq!(parse_duration("-1:00:00"), 0);
+        assert_eq!(parse_duration("99999999999999999:00:00"), 0);
     }
 
     #[test]

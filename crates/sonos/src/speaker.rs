@@ -399,6 +399,7 @@ impl Speaker {
             .await;
         let values = match group {
             Ok(v) => v,
+            Err(e @ Error::Network(_)) => return Err(e),
             Err(_) => {
                 self.soap
                     .call(
@@ -427,8 +428,10 @@ impl Speaker {
                 &[("InstanceID", "0".into()), ("DesiredVolume", v.clone())],
             )
             .await;
-        if group.is_ok() {
-            return Ok(());
+        match group {
+            Ok(_) => return Ok(()),
+            Err(e @ Error::Network(_)) => return Err(e),
+            Err(_) => {}
         }
         self.soap
             .call(
