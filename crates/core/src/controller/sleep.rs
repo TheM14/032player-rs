@@ -64,9 +64,13 @@ impl Core {
             self.sleep.task = Some(handle.abort_handle());
         }
         self.emit_sleep();
+        self.emit_radio_state();
         // Whether the engine or Sonos may continue into the next file changed.
         self.sync_preload();
         self.cast_play_mode();
+        if timer.is_none() {
+            self.maybe_trigger_auto_continue(false);
+        }
     }
 
     pub(super) fn emit_sleep(&self) {

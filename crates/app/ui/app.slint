@@ -16,7 +16,7 @@ import { SettingsView, ShortcutRow } from "settings.slint";
 import { FullScreenPlayer } from "fullscreen.slint";
 import { NowPlayingPanel } from "nowplaying.slint";
 export { ShortcutRow } from "settings.slint";
-import { Playback, CastState, CastRoomRow, GhostButton, Icon, IconButton, IconKind, PlayingBars, PrimaryButton, SearchField, Tab } from "controls.slint";
+import { Playback, CastState, CastRoomRow, RadioState, GhostButton, Icon, IconButton, IconKind, PlayingBars, PrimaryButton, SearchField, Tab } from "controls.slint";
 import {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
     WorkInfo, SeriesInfo, MixTag, MixInfo, LyricsResult, HomePage, WorksPage, SeriesPage,
@@ -27,7 +27,7 @@ import {
 } from "search.slint";
 
 export { GridId, TrackListId, DetailKind, DialogKind }
-export { Fonts, Playback, CastState, CastRoomRow, ArtistLayout }
+export { Fonts, Playback, CastState, CastRoomRow, RadioState, ArtistLayout }
 export { TieupWork, AlbumCard, AlbumRow, TrackRow, CreditPart, LyricLine, QueueRow, PlaylistChoice, ListQuery, DetailInfo, ReleaseGroupRow, CreditRoleTab, AlbumWorkRow, WorkUseRow, PersonRow, FactRow }
 export {
     Home, Lib032, LyricsSearch, HomeRow, AlbumPane, SeriesPane, NamedItem, YearBar, HomeStats,
@@ -513,6 +513,7 @@ export component AppWindow inherits Window {
     callback play-queue-item(int);
     callback remove-queue-item(int);
     callback move-queue-item(int, int);
+    callback queue-row-action(string, int, int);
     callback clear-queue();
     callback toggle-shuffle();
     callback cycle-repeat();
@@ -1485,8 +1486,8 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Album, playlist, similar: header and a virtualized list.
-                if root.page == 10 && (root.detail.kind == DetailKind.album || root.detail.kind == DetailKind.playlist || root.detail.kind == DetailKind.similar): detail-page := VerticalLayout {
+                // Album, playlist: header and a virtualized list.
+                if root.page == 10 && (root.detail.kind == DetailKind.album || root.detail.kind == DetailKind.playlist): detail-page := VerticalLayout {
                     // Album info column (Electron: beside the tracks from
                     // the lg breakpoint); narrower pages switch with tabs.
                     property <bool> album: root.detail.kind == DetailKind.album;
@@ -2488,6 +2489,7 @@ export component AppWindow inherits Window {
                 rows: root.queue;
                 total: root.queue-total;
                 current: root.queue-current;
+                playlists: root.playlist-choices;
                 search <=> root.queue-search;
                 search-changed(text) => {
                     root.queue-search-changed(text);
@@ -2503,6 +2505,9 @@ export component AppWindow inherits Window {
                 }
                 move(uid, to) => {
                     root.move-queue-item(uid, to);
+                }
+                row-action(what, uid, arg) => {
+                    root.queue-row-action(what, uid, arg);
                 }
                 clear => {
                     root.clear-queue();
@@ -2589,6 +2594,7 @@ export component AppWindow inherits Window {
             total: root.queue-total;
             current: root.queue-current;
             position: root.queue-position;
+            playlists: root.playlist-choices;
             search <=> root.queue-search;
             search-changed(text) => {
                 root.queue-search-changed(text);
@@ -2604,6 +2610,9 @@ export component AppWindow inherits Window {
             }
             move(uid, to) => {
                 root.move-queue-item(uid, to);
+            }
+            row-action(what, uid, arg) => {
+                root.queue-row-action(what, uid, arg);
             }
             clear => {
                 root.clear-queue();

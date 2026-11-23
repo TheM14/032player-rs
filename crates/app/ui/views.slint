@@ -1,6 +1,6 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
-import { PlayingBars, Field, PrimaryButton, IconButton, IconKind, Icon } from "controls.slint";
+import { PlayingBars, Field, PrimaryButton, IconButton, IconKind, Icon, RadioState } from "controls.slint";
 import { PlaylistChoice, ContextMenuEntry, ContextMenuState, ContextMenuOverlay } from "context_menu.slint";
 import { LyricLine, QueueRow, QueuePanel, LyricsTools, LyricsPanel } from "queue_lyrics.slint";
 
@@ -911,7 +911,7 @@ export component TrackRowView inherits Rectangle {
                 },
                 { kind: 1 },
                 { label: "同名演奏版本", icon: IconKind.versions, what: "versions", hidden: root.track.version-count <= 1 },
-                { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                { label: "开启相似电台", icon: IconKind.radio, what: "radio", accent-icon: true, hidden: !RadioState.supported || root.track.disabled },
                 { label: "查看信息", icon: IconKind.info, what: "info" },
                 { kind: 1, hidden: !(root.track.album-id > 0 || root.track.artist-id > 0 || root.track.artists.length > 0 || root.mode == 2) },
                 { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.track.album-id, hidden: root.track.album-id <= 0 },

@@ -350,7 +350,6 @@ fn detail_kind(kind: f64) -> Value {
         0 => "album",
         1 => "artist",
         2 => "playlist",
-        3 => "similar",
         4 => "work",
         5 => "series",
         6 => "daily-mix",
@@ -399,12 +398,18 @@ fn queue(count: usize) -> Value {
             .map(|i| {
                 let (t, a, d) = rows[i % rows.len()];
                 let mut row = Struct::default();
+                row.set_field("kind".into(), Value::Number(0.0));
                 row.set_field("uid".into(), Value::Number(i as f64 + 1.0));
+                row.set_field("play-index".into(), Value::Number(i as f64));
                 row.set_field("title".into(), s(t));
                 row.set_field("artist".into(), s(a));
                 row.set_field("duration".into(), s(d));
                 row.set_field("number".into(), Value::Number(i as f64 + 1.0));
                 row.set_field("cover".into(), Value::Image(cover(i as u32 % 4 + 2)));
+                row.set_field("is-auto".into(), Value::Bool(false));
+                row.set_field("reason".into(), s(""));
+                row.set_field("album-id".into(), Value::Number(3.0));
+                row.set_field("has-artists".into(), Value::Bool(true));
                 Value::Struct(row)
             })
             .collect(),

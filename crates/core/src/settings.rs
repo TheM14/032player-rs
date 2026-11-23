@@ -30,6 +30,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 300 ms volume fade on play / pause (`audioFadeOnStatusChange`).
     pub fade_on_pause: bool,
+    /// Auto-append 032 similar tracks when approaching the end of the queue.
+    pub auto_play_similar: bool,
     /// 032 Dark / Light or the system's choice.
     pub theme: ThemeMode,
     /// Stream a transcode instead of the original file (`None`: original,
@@ -278,6 +280,7 @@ impl Default for Settings {
             shuffle: false,
             close_to_tray: false,
             fade_on_pause: true,
+            auto_play_similar: true,
             theme: ThemeMode::Dark,
             transcode: None,
             lyrics: LyricsSettings::default(),
@@ -417,6 +420,7 @@ mod tests {
             shuffle: true,
             close_to_tray: true,
             fade_on_pause: false,
+            auto_play_similar: false,
             theme: ThemeMode::Light,
             shortcuts: crate::shortcuts::Shortcuts::default(),
             transcode: Some(api::Transcode::Mp3(320)),

@@ -9,6 +9,7 @@ pub mod format;
 mod images;
 pub mod m032;
 mod queue;
+pub mod radio;
 mod reporter;
 mod secrets;
 mod settings;
@@ -32,6 +33,9 @@ pub use controller::{
 pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
 pub use images::{ArtworkFit, Rgba, decode, decode_fit, fitted_size, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
+pub use radio::{
+    RadioErrorKind, RadioPauseReason, RadioSeed, RadioSnapshot, RadioStatus, SimilarityMethod,
+};
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::{
     CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LyricsSettings, RightPanel,

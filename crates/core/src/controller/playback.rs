@@ -237,6 +237,7 @@ impl Core {
     /// Applies a queue move: play the target, restart it when it is the
     /// entry already playing, or stop at the start of the queue.
     pub(super) fn step(&mut self, step: Option<Step>, user_navigated: bool) {
+        self.radio.pending_play_after_end = false;
         match step {
             None => {}
             Some(Step::Play(pos)) if Some(pos) == self.queue.position() && !self.pb.idle => {
@@ -366,10 +367,15 @@ impl Core {
             return;
         }
         let n = tracks.len();
-        match at {
-            QueuePosition::Next => self.queue.play_next(tracks),
-            QueuePosition::Last => self.queue.add_last(tracks),
-        }
+        let had_auto = self.radio.manual_queue_count < self.queue.len();
+        let idx = crate::radio::manual_insert_index(
+            at,
+            self.queue.position(),
+            self.queue.len(),
+            self.radio.manual_queue_count,
+        );
+        self.queue.insert_at_play_order(idx, tracks);
+        self.radio_on_manual_inserted(idx, n);
         self.queue_changed();
         let what = if n == 1 {
             "1 首".to_owned()
@@ -378,14 +384,22 @@ impl Core {
         };
         self.emit(Event::Notice(match at {
             QueuePosition::Next => format!("已添加 {what}到下一首播放"),
+            QueuePosition::Last if had_auto => format!("已添加 {what}到手动队列末尾（相似续播前）"),
             QueuePosition::Last => format!("已添加 {what}到队列末尾"),
         }));
     }
 
     pub(super) fn remove_from_queue(&mut self, uid: u64) {
+        let removed_info = self
+            .queue
+            .position_of_uid(uid)
+            .and_then(|pos| self.queue.at(pos).map(|item| (pos, item.track.id)));
         let Some(was_current) = self.queue.remove(uid) else {
             return;
         };
+        if let Some((pos, track_id)) = removed_info {
+            self.radio_on_track_removed(pos, track_id);
+        }
         if was_current {
             let playing = !self.pb.idle && !self.pb.paused;
             self.stop_playback();
@@ -398,21 +412,40 @@ impl Core {
         self.queue_changed();
     }
 
+    /// Builds the UI queue snapshot in play order with dual-zone & reason metadata.
+    pub(super) fn queue_entries(&self) -> Vec<QueueEntry> {
+        let manual_count = self.radio.manual_queue_count.min(self.queue.len());
+        self.queue
+            .in_play_order()
+            .enumerate()
+            .map(|(idx, item)| {
+                let is_auto = idx >= manual_count;
+                let reason = is_auto
+                    .then(|| self.radio_reason_for(item.track.id))
+                    .flatten();
+                let artists = crate::browse::track_artists(&item.track).to_vec();
+                let artist_id = artists.first().map_or(0, |a| a.id);
+                QueueEntry {
+                    uid: item.uid,
+                    track_id: item.track.id,
+                    album_id: item.track.album_id,
+                    artist_id,
+                    artists,
+                    title: item.track.title.clone(),
+                    artist: item.track.artist.clone(),
+                    duration: format::duration(item.track.duration_millis),
+                    artwork: item.track.artwork_url.clone(),
+                    is_auto,
+                    reason,
+                }
+            })
+            .collect()
+    }
+
     /// The queue's entries or order changed: tell the UI, refresh the preload.
     pub(super) fn queue_changed(&mut self) {
-        let items = self
-            .queue
-            .in_play_order()
-            .map(|item| QueueEntry {
-                uid: item.uid,
-                title: item.track.title.clone(),
-                artist: item.track.artist.clone(),
-                duration: format::duration(item.track.duration_millis),
-                artwork: item.track.artwork_url.clone(),
-            })
-            .collect();
         self.emit(Event::Queue {
-            items,
+            items: self.queue_entries(),
             current: self.queue.position(),
         });
         self.sync_preload();
@@ -441,6 +474,7 @@ impl Core {
         let saved = SavedQueue {
             server: library.client.base_url().to_owned(),
             queue: self.queue.snapshot(),
+            radio: self.radio_snapshot(),
         };
         let bytes = serde_json::to_vec(&saved).ok()?;
         Some((self.config.data_dir.join(QUEUE_FILE), bytes))
@@ -468,6 +502,7 @@ impl Core {
             return;
         }
         self.queue.restore(saved.queue);
+        self.radio_restore(saved.radio);
         self.queue_changed();
         let Some(item) = self.queue.current().cloned() else {
             return;
@@ -670,6 +705,8 @@ impl Core {
         self.save_position();
         self.load_lyrics(track.id);
         self.update_playing_sources();
+        self.emit_radio_state();
+        self.maybe_trigger_auto_continue(false);
     }
 
     pub(super) fn duration_ms(&self) -> i64 {
@@ -768,7 +805,12 @@ impl Core {
                 self.start_current(false, !gapless);
                 self.emit_queue_position();
             }
-            step @ Some(Step::Stop(_)) => self.step(step, false),
+            step @ Some(Step::Stop(_)) => {
+                if !self.pause_at_end() && self.maybe_trigger_auto_continue(true) {
+                    return;
+                }
+                self.step(step, false);
+            }
             None => {}
         }
     }

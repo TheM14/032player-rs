@@ -23,7 +23,6 @@ use crate::browse::{
 
 /// Tracks of "随机播放全部" (the Electron dialog's default).
 const SHUFFLE_ALL_COUNT: u32 = 100;
-const SIMILAR_COUNT: u32 = 50;
 const SEARCH_PAGE: u32 = 200;
 /// How long the artist page reuses the favorite tracks it fetched.
 const FAVORITES_FRESH: std::time::Duration = std::time::Duration::from_secs(60);
@@ -417,8 +416,8 @@ impl Core {
         self.artist_credit_all = None;
         self.set_list(TrackList::ArtistCredits, Vec::new());
         let seq = self.next_seq(Target::Detail);
-        let similar_title = match key {
-            DetailKey::Similar(id) | DetailKey::Versions(id) => self
+        let versions_title = match key {
+            DetailKey::Versions(id) => self
                 .library
                 .as_ref()
                 .and_then(|l| l.lists.values().flatten().find(|t| t.id == id))
@@ -541,17 +540,6 @@ impl Core {
                         let view = browse::playlist_view(&detail.playlist);
                         (DetailView::Playlist(view), detail.tracks, Vec::new())
                     }
-                    DetailKey::Similar(id) => {
-                        let tracks = client.similar_tracks(id, SIMILAR_COUNT).await?;
-                        (
-                            DetailView::Similar {
-                                track_id: id,
-                                title: similar_title,
-                            },
-                            tracks,
-                            Vec::new(),
-                        )
-                    }
                     DetailKey::Versions(id) => {
                         let (seed, mut tracks) = match client.track_versions(id).await {
                             Ok(resp) => (Some(resp.track), resp.items),
@@ -561,7 +549,7 @@ impl Core {
                                     .as_ref()
                                     .map(|t| t.title.clone())
                                     .filter(|s| !s.is_empty())
-                                    .unwrap_or_else(|| similar_title.clone());
+                                    .unwrap_or_else(|| versions_title.clone());
                                 let page = client
                                     .tracks(
                                         browse_cap,
@@ -587,7 +575,7 @@ impl Core {
                             .as_ref()
                             .map(|t| t.title.clone())
                             .filter(|s| !s.is_empty())
-                            .unwrap_or(similar_title);
+                            .unwrap_or(versions_title);
                         let composer = seed
                             .as_ref()
                             .map(|t| t.composer.clone())
@@ -837,17 +825,7 @@ impl Core {
             let current = self.queue.current().map(|i| i.track.clone());
             self.emit_now_playing(current.as_ref());
             self.emit(Event::Queue {
-                items: self
-                    .queue
-                    .in_play_order()
-                    .map(|i| super::QueueEntry {
-                        uid: i.uid,
-                        title: i.track.title.clone(),
-                        artist: i.track.artist.clone(),
-                        duration: crate::format::duration(i.track.duration_millis),
-                        artwork: i.track.artwork_url.clone(),
-                    })
-                    .collect(),
+                items: self.queue_entries(),
                 current: self.queue.position(),
             });
             // Do not call queue_changed: it touches the engine preload and Sonos.
@@ -1006,14 +984,6 @@ impl Core {
                     tracks: items,
                 });
             }
-            Loaded::Related(track_id, tracks) => {
-                let items = tracks.iter().map(track_item).collect();
-                self.set_list(TrackList::Related, tracks);
-                self.emit(Event::Related {
-                    track_id,
-                    tracks: items,
-                });
-            }
             home => self.home_loaded(home),
         }
     }
@@ -1072,21 +1042,6 @@ impl Core {
                     )
                 }
                 Err(e) => Self::failed(&client, "加载收藏的歌曲", e),
-            };
-            let _ = tx.send(msg);
-        });
-    }
-
-    /// Similar songs of the current track for the full-screen player.
-    pub(super) fn load_related(&mut self, id: i64) {
-        let Some((client, tx)) = self.request() else {
-            return;
-        };
-        let seq = self.next_seq(Target::Related);
-        tokio::spawn(async move {
-            let msg = match client.similar_tracks(id, SIMILAR_COUNT).await {
-                Ok(tracks) => Internal::Loaded(Target::Related, seq, Loaded::Related(id, tracks)),
-                Err(e) => Self::failed(&client, "加载相关歌曲", e),
             };
             let _ = tx.send(msg);
         });
@@ -1212,6 +1167,10 @@ impl Core {
                     .map(|item| item.track.clone())
                     .collect(),
             ),
+            TrackSource::QueueItem(uid) => self
+                .queue
+                .item_by_uid(uid)
+                .map(|item| vec![item.track.clone()]),
             _ => None,
         };
         if let Some(tracks) = tracks {
@@ -1335,9 +1294,10 @@ impl Core {
                     }
                     result.map(|()| tracks)
                 }
-                TrackSource::Track(..) | TrackSource::List(_) | TrackSource::Queue => {
-                    Ok(Vec::new())
-                }
+                TrackSource::Track(..)
+                | TrackSource::List(_)
+                | TrackSource::Queue
+                | TrackSource::QueueItem(_) => Ok(Vec::new()),
             };
             let _ = tx.send(Internal::Fetched {
                 generation,
@@ -1374,6 +1334,7 @@ impl Core {
                 let (tracks, contexts): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
                 let started = self.queue.replace(tracks, start).is_some();
                 self.queue.set_contexts(contexts);
+                self.radio_reset_for_manual_queue();
                 if started {
                     if start_ms > 0 {
                         self.queue.set_current_start(start_ms);

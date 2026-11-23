@@ -649,19 +649,6 @@ async fn album_detail_search_and_similar() {
     assert_eq!(total, 2);
     assert_eq!(cat_tracks.len(), 2);
 
-    h.send(Command::OpenSimilar(TrackList::Library, 1));
-    let Event::Detail { view, tracks } = h.wait("similar", |e| matches!(e, Event::Detail { .. }))
-    else {
-        unreachable!()
-    };
-    assert_eq!(
-        view,
-        DetailView::Similar {
-            track_id: 2,
-            title: "b".into()
-        }
-    );
-    assert_eq!(tracks[0].id, 3);
     h.shutdown().await;
 }
 

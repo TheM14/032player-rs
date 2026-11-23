@@ -1,6 +1,7 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { ArtFit, Fonts, Theme } from "theme.slint";
-import { PlayingBars, IconButton, IconKind, Icon, SearchField } from "controls.slint";
+import { PlayingBars, IconButton, IconKind, Icon, SearchField, RadioState } from "controls.slint";
+import { PlaylistChoice, ContextMenuState } from "context_menu.slint";
 
 // `translation`: shown under the line (bilingual).
 export struct LyricLine {
@@ -9,13 +10,82 @@ export struct LyricLine {
 }
 
 export struct QueueRow {
+    // 0: track entry, 1: dual-zone auto-similar divider, 2: tail status card
+    kind: int,
     uid: int,
+    // 0-based play-order index (for tracks: own index; divider: boundary; tail: last track).
+    play-index: int,
     // Position in the queue (1-based; search keeps the queue numbers).
     number: int,
     title: string,
     artist: string,
     duration: string,
     cover: image,
+    is-auto: bool,
+    reason: string,
+    album-id: int,
+    has-artists: bool,
+}
+
+component AutoContinueToggle inherits Rectangle {
+    in property <length> size: 32px;
+    in property <length> icon-size: 16px;
+    property <bool> armed: RadioState.auto-play && !RadioState.paused-by-mode;
+    property <bool> paused: RadioState.auto-play && RadioState.paused-by-mode;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size == 30px ? 7px : 8px;
+    border-width: root.armed || root.paused ? 1px : 0px;
+    border-color: root.armed ? Theme.accent.with-alpha(0.32) : Theme.border;
+    background: root.armed ? (area.has-hover ? Theme.accent.with-alpha(0.24) : Theme.accent-dim)
+        : root.paused ? (area.has-hover ? Theme.surface-hover : Theme.raised)
+        : area.has-hover ? Theme.surface-hover : transparent;
+    Icon {
+        kind: IconKind.infinity;
+        width: root.icon-size;
+        height: root.icon-size;
+        color: root.armed ? Theme.accent-text
+            : root.paused ? Theme.text-faint
+            : area.has-hover ? Theme.text : Theme.text-dim;
+    }
+    area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            RadioState.toggle-auto-play(!RadioState.auto-play);
+        }
+    }
+}
+
+component RadioSeedPill inherits Rectangle {
+    in property <string> seed-title;
+    in property <length> max-pill-width: 240px;
+    height: 20px;
+    width: min(root.max-pill-width, pill-row.preferred-width);
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.accent.with-alpha(0.28);
+    background: Theme.accent-dim;
+    pill-row := HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        spacing: 4px;
+        Icon {
+            kind: IconKind.radio;
+            width: 10px;
+            height: 10px;
+            y: (parent.height - self.height) / 2;
+            color: Theme.accent-text;
+        }
+        Text {
+            text: "电台 · " + root.seed-title;
+            font-family: Fonts.family(self.text);
+            color: Theme.accent-text;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
 }
 
 
@@ -24,6 +94,7 @@ export component QueuePanel inherits Rectangle {
     // Entries in the whole queue (`rows` may be filtered).
     in property <int> total;
     in property <int> current: -1;
+    in property <[PlaylistChoice]> playlists;
     // The search text (rows are filtered in Rust; no dragging then).
     in-out property <string> search;
     callback search-changed(string);
@@ -34,8 +105,19 @@ export component QueuePanel inherits Rectangle {
     callback save();
     // (uid, new play-order position)
     callback move(int, int);
+    // (what, uid, arg) from queue row context menu.
+    callback row-action(string, int, int);
     property <int> drag-from: -1;
     property <int> drop-at: -1;
+    property <int> menu-token: 0;
+    property <int> menu-uid: -1;
+    property <int> menu-fired: ContextMenuState.fired-token;
+    changed menu-fired => {
+        if self.menu-fired > 0 && self.menu-fired == root.menu-token {
+            root.menu-token = 0;
+            root.row-action(ContextMenuState.fired-what, root.menu-uid, ContextMenuState.fired-arg);
+        }
+    }
     // The right panel tab hides the title row.
     in property <bool> show-title: true;
     in property <length> side-padding: 16px;
@@ -59,6 +141,32 @@ export component QueuePanel inherits Rectangle {
     background: root.stage ? Theme.stage-panel : Theme.surface;
     clip: root.stage;
 
+    function open-row-menu(row: QueueRow, is-current: bool, wx: length, wy: length) {
+        root.menu-uid = row.uid;
+        root.menu-token = ContextMenuState.show(
+            wx,
+            wy,
+            [
+                { label: "立即播放", icon: IconKind.play, what: "play", hidden: is-current },
+                {
+                    label: is-current ? "以此曲重开相似电台" : "以此曲开启相似电台",
+                    icon: IconKind.radio,
+                    what: "radio",
+                    accent-icon: true,
+                    hidden: !RadioState.supported,
+                },
+                { kind: 1, hidden: is-current && !RadioState.supported },
+                { kind: 2, label: "添加到歌单", icon: IconKind.plus },
+                { kind: 1, hidden: row.album-id <= 0 && !row.has-artists },
+                { label: "转到专辑", icon: IconKind.disc, what: "album", arg: row.album-id, hidden: row.album-id <= 0 },
+                { label: "转到艺人", icon: IconKind.person, what: "artists", hidden: !row.has-artists },
+                { kind: 1 },
+                { label: "从队列移除", icon: IconKind.trash, what: "remove", danger: true },
+            ],
+            root.playlists,
+        );
+    }
+
     function locate() {
         root.needs-locate = false;
         if root.current >= 0 {
@@ -70,7 +178,7 @@ export component QueuePanel inherits Rectangle {
         if root.needs-locate {
             if root.current < 0 || root.rows.length == 0 {
                 root.needs-locate = false;
-            } else if list.visible-height > 0px && list.content-height >= root.rows.length * root.row-h - 1px {
+            } else if list.visible-height > 0px && list.content-height >= root.rows.length * min(root.row-h, 54px) - 1px {
                 root.locate();
             }
         }
@@ -147,6 +255,10 @@ export component QueuePanel inherits Rectangle {
             Rectangle {
                 width: 4px;
             }
+            if RadioState.supported: AutoContinueToggle {
+                size: 32px;
+                icon-size: 17px;
+            }
             IconButton {
                 kind: IconKind.locate;
                 size: 32px;
@@ -173,6 +285,16 @@ export component QueuePanel inherits Rectangle {
                 clicked => {
                     root.clear();
                 }
+            }
+        }
+        if !root.stage && RadioState.supported && RadioState.active-radio && RadioState.seed-title != "": HorizontalLayout {
+            padding-left: root.side-padding;
+            padding-right: root.side-padding;
+            padding-bottom: 8px;
+            alignment: start;
+            RadioSeedPill {
+                seed-title: RadioState.seed-title;
+                max-pill-width: max(120px, root.width - 2 * root.side-padding);
             }
         }
 
@@ -221,6 +343,10 @@ export component QueuePanel inherits Rectangle {
                 Rectangle {
                     horizontal-stretch: 1;
                 }
+                if RadioState.supported: AutoContinueToggle {
+                    size: 30px;
+                    icon-size: 15px;
+                }
                 IconButton {
                     kind: IconKind.search;
                     size: 30px;
@@ -267,6 +393,15 @@ export component QueuePanel inherits Rectangle {
                 }
             }
 
+            if !root.stage-head && RadioState.supported && RadioState.active-radio && RadioState.seed-title != "": HorizontalLayout {
+                padding-right: 4px;
+                alignment: start;
+                RadioSeedPill {
+                    seed-title: RadioState.seed-title;
+                    max-pill-width: max(120px, root.width - 36px);
+                }
+            }
+
             if root.search-open || root.search != "": HorizontalLayout {
                 padding-right: 4px;
                 SearchField {
@@ -284,6 +419,13 @@ export component QueuePanel inherits Rectangle {
 
             if root.stage-head && root.total > 0: HorizontalLayout {
                 padding-right: 4px;
+                spacing: 8px;
+                if RadioState.supported && RadioState.active-radio && RadioState.seed-title != "": RadioSeedPill {
+                    y: (parent.height - self.height) / 2;
+                    seed-title: RadioState.seed-title;
+                    max-pill-width: 170px;
+                    horizontal-stretch: 0;
+                }
                 Text {
                     text: root.position >= 0
                         ? "正在播放第 " + (root.position + 1) + " / " + root.total + " 首"
@@ -293,6 +435,7 @@ export component QueuePanel inherits Rectangle {
                     font-size: 12px;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
+                    overflow: elide;
                 }
                 Text {
                     text: root.search != ""
@@ -304,6 +447,7 @@ export component QueuePanel inherits Rectangle {
                     color: Theme.text-faint;
                     font-size: 12px;
                     vertical-alignment: center;
+                    horizontal-stretch: 0;
                 }
             }
         }
@@ -331,66 +475,448 @@ export component QueuePanel inherits Rectangle {
                     root.try-initial-locate();
                 }
                 for row[i] in root.rows: row-item := Rectangle {
-                    property <length> press-y;
                     property <bool> dragging: root.drag-from == i;
-                    property <bool> is-current: i == root.current;
-                    property <bool> is-played: root.stage && row.number <= root.position;
-                    property <bool> row-hover: area.has-hover || play-area.has-hover || stage-remove-area.has-hover;
-                    height: root.row-h;
-                    background: root.stage ? transparent
-                        : row-item.dragging ? Theme.accent-dim
-                        : row-item.is-current ? Theme.accent-dim
-                        : area.has-hover ? Theme.surface-hover : transparent;
+                    property <bool> is-current: row.kind == 0 && i == root.current;
+                    property <bool> is-played: root.stage && row.kind == 0 && row.number <= root.position;
+                    height: row.kind == 1 ? 58px : row.kind == 2 ? 78px : root.row-h;
+                    background: transparent;
 
-                    // Stage mode: inset rounded row card with subtle active border & left accent bar.
-                    if root.stage: Rectangle {
-                        x: 10px;
-                        y: 2px;
-                        width: parent.width - 20px;
-                        height: parent.height - 4px;
-                        border-radius: 10px;
-                        border-width: row-item.is-current ? 1px : 0px;
-                        border-color: Theme.accent.with-alpha(0.32);
-                        background: row-item.dragging ? Theme.accent-dim
+                    // Track row (kind == 0).
+                    if row.kind == 0: track-box := Rectangle {
+                        property <length> press-y;
+                        property <bool> row-hover: area.has-hover || play-area.has-hover || stage-remove-area.has-hover;
+                        width: 100%;
+                        height: 100%;
+                        background: root.stage ? transparent
+                            : row-item.dragging ? Theme.accent-dim
                             : row-item.is-current ? Theme.accent-dim
-                            : row-item.row-hover ? Theme.surface-hover : transparent;
+                            : area.has-hover ? Theme.surface-hover : transparent;
 
-                        if row-item.is-current: Rectangle {
-                            x: 0px;
-                            y: 12px;
-                            width: 3px;
-                            height: parent.height - 24px;
-                            border-radius: 1.5px;
-                            background: Theme.accent;
-                        }
-                    }
+                        // Stage mode: inset rounded row card with subtle active border & left accent bar.
+                        if root.stage: Rectangle {
+                            x: 10px;
+                            y: 2px;
+                            width: parent.width - 20px;
+                            height: parent.height - 4px;
+                            border-radius: 10px;
+                            border-width: row-item.is-current ? 1px : 0px;
+                            border-color: Theme.accent.with-alpha(0.32);
+                            background: row-item.dragging ? Theme.accent-dim
+                                : row-item.is-current ? Theme.accent-dim
+                                : track-box.row-hover ? Theme.surface-hover : transparent;
 
-                    area := TouchArea {
-                        double-clicked => {
-                            root.play(row.uid);
+                            if row-item.is-current: Rectangle {
+                                x: 0px;
+                                y: 12px;
+                                width: 3px;
+                                height: parent.height - 24px;
+                                border-radius: 1.5px;
+                                background: Theme.accent;
+                            }
                         }
-                        pointer-event(e) => {
-                            if e.button == PointerEventButton.left {
-                                if e.kind == PointerEventKind.down {
-                                    row-item.press-y = self.mouse-y;
+
+                        area := TouchArea {
+                            double-clicked => {
+                                root.play(row.uid);
+                            }
+                            pointer-event(e) => {
+                                if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                                    root.open-row-menu(
+                                        row,
+                                        row-item.is-current,
+                                        self.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y + self.mouse-y,
+                                    );
                                 }
-                                if e.kind == PointerEventKind.up && root.drag-from == i {
-                                    if root.drop-at >= 0 && root.drop-at != i {
-                                        root.move(row.uid, root.drop-at);
+                                if e.button == PointerEventButton.left {
+                                    if e.kind == PointerEventKind.down {
+                                        track-box.press-y = self.mouse-y;
                                     }
+                                    if e.kind == PointerEventKind.up && root.drag-from == i {
+                                        if root.drop-at >= 0 && root.drop-at != i && root.drop-at < root.rows.length {
+                                            if root.rows[root.drop-at].kind == 1 {
+                                                root.move(
+                                                    row.uid,
+                                                    root.drop-at > i
+                                                        ? min(max(0, root.total - 1), root.rows[root.drop-at].play-index)
+                                                        : max(0, root.rows[root.drop-at].play-index - 1),
+                                                );
+                                            } else {
+                                                root.move(row.uid, root.rows[root.drop-at].play-index);
+                                            }
+                                        }
+                                        root.drag-from = -1;
+                                        root.drop-at = -1;
+                                    }
+                                }
+                                if e.kind == PointerEventKind.cancel && root.drag-from == i {
                                     root.drag-from = -1;
                                     root.drop-at = -1;
                                 }
                             }
-                            if e.kind == PointerEventKind.cancel && root.drag-from == i {
-                                root.drag-from = -1;
-                                root.drop-at = -1;
+                            moved => {
+                                if self.pressed && root.search == "" && (root.drag-from == i || abs(self.mouse-y - track-box.press-y) > 6px) {
+                                    root.drag-from = i;
+                                    root.drop-at = max(0, min(root.rows.length - 1, i + round((self.mouse-y - track-box.press-y) / root.row-h)));
+                                }
                             }
                         }
-                        moved => {
-                            if self.pressed && root.search == "" && (root.drag-from == i || abs(self.mouse-y - row-item.press-y) > 6px) {
-                                root.drag-from = i;
-                                root.drop-at = max(0, min(root.rows.length - 1, i + round((self.mouse-y - row-item.press-y) / row-item.height)));
+
+                        // Row content: number, cover (48px snapped in stage), title + reason pill / artist, duration / hover remove.
+                        HorizontalLayout {
+                            padding-left: root.stage ? 18px : root.side-padding - 10px;
+                            padding-right: root.stage ? 20px : root.side-padding - 6px;
+                            spacing: root.stage ? 12px : 10px;
+                            opacity: row-item.is-played && !track-box.row-hover ? 0.44 : 1.0;
+
+                            Rectangle {
+                                width: root.stage ? 22px : 28px;
+                                if !row-item.is-current || root.stage: Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: row.number;
+                                    font-family: Fonts.family(self.text);
+                                    color: row-item.is-current ? Theme.accent-text : Theme.text-faint;
+                                    font-size: root.stage ? 12px : 14px;
+                                    font-weight: row-item.is-current ? 600 : 400;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                if row-item.is-current && !root.stage: PlayingBars {
+                                    width: 12px;
+                                    height: 11px;
+                                }
+                            }
+
+                            Rectangle {
+                                width: root.art-size;
+                                height: root.art-size;
+                                y: (parent.height - self.height) / 2;
+                                Rectangle {
+                                    width: ArtFit.width(root.art-size, root.art-size, row.cover);
+                                    height: ArtFit.height(root.art-size, root.art-size, row.cover);
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: root.stage ? 7px : 4px;
+                                    background: row.cover.width == 0 ? Theme.raised : transparent;
+                                    clip: true;
+                                    Image {
+                                        source: row.cover;
+                                        width: 100%;
+                                        height: 100%;
+                                        image-fit: ImageFit.cover;
+                                    }
+                                    // Stage mode: playing bars on current cover, single-click play overlay on hover.
+                                    if root.stage && (row-item.is-current || track-box.row-hover): Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        background: #0d0d118a;
+                                        if row-item.is-current: PlayingBars {
+                                            width: 13px;
+                                            height: 12px;
+                                            bar-color: #ffffff;
+                                        }
+                                        if !row-item.is-current: Icon {
+                                            kind: IconKind.play;
+                                            width: 16px;
+                                            height: 16px;
+                                            color: #ffffff;
+                                        }
+                                    }
+                                }
+                                play-area := TouchArea {
+                                    enabled: root.stage && !row-item.is-current;
+                                    mouse-cursor: pointer;
+                                    pointer-event(e) => {
+                                        if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                                            root.open-row-menu(
+                                                row,
+                                                row-item.is-current,
+                                                self.absolute-position.x + self.mouse-x,
+                                                self.absolute-position.y + self.mouse-y,
+                                            );
+                                        }
+                                    }
+                                    clicked => {
+                                        root.play(row.uid);
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                spacing: root.stage ? 2px : 0px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: row.title;
+                                        font-family: Fonts.family(self.text);
+                                        color: row-item.is-current ? Theme.accent-text : Theme.text;
+                                        font-size: root.stage ? 14.5px : 15px;
+                                        font-weight: root.stage && row-item.is-current ? 650 : 600;
+                                        overflow: elide;
+                                        min-width: 0px;
+                                        horizontal-stretch: row.is-auto && row.reason != "" ? 0 : 1;
+                                        vertical-alignment: center;
+                                    }
+                                    if row.is-auto && row.reason != "": Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        height: 18px;
+                                        width: reason-txt.preferred-width + 10px;
+                                        border-radius: 5px;
+                                        background: Theme.accent-dim;
+                                        horizontal-stretch: 0;
+                                        reason-txt := Text {
+                                            text: row.reason;
+                                            font-family: Fonts.family(self.text);
+                                            color: Theme.accent-text;
+                                            font-size: 10.5px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                    if row.is-auto && row.reason != "": Rectangle {
+                                        min-width: 0px;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                                Text {
+                                    text: row.artist;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-dim;
+                                    font-size: 12.5px;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // Sidebar mode keeps duration + separate 28px remove slot;
+                            // Stage mode swaps duration cleanly to the remove button on hover.
+                            if !root.stage: Text {
+                                text: row.duration;
+                                color: Theme.text-faint;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            if !root.stage: Rectangle {
+                                width: 28px;
+                                Icon {
+                                    visible: area.has-hover || remove-area.has-hover;
+                                    kind: IconKind.close;
+                                    width: 14px;
+                                    height: 14px;
+                                    color: remove-area.has-hover ? Theme.text : Theme.text-faint;
+                                }
+                                remove-area := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.remove(row.uid);
+                                    }
+                                }
+                            }
+                            if root.stage: Rectangle {
+                                width: 40px;
+                                if !track-box.row-hover: Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: row.duration;
+                                    color: Theme.text-faint;
+                                    font-size: 12px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                                if track-box.row-hover: Rectangle {
+                                    x: parent.width - 28px;
+                                    y: (parent.height - 28px) / 2;
+                                    width: 28px;
+                                    height: 28px;
+                                    border-radius: 7px;
+                                    background: stage-remove-area.has-hover ? Theme.raised : transparent;
+                                    Icon {
+                                        kind: IconKind.close;
+                                        width: 14px;
+                                        height: 14px;
+                                        color: stage-remove-area.has-hover ? Theme.danger : Theme.text-dim;
+                                    }
+                                }
+                            }
+                        }
+
+                        stage-remove-area := TouchArea {
+                            x: parent.width - 20px - self.width;
+                            y: (parent.height - self.height) / 2;
+                            width: 28px;
+                            height: 28px;
+                            enabled: root.stage;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.remove(row.uid);
+                            }
+                        }
+                    }
+
+                    // Dual-zone auto-similar divider (kind == 1).
+                    if row.kind == 1: Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        Rectangle {
+                            x: root.stage ? 16px : root.side-padding;
+                            y: 6px;
+                            width: parent.width - 2 * self.x;
+                            height: 1px;
+                            background: Theme.border.with-alpha(0.75);
+                        }
+                        HorizontalLayout {
+                            x: root.stage ? 16px : root.side-padding;
+                            y: 12px;
+                            width: parent.width - 2 * self.x;
+                            height: parent.height - 16px;
+                            spacing: 8px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 2px;
+                                HorizontalLayout {
+                                    spacing: 5px;
+                                    alignment: start;
+                                    Icon {
+                                        kind: IconKind.infinity;
+                                        width: 13px;
+                                        height: 13px;
+                                        y: (parent.height - self.height) / 2;
+                                        color: Theme.accent-text;
+                                    }
+                                    Text {
+                                        text: "接下来 · 相似续播";
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text;
+                                        font-size: 12.5px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if RadioState.section-subtitle != "": Text {
+                                    text: RadioState.section-subtitle;
+                                    font-family: Fonts.family(self.text);
+                                    color: Theme.text-faint;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                width: refresh-row.preferred-width + 16px;
+                                height: 26px;
+                                border-radius: 7px;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                background: refresh-area.has-hover && !RadioState.loading ? Theme.surface-hover : Theme.raised;
+                                opacity: RadioState.loading ? 0.55 : 1.0;
+                                horizontal-stretch: 0;
+                                refresh-row := HorizontalLayout {
+                                    x: 8px;
+                                    spacing: 5px;
+                                    Icon {
+                                        kind: IconKind.refresh;
+                                        width: 12px;
+                                        height: 12px;
+                                        y: (parent.height - self.height) / 2;
+                                        color: refresh-area.has-hover ? Theme.text : Theme.text-dim;
+                                    }
+                                    Text {
+                                        text: RadioState.loading ? "加载中…" : "换一批";
+                                        font-family: Fonts.family(self.text);
+                                        color: refresh-area.has-hover ? Theme.text : Theme.text-dim;
+                                        font-size: 11.5px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                refresh-area := TouchArea {
+                                    enabled: !RadioState.loading;
+                                    mouse-cursor: RadioState.loading ? default : pointer;
+                                    clicked => {
+                                        RadioState.refresh-batch();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Queue tail status card (kind == 2).
+                    if row.kind == 2: Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        Rectangle {
+                            x: root.stage ? 12px : root.side-padding - 4px;
+                            y: 8px;
+                            width: parent.width - 2 * self.x;
+                            height: parent.height - 16px;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: RadioState.tail-error ? Theme.danger.with-alpha(0.35) : Theme.border;
+                            background: RadioState.tail-error ? Theme.danger.with-alpha(0.08)
+                                : root.stage ? Theme.raised.with-alpha(0.55) : Theme.raised.with-alpha(0.65);
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: RadioState.tail-title;
+                                        font-family: Fonts.family(self.text);
+                                        color: RadioState.tail-error ? Theme.danger : Theme.text;
+                                        font-size: 12.5px;
+                                        font-weight: 650;
+                                        overflow: elide;
+                                    }
+                                    if RadioState.tail-subtitle != "": Text {
+                                        text: RadioState.tail-subtitle;
+                                        font-family: Fonts.family(self.text);
+                                        color: Theme.text-dim;
+                                        font-size: 11.5px;
+                                        overflow: elide;
+                                    }
+                                }
+                                if RadioState.tail-action-label != "": Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    width: tail-cta-txt.preferred-width + 20px;
+                                    height: 28px;
+                                    border-radius: 8px;
+                                    border-width: RadioState.tail-primary ? 0px : 1px;
+                                    border-color: Theme.border;
+                                    background: RadioState.tail-primary
+                                        ? (tail-cta-area.has-hover ? Theme.accent.brighter(0.08) : Theme.accent)
+                                        : (tail-cta-area.has-hover ? Theme.surface-hover : Theme.surface);
+                                    opacity: RadioState.loading ? 0.55 : 1.0;
+                                    horizontal-stretch: 0;
+                                    tail-cta-txt := Text {
+                                        text: RadioState.tail-action-label;
+                                        font-family: Fonts.family(self.text);
+                                        color: RadioState.tail-primary ? #ffffff : Theme.text;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                    tail-cta-area := TouchArea {
+                                        enabled: !RadioState.loading;
+                                        mouse-cursor: RadioState.loading ? default : pointer;
+                                        clicked => {
+                                            if RadioState.tail-action-kind == "enable" {
+                                                RadioState.toggle-auto-play(true);
+                                            } else if RadioState.tail-action-kind == "sequential" {
+                                                RadioState.switch-sequential();
+                                            } else if RadioState.tail-action-kind == "load-more" {
+                                                RadioState.load-more();
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -401,162 +927,6 @@ export component QueuePanel inherits Rectangle {
                         y: root.drop-at < root.drag-from ? 0 : parent.height - 2px;
                         height: 2px;
                         background: Theme.accent;
-                    }
-
-                    // Row content: number, cover (48px snapped in stage), title / artist, duration / hover remove.
-                    HorizontalLayout {
-                        padding-left: root.stage ? 18px : root.side-padding - 10px;
-                        padding-right: root.stage ? 20px : root.side-padding - 6px;
-                        spacing: root.stage ? 12px : 10px;
-                        opacity: row-item.is-played && !row-item.row-hover ? 0.44 : 1.0;
-
-                        Rectangle {
-                            width: root.stage ? 22px : 28px;
-                            if !row-item.is-current || root.stage: Text {
-                                width: 100%;
-                                height: 100%;
-                                text: row.number;
-                                font-family: Fonts.family(self.text);
-                                color: row-item.is-current ? Theme.accent-text : Theme.text-faint;
-                                font-size: root.stage ? 12px : 14px;
-                                font-weight: row-item.is-current ? 600 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            if row-item.is-current && !root.stage: PlayingBars {
-                                width: 12px;
-                                height: 11px;
-                            }
-                        }
-
-                        Rectangle {
-                            width: root.art-size;
-                            height: root.art-size;
-                            y: (parent.height - self.height) / 2;
-                            Rectangle {
-                                width: ArtFit.width(root.art-size, root.art-size, row.cover);
-                                height: ArtFit.height(root.art-size, root.art-size, row.cover);
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: root.stage ? 7px : 4px;
-                                background: row.cover.width == 0 ? Theme.raised : transparent;
-                                clip: true;
-                                Image {
-                                    source: row.cover;
-                                    width: 100%;
-                                    height: 100%;
-                                    image-fit: ImageFit.cover;
-                                }
-                                // Stage mode: playing bars on current cover, single-click play overlay on hover.
-                                if root.stage && (row-item.is-current || row-item.row-hover): Rectangle {
-                                    width: 100%;
-                                    height: 100%;
-                                    background: #0d0d118a;
-                                    if row-item.is-current: PlayingBars {
-                                        width: 13px;
-                                        height: 12px;
-                                        bar-color: #ffffff;
-                                    }
-                                    if !row-item.is-current: Icon {
-                                        kind: IconKind.play;
-                                        width: 16px;
-                                        height: 16px;
-                                        color: #ffffff;
-                                    }
-                                }
-                            }
-                            play-area := TouchArea {
-                                enabled: root.stage && !row-item.is-current;
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.play(row.uid);
-                                }
-                            }
-                        }
-
-                        VerticalLayout {
-                            alignment: center;
-                            horizontal-stretch: 1;
-                            spacing: root.stage ? 2px : 0px;
-                            Text {
-                                text: row.title;
-                                font-family: Fonts.family(self.text);
-                                color: row-item.is-current ? Theme.accent-text : Theme.text;
-                                font-size: root.stage ? 14.5px : 15px;
-                                font-weight: root.stage && row-item.is-current ? 650 : 600;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: row.artist;
-                                font-family: Fonts.family(self.text);
-                                color: Theme.text-dim;
-                                font-size: 12.5px;
-                                overflow: elide;
-                            }
-                        }
-
-                        // Sidebar mode keeps duration + separate 28px remove slot;
-                        // Stage mode swaps duration cleanly to the remove button on hover.
-                        if !root.stage: Text {
-                            text: row.duration;
-                            color: Theme.text-faint;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        if !root.stage: Rectangle {
-                            width: 28px;
-                            Icon {
-                                visible: area.has-hover || remove-area.has-hover;
-                                kind: IconKind.close;
-                                width: 14px;
-                                height: 14px;
-                                color: remove-area.has-hover ? Theme.text : Theme.text-faint;
-                            }
-                            remove-area := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.remove(row.uid);
-                                }
-                            }
-                        }
-                        if root.stage: Rectangle {
-                            width: 40px;
-                            if !row-item.row-hover: Text {
-                                width: 100%;
-                                height: 100%;
-                                text: row.duration;
-                                color: Theme.text-faint;
-                                font-size: 12px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
-                            if row-item.row-hover: Rectangle {
-                                x: parent.width - 28px;
-                                y: (parent.height - 28px) / 2;
-                                width: 28px;
-                                height: 28px;
-                                border-radius: 7px;
-                                background: stage-remove-area.has-hover ? Theme.raised : transparent;
-                                Icon {
-                                    kind: IconKind.close;
-                                    width: 14px;
-                                    height: 14px;
-                                    color: stage-remove-area.has-hover ? Theme.danger : Theme.text-dim;
-                                }
-                            }
-                        }
-                    }
-
-                    stage-remove-area := TouchArea {
-                        x: parent.width - 20px - self.width;
-                        y: (parent.height - self.height) / 2;
-                        width: 28px;
-                        height: 28px;
-                        enabled: root.stage;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            root.remove(row.uid);
-                        }
                     }
                 }
             }

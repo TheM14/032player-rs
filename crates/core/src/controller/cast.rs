@@ -1549,6 +1549,7 @@ impl Core {
         else {
             return;
         };
+        let replaced_queue = tracks.is_some();
         if let Some(tracks) = tracks {
             if self.queue.shuffle() {
                 // The speaker's order is the play order now.
@@ -1557,6 +1558,7 @@ impl Core {
                 self.emit(Event::Shuffle(false));
             }
             self.queue.replace(tracks, index);
+            self.radio_reset_for_manual_queue();
         } else {
             self.queue.go(window_start + index);
         }
@@ -1636,6 +1638,10 @@ impl Core {
         self.emit(Event::Notice(format!(
             "已同步 Sonos「{name}」正在播放的队列"
         )));
+        if replaced_queue || self.radio.manual_queue_count == 0 {
+            self.emit_radio_state();
+            self.maybe_trigger_auto_continue(false);
+        }
     }
 
     /// Between polls the position runs on by the clock (smooth progress

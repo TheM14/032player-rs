@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use client_core::{
     AlbumSort, ArtistSort, ArtworkFit, Command, DetailView, Event, ExclusiveMode, FavoriteKind,
-    PlaylistSort, ServerFeatures, SignOutReason, SleepTimer, SortOrder, TrackFilter, TrackItem,
-    TrackSort, Transcode, format,
+    PlaylistSort, RadioErrorKind, RadioPauseReason, RadioStatus, ServerFeatures, SignOutReason,
+    SimilarityMethod, SleepTimer, SortOrder, TrackFilter, TrackItem, TrackSort, Transcode, format,
 };
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
@@ -21,7 +21,7 @@ use super::{
 use crate::cards::{Card, image_key, key_path, physical_box};
 use crate::{
     AppWindow, DetailInfo, DetailKind, DialogKind, Home, Lib032, PlaylistChoice, QueueRow,
-    ReleaseGroupRow, TrackRow,
+    RadioState, ReleaseGroupRow, TrackRow,
 };
 
 impl Ui {
@@ -108,6 +108,147 @@ impl Ui {
             }),
         );
         self.reset_search(w, true);
+        let mut radio = self.radio.borrow().clone();
+        radio.supported = features.similar_tracks;
+        radio.similarity_method = features.similarity_method;
+        self.apply_radio_status(w, radio);
+    }
+
+    fn apply_radio_status(&self, w: &AppWindow, status: RadioStatus) {
+        let prev = self.radio.replace(status.clone());
+        let radio = w.global::<RadioState>();
+        radio.set_supported(status.supported);
+        radio.set_auto_play(status.auto_play_enabled);
+        radio.set_active_radio(status.radio_seed.is_some());
+        radio.set_seed_title(
+            status
+                .radio_seed
+                .as_ref()
+                .map(|s| s.title.as_str())
+                .unwrap_or("")
+                .into(),
+        );
+        let seed_label = status
+            .last_auto_seed_title
+            .as_deref()
+            .or_else(|| status.radio_seed.as_ref().map(|s| s.title.as_str()));
+        let method_label = match status.similarity_method {
+            SimilarityMethod::Hybrid => Some("声学 + 元数据混合"),
+            SimilarityMethod::Metadata => Some("元数据相似"),
+            SimilarityMethod::Unknown => None,
+        };
+        let section_subtitle = match (seed_label, method_label) {
+            (Some(title), Some(method)) => format!("基于《{title}》 · {method}"),
+            (Some(title), None) => format!("基于《{title}》"),
+            (None, Some(method)) => method.to_owned(),
+            (None, None) => String::new(),
+        };
+        radio.set_section_subtitle(section_subtitle.into());
+        radio.set_loading(status.is_loading);
+        let paused_by_mode =
+            status.auto_play_enabled && status.pause_reason != RadioPauseReason::None;
+        radio.set_paused_by_mode(paused_by_mode);
+
+        let (title, subtitle, action_label, action_kind, primary, is_error) =
+            if !status.auto_play_enabled {
+                (
+                    "队列播完后将停止",
+                    "开启自动续播，播完自动补充相似曲目",
+                    "开启续播",
+                    "enable",
+                    true,
+                    false,
+                )
+            } else {
+                match status.pause_reason {
+                    RadioPauseReason::RepeatAll => (
+                        "列表循环中，已暂停自动续播",
+                        "切回顺序播放后将在队列末尾自动续播",
+                        "切回顺序播放",
+                        "sequential",
+                        false,
+                        false,
+                    ),
+                    RadioPauseReason::RepeatOne => (
+                        "单曲循环中，已暂停自动续播",
+                        "切回顺序播放后将在队列末尾自动续播",
+                        "切回顺序播放",
+                        "sequential",
+                        false,
+                        false,
+                    ),
+                    RadioPauseReason::SleepTrack => (
+                        "本曲播完后暂停，已暂停自动续播",
+                        "睡眠定时生效期间不会继续追加相似曲目",
+                        "",
+                        "",
+                        false,
+                        false,
+                    ),
+                    RadioPauseReason::SleepAlbum => (
+                        "本专辑播完后暂停，已暂停自动续播",
+                        "当前为专辑末曲，播完后将按定时停止",
+                        "",
+                        "",
+                        false,
+                        false,
+                    ),
+                    RadioPauseReason::None if status.is_loading => (
+                        "正在为你挑选相似曲目…",
+                        "将在当前队列末尾无缝衔接",
+                        "",
+                        "",
+                        false,
+                        false,
+                    ),
+                    RadioPauseReason::None => match status.error_kind {
+                        Some(RadioErrorKind::Busy) => (
+                            "相似度服务正忙",
+                            "服务端正在计算特征，请稍后重试",
+                            "重试",
+                            "load-more",
+                            false,
+                            true,
+                        ),
+                        Some(RadioErrorKind::OfflineOrFailed) => (
+                            "无法获取相似曲目",
+                            "请检查网络连接或服务端状态",
+                            "重试",
+                            "load-more",
+                            false,
+                            true,
+                        ),
+                        Some(RadioErrorKind::Empty) => (
+                            "暂时没有更多相似曲目",
+                            "已尽量跳过队列中已有或已换掉的曲目",
+                            "重试",
+                            "load-more",
+                            false,
+                            false,
+                        ),
+                        None => (
+                            "队列末尾将自动续播相似曲目",
+                            "剩余不足 2 首时自动静默补充下一批",
+                            "再加一批",
+                            "load-more",
+                            false,
+                            false,
+                        ),
+                    },
+                }
+            };
+        radio.set_tail_title(title.into());
+        radio.set_tail_subtitle(subtitle.into());
+        radio.set_tail_action_label(action_label.into());
+        radio.set_tail_action_kind(action_kind.into());
+        radio.set_tail_primary(primary);
+        radio.set_tail_error(is_error);
+
+        let structural_change = prev.supported != status.supported
+            || prev.manual_queue_count != status.manual_queue_count;
+        if structural_change && !self.queue_all.borrow().0.is_empty() {
+            self.show_queue(w);
+        }
     }
 
     fn detail_loaded(&self, w: &AppWindow, view: DetailView, tracks: Vec<TrackItem>) {
@@ -116,7 +257,6 @@ impl Ui {
             (DetailView::Album(a), Route::Album(id)) => a.id == id,
             (DetailView::Artist(a), Route::Artist(id)) => a.requested_id == id,
             (DetailView::Playlist(p), Route::Playlist(id)) => p.id == id,
-            (DetailView::Similar { track_id, .. }, Route::Similar(id)) => *track_id == id,
             (DetailView::Versions { track_id, .. }, Route::Versions(id)) => *track_id == id,
             (DetailView::Work(v), Route::Work(id)) => v.id == id,
             (DetailView::Series(v), Route::Series(id)) => v.id == id,
@@ -302,15 +442,6 @@ impl Ui {
                     p.artwork.clone(),
                 )
             }
-            DetailView::Similar { title, .. } => (
-                DetailInfo {
-                    kind: DetailKind::Similar,
-                    title: format!("与「{title}」相似").into(),
-                    meta: format!("{} 首 · 按元数据相似度", self.detail_tracks.row_count()).into(),
-                    ..DetailInfo::default()
-                },
-                String::new(),
-            ),
             DetailView::Versions {
                 title,
                 composer,
@@ -347,10 +478,13 @@ impl Ui {
     }
 
     /// Fills the queue panel: entries matching the search (title or
-    /// artist, case-insensitive), the current one marked.
+    /// artist, case-insensitive), the current one marked. When unfiltered,
+    /// inserts the auto-similar divider before the first auto track and the
+    /// tail status card at the end (when supported by the server).
     pub(super) fn show_queue(&self, w: &AppWindow) {
         self.unbind(Bind::Queue);
         let search = self.queue_search.borrow().to_lowercase();
+        let radio_supported = self.radio.borrow().supported;
         let (rows, paths, missing, total, current_row, current_pos) = {
             let all = self.queue_all.borrow();
             let (items, current) = &*all;
@@ -360,6 +494,7 @@ impl Ui {
             let mut missing = Vec::new();
             let mut missing_seen = HashSet::new();
             let mut current_row = None;
+            let mut divider_inserted = false;
             let covers = self.queue_covers.borrow();
             for (n, e) in items.iter().enumerate() {
                 if !search.is_empty()
@@ -367,6 +502,16 @@ impl Ui {
                     && !e.artist.to_lowercase().contains(&search)
                 {
                     continue;
+                }
+                if search.is_empty() && e.is_auto && !divider_inserted {
+                    divider_inserted = true;
+                    rows.push(QueueRow {
+                        kind: 1,
+                        uid: -1,
+                        play_index: i32::try_from(n).unwrap_or(i32::MAX),
+                        ..QueueRow::default()
+                    });
+                    paths.push(String::new());
                 }
                 if Some(e.uid) == current_uid {
                     current_row = Some(rows.len());
@@ -379,14 +524,29 @@ impl Ui {
                     missing.push(e.artwork.clone());
                 }
                 rows.push(QueueRow {
+                    kind: 0,
                     uid: i32::try_from(e.uid).unwrap_or(i32::MAX),
+                    play_index: i32::try_from(n).unwrap_or(i32::MAX),
                     number: int(i64::try_from(n + 1).unwrap_or(i64::MAX)),
                     title: e.title.as_str().into(),
                     artist: e.artist.as_str().into(),
                     duration: e.duration.as_str().into(),
                     cover: cover.unwrap_or_default(),
+                    is_auto: e.is_auto,
+                    reason: e.reason.as_deref().unwrap_or("").into(),
+                    album_id: int(e.album_id),
+                    has_artists: e.artist_id > 0 || !e.artists.is_empty(),
                 });
                 paths.push(e.artwork.clone());
+            }
+            if search.is_empty() && radio_supported && !items.is_empty() {
+                rows.push(QueueRow {
+                    kind: 2,
+                    uid: -2,
+                    play_index: i32::try_from(items.len().saturating_sub(1)).unwrap_or(i32::MAX),
+                    ..QueueRow::default()
+                });
+                paths.push(String::new());
             }
             (rows, paths, missing, items.len(), current_row, *current)
         };
@@ -431,12 +591,18 @@ impl Ui {
             let uid_i32 = i32::try_from(uid).unwrap_or(i32::MAX);
             if self.queue_search.borrow().is_empty()
                 && let Some(i) = *current
-                && self.queue.row_data(i).is_some_and(|row| row.uid == uid_i32)
+                && self
+                    .queue
+                    .row_data(i)
+                    .is_some_and(|row| row.kind == 0 && row.uid == uid_i32)
             {
                 return Some(i);
             }
-            (0..self.queue.row_count())
-                .find(|&i| self.queue.row_data(i).is_some_and(|row| row.uid == uid_i32))
+            (0..self.queue.row_count()).find(|&i| {
+                self.queue
+                    .row_data(i)
+                    .is_some_and(|row| row.kind == 0 && row.uid == uid_i32)
+            })
         });
         w.set_queue_current(row_index(current_row));
         w.set_queue_position(row_index(*current));
@@ -779,6 +945,14 @@ pub fn apply(event: Event) {
                 m.reset();
                 m.server.clear();
             }
+            let keep_auto = ui.radio.borrow().auto_play_enabled;
+            ui.apply_radio_status(
+                w,
+                RadioStatus {
+                    auto_play_enabled: keep_auto,
+                    ..RadioStatus::default()
+                },
+            );
         }
         Event::LoginFailed(failure) => {
             ui.finish_restore(w);
@@ -1045,7 +1219,7 @@ pub fn apply(event: Event) {
                 w.set_artist_credit_role(active_role.into());
             }
         }
-        Event::Related { .. } => {}
+        Event::RadioState(status) => ui.apply_radio_status(w, status),
         Event::Position {
             position_ms,
             duration_ms,

@@ -94,7 +94,7 @@ export component PlayingBars inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check, cast, versions }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check, cast, versions, radio, infinity, refresh }
 
 export struct CastRoomRow {
     id: string,
@@ -122,6 +122,33 @@ export global CastState {
     // A room id; empty: this computer.
     callback select(string);
     callback options-changed();
+}
+
+// 032 Similar Track Radio and Queue Auto-Continue state shared across
+// NowPlayingPanel, FullScreenPlayer, QueuePanel, SettingsView and track menus.
+export global RadioState {
+    in property <bool> supported: false;
+    in-out property <bool> auto-play: true;
+    in property <bool> active-radio: false;
+    in property <string> seed-title;
+    // "基于《xxx》 · 声学 + 元数据混合"
+    in property <string> section-subtitle;
+    in property <bool> loading: false;
+    // True while auto-play is enabled but paused by repeat or sleep timer.
+    in property <bool> paused-by-mode: false;
+    // Tail status card copy and CTA ("enable" / "sequential" / "load-more" / "").
+    in property <string> tail-title;
+    in property <string> tail-subtitle;
+    in property <string> tail-action-label;
+    in property <string> tail-action-kind;
+    in property <bool> tail-primary;
+    in property <bool> tail-error;
+
+    callback toggle-auto-play(bool);
+    callback start-from-current();
+    callback refresh-batch();
+    callback load-more();
+    callback switch-sequential();
 }
 
 // Vector icons (Lucide style, 24 grid; `tools/icons/svg2slint.py` converts
@@ -189,6 +216,9 @@ export component Icon inherits Path {
         : root.kind == IconKind.sort-desc ? "M 3 16 L 7 20 L 11 16 M 7 20 L 7 4 M 11 4 L 21 4 M 11 8 L 18 8 M 11 12 L 15 12"
         : root.kind == IconKind.check ? "M 20 6 L 9 17 L 4 12"
         : root.kind == IconKind.cast ? "M 2 8 L 2 6 A 2 2 0 0 1 4 4 L 20 4 A 2 2 0 0 1 22 6 L 22 18 A 2 2 0 0 1 20 20 L 14 20 M 2 12 A 9 9 0 0 1 10 20 M 2 16 A 5 5 0 0 1 6 20 M 2 20 L 2.01 20"
+        : root.kind == IconKind.radio ? "M 10.2 12 A 1.8 1.8 0 1 0 13.8 12 A 1.8 1.8 0 1 0 10.2 12 M 16.24 7.76 A 6 6 0 0 1 16.24 16.24 M 7.76 16.24 A 6 6 0 0 1 7.76 7.76 M 19.07 4.93 A 10 10 0 0 1 19.07 19.07 M 4.93 19.07 A 10 10 0 0 1 4.93 4.93"
+        : root.kind == IconKind.infinity ? "M 17.4 8 C 21.8 8 21.8 16 17.4 16 C 13.2 16 10.8 8 6.6 8 C 2.2 8 2.2 16 6.6 16 C 10.8 16 13.2 8 17.4 8 Z"
+        : root.kind == IconKind.refresh ? "M 20.5 12 A 8.5 8.5 0 1 1 18 5.99 L 20.5 8.5 M 20.5 3.5 L 20.5 8.5 L 15.5 8.5"
         : "";
 }
 

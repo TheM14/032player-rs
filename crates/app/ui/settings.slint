@@ -1,6 +1,6 @@
 import { ComboBox, LineEdit, Switch } from "std-widgets.slint";
 import { Fonts, Theme, Shell } from "theme.slint";
-import { CastState, GhostButton } from "controls.slint";
+import { CastState, GhostButton, RadioState } from "controls.slint";
 
 component SettingRow inherits Rectangle {
     in property <string> title;
@@ -245,6 +245,21 @@ export component SettingsView inherits Rectangle {
                     checked <=> root.fade-on-pause;
                     toggled => {
                         root.fade-on-pause-toggled(self.checked);
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "队列播完自动续播";
+                description: RadioState.supported
+                    ? "播到队列末尾前自动补充 032 相似曲目继续播放（与队列顶栏 ∞ 双向同步；循环播放或睡眠定时生效时自动避让）。"
+                    : "当前服务器未开启相似曲目功能。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    enabled: RadioState.supported;
+                    checked <=> RadioState.auto-play;
+                    toggled => {
+                        RadioState.toggle-auto-play(self.checked);
                     }
                 }
             }

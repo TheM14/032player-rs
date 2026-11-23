@@ -1,7 +1,7 @@
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { GridId, TrackListId } from "ids.slint";
 import {
-    GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, SearchField, Tab,
+    GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, RadioState, SearchField, Tab,
 } from "controls.slint";
 import {
     AlbumRow, ArtistLayout, ArtistLinks, CardGrid, ContextMenuEntry, ContextMenuState, CreditPart, PlaylistChoice, TrackList, TrackRow,
@@ -272,7 +272,7 @@ component SearchPreviewTrackView inherits Rectangle {
                     accent-icon: root.track.favorite,
                 },
                 { kind: 1 },
-                { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                { label: "开启相似电台", icon: IconKind.radio, what: "radio", accent-icon: true, hidden: !RadioState.supported || root.track.disabled },
                 { label: "其他版本", icon: IconKind.versions, what: "versions" },
                 { label: "查看信息", icon: IconKind.info, what: "info" },
                 { kind: 1, hidden: root.track.album-id <= 0 && root.track.artist-id <= 0 && root.track.artists.length == 0 },
@@ -514,7 +514,7 @@ export component SearchPage inherits VerticalLayout {
                     arg: SearchState.best-match.album-id,
                     hidden: !(SearchState.best-match.kind == 2 && SearchState.best-match.album-id > 0),
                 },
-                { label: "相似歌曲", icon: IconKind.layers, what: "similar", hidden: SearchState.best-match.kind != 2 },
+                { label: "开启相似电台", icon: IconKind.radio, what: "radio", accent-icon: true, hidden: SearchState.best-match.kind != 2 || !RadioState.supported },
                 { label: "查看信息", icon: IconKind.info, what: "info", hidden: SearchState.best-match.kind != 2 },
             ],
             root.playlists,

@@ -268,6 +268,7 @@ impl Core {
         self.emit(Event::CastOutput(None));
         let _ = self.engine.stop();
         self.queue.clear();
+        self.radio_reset();
         self.reset_transport(TransportReset::full());
         self.sleep.cancel();
         self.pb.play_intent_seq += 1;
@@ -361,6 +362,10 @@ impl Core {
             daily_mixes: capabilities.has(Feature::DailyMixes),
             lyrics_translation: capabilities.has(Feature::LyricsTranslation),
             artist_credit_roles: capabilities.has(Feature::ArtistCreditRoles),
+            similar_tracks: capabilities.has(Feature::SimilarTracks),
+            similarity_method: crate::radio::SimilarityMethod::from_capability(
+                capabilities.similarity_method(),
+            ),
         };
         self.library = Some(Library {
             images: Arc::new(Images::new(client.clone())),
@@ -375,6 +380,7 @@ impl Core {
         });
 
         self.restore_queue();
+        self.emit_radio_state();
         self.restore_cast();
         self.query_albums(false, AlbumFilter::default());
         self.query_tracks(false, TrackFilter::initial(browse));

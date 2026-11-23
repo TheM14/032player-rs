@@ -8,7 +8,7 @@ import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { GridId, TrackListId } from "ids.slint";
 import { PlayingBars,
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, Tab, BigTitle, MoreLink,
-    RoundIconButton,
+    RoundIconButton, RadioState,
 } from "controls.slint";
 import { ArtistLinks, CreditPart, AlbumCard, AlbumRow, TrackRow, PlaylistChoice, CardView, TrackRowView, TrackList, TrackColumns, ContextMenuEntry, ContextMenuState } from "views.slint";
 import { CardRows, PageHeader } from "library.slint";
@@ -711,8 +711,8 @@ export component HomeRowView inherits Rectangle {
                         arg: root.item.favorite ? 0 : 1,
                         accent-icon: root.item.favorite,
                     },
-                    { kind: 1 },
-                    { label: "相似歌曲", icon: IconKind.layers, what: "similar" },
+                    { kind: 1, hidden: !RadioState.supported },
+                    { label: "开启相似电台", icon: IconKind.radio, what: "radio", accent-icon: true, hidden: !RadioState.supported },
                     { kind: 1, hidden: root.item.album-id <= 0 && root.item.artist-id <= 0 },
                     { label: "转到专辑", icon: IconKind.disc, what: "album", arg: root.item.album-id, hidden: root.item.album-id <= 0 },
                     { label: "转到艺人", icon: IconKind.person, what: "artists", arg: root.item.artist-id, hidden: root.item.artist-id <= 0 },

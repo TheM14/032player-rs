@@ -147,7 +147,6 @@ const fn track_list(id: TrackListId) -> TrackList {
         TrackListId::HomeRecent => TrackList::HomeRecent,
         TrackListId::HomeSongs => TrackList::HomeSongs,
         TrackListId::History => TrackList::History,
-        TrackListId::Related => TrackList::Related,
         TrackListId::ArtistFavorites => TrackList::ArtistFavorites,
         TrackListId::SearchPreview => TrackList::SearchPreview,
         TrackListId::ArtistCredits => TrackList::ArtistCredits,
@@ -210,7 +209,6 @@ enum Route {
     Album(i64),
     Artist(i64),
     Playlist(i64),
-    Similar(i64),
     Versions(i64),
     Work(i64),
     Series(i64),
@@ -447,6 +445,8 @@ struct Ui {
     selected_device: RefCell<Option<String>>,
     /// Sonos rooms and the output.
     cast: RefCell<cast::CastView>,
+    /// Similar Track Radio and Queue Auto-Continue status.
+    radio: RefCell<client_core::RadioStatus>,
 }
 
 impl Ui {
@@ -500,10 +500,7 @@ impl Ui {
             TrackList::History => &self.played,
             TrackList::ArtistFavorites => &self.artist_favs,
             TrackList::ArtistCredits => &self.artist_credits,
-            TrackList::HomeResume
-            | TrackList::HomeRecent
-            | TrackList::HomeSongs
-            | TrackList::Related => return None,
+            TrackList::HomeResume | TrackList::HomeRecent | TrackList::HomeSongs => return None,
         })
     }
 

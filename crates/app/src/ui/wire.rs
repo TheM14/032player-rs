@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use client_core::{
-    ArtworkFit, Command, Commander, DetailView, ExclusiveMode, FavoriteKind, RightPanel, Settings,
-    SleepTimer, ThemeMode, TrackSource,
+    ArtworkFit, Command, Commander, DetailView, ExclusiveMode, FavoriteKind, RadioStatus, Repeat,
+    RightPanel, Settings, SleepTimer, ThemeMode, TrackSource,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, VecModel};
 
@@ -21,7 +21,7 @@ use super::{
     repeat_from_index, repeat_index, search, shortcuts, track_list, with_ui,
 };
 use crate::cards::CardGridModel;
-use crate::{AppWindow, DialogKind, GridId, Home, Lib032, LyricsSearch, TrackRow};
+use crate::{AppWindow, DialogKind, GridId, Home, Lib032, LyricsSearch, RadioState, TrackRow};
 
 /// Wires callbacks and models; `settings` are the saved ones.
 #[allow(clippy::too_many_lines)]
@@ -134,6 +134,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         device_names: RefCell::new(vec![None]),
         selected_device: RefCell::new(settings.audio_device.clone()),
         cast: RefCell::default(),
+        radio: RefCell::new(RadioStatus {
+            auto_play_enabled: settings.auto_play_similar,
+            ..RadioStatus::default()
+        }),
     });
     window.set_album_rows(ModelRc::from(ui.grids[GRID_ALBUMS].clone()));
     window.set_artist_rows(ModelRc::from(ui.grids[GRID_ARTISTS].clone()));
@@ -553,6 +557,27 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             c.send(Command::MoveQueueItem { uid, to });
         }
     });
+    window.on_queue_row_action(|what, uid, arg| {
+        with_ui(|ui, w| {
+            if let Ok(uid) = u64::try_from(uid) {
+                ui.queue_row_action(w, &what, uid, arg.into());
+            }
+        });
+    });
+    {
+        let radio = window.global::<RadioState>();
+        radio.set_auto_play(settings.auto_play_similar);
+        let c = commander.clone();
+        radio.on_toggle_auto_play(move |on| c.send(Command::SetAutoPlaySimilar(on)));
+        let c = commander.clone();
+        radio.on_start_from_current(move || c.send(Command::StartSimilarRadioCurrent));
+        let c = commander.clone();
+        radio.on_refresh_batch(move || c.send(Command::RefreshSimilarRadio));
+        let c = commander.clone();
+        radio.on_load_more(move || c.send(Command::LoadMoreSimilarRadio));
+        let c = commander.clone();
+        radio.on_switch_sequential(move || c.send(Command::SetRepeat(Repeat::Off)));
+    }
     let c = commander.clone();
     window.on_set_sleep(move |mode, minutes| {
         let timer = match mode {

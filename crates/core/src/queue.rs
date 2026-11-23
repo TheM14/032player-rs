@@ -113,6 +113,16 @@ impl Queue {
         self.order.get(pos).map(|&i| &self.items[i])
     }
 
+    /// Play-order position of entry `uid`.
+    pub fn position_of_uid(&self, uid: u64) -> Option<usize> {
+        self.order.iter().position(|&i| self.items[i].uid == uid)
+    }
+
+    /// Entry with `uid`.
+    pub fn item_by_uid(&self, uid: u64) -> Option<&QueueItem> {
+        self.items.iter().find(|i| i.uid == uid)
+    }
+
     /// Entries in play order (what plays next comes next).
     pub fn in_play_order(&self) -> impl Iterator<Item = &QueueItem> {
         self.order.iter().map(|&i| &self.items[i])
@@ -310,6 +320,111 @@ impl Queue {
             self.shuffle_slice(&mut added);
         }
         self.order.extend(added);
+    }
+
+    /// Inserts `tracks` in exact order at play-order position `play_pos`
+    /// (preserving the current entry even when shuffled).
+    pub fn insert_at_play_order(&mut self, play_pos: usize, tracks: Vec<Track>) {
+        let n = tracks.len();
+        if n == 0 {
+            return;
+        }
+        let insert = play_pos.min(self.order.len());
+        let new = self.wrap(tracks);
+        if self.shuffle {
+            let start = self.items.len();
+            self.items.extend(new);
+            let added: Vec<usize> = (start..self.items.len()).collect();
+            self.order.splice(insert..insert, added);
+        } else {
+            self.items.splice(insert..insert, new);
+            self.order = (0..self.items.len()).collect();
+        }
+        if let Some(p) = self.pos
+            && insert <= p
+        {
+            self.pos = Some(p + n);
+        }
+    }
+
+    /// Appends `tracks` in exact order at the end of the play order (never
+    /// shuffling them even while shuffle mode is active).
+    pub fn append_ordered(&mut self, tracks: Vec<Track>) {
+        self.insert_at_play_order(self.order.len(), tracks);
+    }
+
+    /// Keeps play-order entries `0..=keep_through` intact (preserving their
+    /// UIDs, contexts, and current position), removes everything after, and
+    /// appends `tracks` in exact order. Returns the removed tracks.
+    pub fn replace_after(&mut self, keep_through: usize, tracks: Vec<Track>) -> Vec<Track> {
+        if self.order.is_empty() {
+            return Vec::new();
+        }
+        let keep_len = (keep_through + 1).min(self.order.len());
+        let mut removed = Vec::with_capacity(self.order.len().saturating_sub(keep_len));
+        for &idx in &self.order[keep_len..] {
+            removed.push(self.items[idx].track.clone());
+        }
+        let kept_order: Vec<usize> = self.order[..keep_len].to_vec();
+        let mut old_items: Vec<Option<QueueItem>> = self.items.drain(..).map(Some).collect();
+        let mut compacted = Vec::with_capacity(keep_len + tracks.len());
+        for idx in kept_order {
+            if let Some(item) = old_items[idx].take() {
+                compacted.push(item);
+            }
+        }
+        let added = self.wrap(tracks);
+        compacted.extend(added);
+        self.items = compacted;
+        self.order = (0..self.items.len()).collect();
+        if let Some(p) = self.pos
+            && p >= self.order.len()
+        {
+            self.pos = (!self.order.is_empty()).then_some(self.order.len() - 1);
+        }
+        removed
+    }
+
+    /// Toggles shuffle while keeping the manual prefix `[0, manual_count)`
+    /// separated from auto-continued tracks `[manual_count, len)`. Returns the
+    /// updated manual boundary count.
+    pub fn set_shuffle_with_boundary(&mut self, shuffle: bool, manual_count: usize) -> usize {
+        let len = self.order.len();
+        let boundary = manual_count.min(len);
+        if boundary >= len {
+            self.set_shuffle(shuffle);
+            return len;
+        }
+        if shuffle == self.shuffle {
+            return boundary;
+        }
+        self.shuffle = shuffle;
+        let current_item = self.pos.map(|p| self.order[p]);
+        let mut manual: Vec<usize> = self.order[..boundary].to_vec();
+        let mut auto: Vec<usize> = self.order[boundary..].to_vec();
+        if shuffle {
+            if let Some(cur) = current_item
+                && let Some(pos_in_auto) = auto.iter().position(|&i| i == cur)
+            {
+                auto.remove(pos_in_auto);
+                manual.push(cur);
+            }
+            let new_boundary = manual.len();
+            let mut rest: Vec<usize> = manual
+                .into_iter()
+                .filter(|&i| Some(i) != current_item)
+                .collect();
+            self.shuffle_slice(&mut rest);
+            self.order = current_item.into_iter().chain(rest).chain(auto).collect();
+            self.pos = current_item.map(|_| 0);
+            new_boundary
+        } else {
+            manual.sort_unstable();
+            let new_boundary = manual.len();
+            self.order = manual.into_iter().chain(auto).collect();
+            self.pos = current_item.and_then(|c| self.order.iter().position(|&i| i == c));
+            new_boundary
+        }
     }
 
     /// Removes the entry `uid`. Returns whether it was the current one; the
@@ -758,5 +873,48 @@ mod tests {
         let uid = q.at(2).unwrap().uid;
         assert_eq!(q.go_to_uid(uid).map(|i| i.track.id), Some(3));
         assert!(q.go_to_uid(999).is_none());
+    }
+
+    #[test]
+    fn radio_boundary_insert_append_replace_and_shuffle() {
+        let mut q = Queue::with_seed(7);
+        q.replace(tracks(1..=3), 1);
+        q.append_ordered(tracks(101..=103));
+        assert_eq!(ids(&q), [1, 2, 3, 101, 102, 103]);
+        assert_eq!(current_id(&q), Some(2));
+
+        // Insert a manual track at manual boundary (index 3), before auto zone.
+        q.insert_at_play_order(3, vec![track(4)]);
+        assert_eq!(ids(&q), [1, 2, 3, 4, 101, 102, 103]);
+        assert_eq!(current_id(&q), Some(2));
+
+        // Shuffling with boundary 4 keeps auto tracks [101, 102, 103] ordered at tail.
+        let b = q.set_shuffle_with_boundary(true, 4);
+        assert_eq!(b, 4);
+        assert_eq!(current_id(&q), Some(2));
+        assert_eq!(&ids(&q)[4..], &[101, 102, 103]);
+        let mut manual_part = ids(&q)[..4].to_vec();
+        manual_part.sort_unstable();
+        assert_eq!(manual_part, [1, 2, 3, 4]);
+
+        // Turning shuffle off restores manual order while preserving auto tail.
+        let b = q.set_shuffle_with_boundary(false, 4);
+        assert_eq!(b, 4);
+        assert_eq!(ids(&q), [1, 2, 3, 4, 101, 102, 103]);
+        assert_eq!(current_id(&q), Some(2));
+
+        // replace_after keeps 0..=3 intact (preserving UIDs) and swaps auto zone.
+        let kept_uids: Vec<u64> = q.in_play_order().take(4).map(|i| i.uid).collect();
+        let removed = q.replace_after(3, tracks(201..=202));
+        assert_eq!(
+            removed.iter().map(|t| t.id).collect::<Vec<_>>(),
+            [101, 102, 103]
+        );
+        assert_eq!(ids(&q), [1, 2, 3, 4, 201, 202]);
+        assert_eq!(
+            q.in_play_order().take(4).map(|i| i.uid).collect::<Vec<_>>(),
+            kept_uids
+        );
+        assert_eq!(current_id(&q), Some(2));
     }
 }

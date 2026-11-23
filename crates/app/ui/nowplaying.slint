@@ -5,7 +5,7 @@
 
 import { ArtistLayout, ArtistLinks, CreditPart } from "views.slint";
 import { ArtFit, Fonts, Theme } from "theme.slint";
-import { Icon, IconKind } from "controls.slint";
+import { Icon, IconKind, RadioState } from "controls.slint";
 
 // Pill tab of the panel / full-screen player ("歌词", "队列 11").
 export component PillTab inherits Rectangle {
@@ -233,21 +233,45 @@ export component NowPlayingPanel inherits Rectangle {
                     }
                 }
             }
-            if root.has-track: Rectangle {
-                width: 36px;
-                height: 36px;
-                border-radius: 18px;
-                background: fav-area.has-hover ? Theme.surface-hover : Theme.raised;
-                Icon {
-                    kind: root.favorite ? IconKind.heart : IconKind.heart-outline;
-                    width: 17px;
-                    height: 17px;
-                    color: root.favorite ? Theme.accent-text : Theme.text-dim;
+            if root.has-track: HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                if RadioState.supported: Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
+                    border-width: RadioState.active-radio ? 1px : 0px;
+                    border-color: Theme.accent.with-alpha(0.32);
+                    background: RadioState.active-radio ? Theme.accent-dim : radio-area.has-hover ? Theme.surface-hover : Theme.raised;
+                    Icon {
+                        kind: IconKind.radio;
+                        width: 17px;
+                        height: 17px;
+                        color: RadioState.active-radio || radio-area.has-hover ? Theme.accent-text : Theme.text-dim;
+                    }
+                    radio-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            RadioState.start-from-current();
+                        }
+                    }
                 }
-                fav-area := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.toggle-favorite();
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: fav-area.has-hover ? Theme.surface-hover : Theme.raised;
+                    Icon {
+                        kind: root.favorite ? IconKind.heart : IconKind.heart-outline;
+                        width: 17px;
+                        height: 17px;
+                        color: root.favorite ? Theme.accent-text : Theme.text-dim;
+                    }
+                    fav-area := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.toggle-favorite();
+                        }
                     }
                 }
             }

@@ -10,6 +10,7 @@ mod lyrics;
 mod m032;
 mod output;
 mod playback;
+mod radio;
 mod sleep;
 
 pub use cast::CastRoom;
@@ -68,6 +69,8 @@ const QUEUE_FILE: &str = "queue.json";
 struct SavedQueue {
     server: String,
     queue: QueueSnapshot,
+    #[serde(default)]
+    radio: crate::radio::RadioSnapshot,
 }
 
 #[derive(Clone)]
@@ -138,10 +141,6 @@ pub enum Command {
         role: String,
     },
     OpenPlaylist(i64),
-    /// Tracks similar to a list row.
-    OpenSimilar(TrackList, usize),
-    /// Tracks similar to a track id (used by navigation history).
-    OpenSimilarById(i64),
     /// Other versions / recordings with the same title.
     OpenVersions(TrackList, usize),
     /// Other versions / recordings of a track id (used by navigation history).
@@ -252,10 +251,21 @@ pub enum Command {
         height: u32,
         fit: crate::ArtworkFit,
     },
-    /// Songs similar to track `id` ([`Event::Related`], `TrackList::Related`).
-    LoadRelated(i64),
     /// Details of a row ([`Event::TrackInfo`]).
     TrackInfo(TrackList, usize),
+    /// Toggle queue auto-continue similar tracks (`∞`, synced with settings).
+    SetAutoPlaySimilar(bool),
+    /// Start or restart Track Radio from the currently playing track without
+    /// interrupting playback.
+    StartSimilarRadioCurrent,
+    /// Start Track Radio from a track list row (plays immediately + appends).
+    StartSimilarRadioTrack(TrackList, usize),
+    /// Start Track Radio from a queue item (current = no interruption, other = play).
+    StartSimilarRadioQueueItem(u64),
+    /// Replace unplayed auto-similar tracks with a fresh batch ("换一批").
+    RefreshSimilarRadio,
+    /// Append another batch of similar tracks ("再加一批" / retry).
+    LoadMoreSimilarRadio,
     /// Details of the current track ([`Event::TrackInfo`]).
     NowTrackInfo,
     /// Play just this row (接着听 rows start at their saved position).
@@ -380,6 +390,8 @@ pub enum TrackSource {
     DailyMix(i64),
     /// The play queue in play order ("另存为歌单" of the queue panel).
     Queue,
+    /// One entry currently in the play queue, identified by its UID.
+    QueueItem(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -485,17 +497,29 @@ pub struct ServerFeatures {
     pub lyrics_translation: bool,
     /// Server `/browse/artists` supports backstage credit role filters (`artistCreditRoles`).
     pub artist_credit_roles: bool,
+    /// Server supports `GET /tracks/{id}/similar` (`similarTracks`).
+    pub similar_tracks: bool,
+    /// Advertised similarity method (`hybrid` vs `metadata`).
+    pub similarity_method: crate::radio::SimilarityMethod,
 }
 
 /// A queue row for the UI.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueueEntry {
     pub uid: u64,
+    pub track_id: i64,
+    pub album_id: i64,
+    pub artist_id: i64,
+    pub artists: Vec<api::ArtistRef>,
     pub title: String,
     pub artist: String,
     pub duration: String,
     /// Server-relative artwork path.
     pub artwork: String,
+    /// Whether this entry lies in the auto-continued similar zone.
+    pub is_auto: bool,
+    /// Highest-priority match reason label (for auto-continued tracks).
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -757,11 +781,8 @@ pub enum Event {
         active_role: String,
         tracks: Vec<TrackItem>,
     },
-    /// Songs similar to `track_id` (`TrackList::Related`).
-    Related {
-        track_id: i64,
-        tracks: Vec<TrackItem>,
-    },
+    /// Track Radio and Queue Auto-Continue status.
+    RadioState(crate::radio::RadioStatus),
     /// Sonos rooms found (`searching`: a search is running).
     CastRooms {
         searching: bool,
@@ -911,6 +932,15 @@ enum Internal {
         generation: u64,
         text: String,
     },
+    RadioFetched {
+        list_gen: u64,
+        radio_gen: u64,
+        api_token: String,
+        kind: radio::RadioFetchKind,
+        excluded_ids: std::collections::HashSet<i64>,
+        limit: usize,
+        result: Result<Vec<api::SimilarTrack>, api::ApiError>,
+    },
 }
 
 /// What a background request fills.
@@ -939,7 +969,6 @@ enum Target {
     LyricsTranslation,
     LyricsResults,
     LyricsPreview,
-    Related,
     ArtistFavorites,
 }
 
@@ -994,8 +1023,6 @@ enum Loaded {
     HistoryPage(Vec<api::PlaybackRecord>, usize),
     /// Works linked to the open album.
     AlbumWorks(i64, Vec<crate::m032::AlbumWorkEntry>),
-    /// Similar songs of a track.
-    Related(i64, Vec<Track>),
     /// Favorite songs of an artist.
     ArtistFavorites(i64, Vec<Track>),
 }
@@ -1132,7 +1159,6 @@ enum DetailKey {
     Album(i64),
     Artist(i64),
     Playlist(i64),
-    Similar(i64),
     Versions(i64),
     Work(i64),
     Series(i64),
@@ -1161,6 +1187,7 @@ struct Core {
     auth: auth::AuthState,
     queue: Queue,
     pb: playback::PlaybackState,
+    radio: radio::RadioState,
     lyr: lyrics::LyricsState,
     settings: Settings,
     /// Bumped per settings change; `saved_revision` is the last written.
@@ -1236,6 +1263,7 @@ impl Core {
             auth: auth::AuthState::default(),
             queue,
             pb: playback::PlaybackState::default(),
+            radio: radio::RadioState::default(),
             lyr: lyrics::LyricsState::default(),
             settings,
             settings_revision: 0,
@@ -1485,7 +1513,11 @@ impl Core {
             Command::ShuffleAll => self.shuffle_all(),
             Command::Enqueue { source, at } => self.with_tracks(source, Intent::At(at)),
             Command::MoveQueueItem { uid, to } => {
-                if self.queue.move_to(uid, to) {
+                if let Some(from) = self.queue.position_of_uid(uid)
+                    && self.queue.move_to(uid, to)
+                {
+                    let to = to.min(self.queue.len().saturating_sub(1));
+                    self.radio_on_track_moved(from, to);
                     self.queue_changed();
                 }
             }
@@ -1502,17 +1534,6 @@ impl Core {
                 self.filter_artist_credits(artist_id, &role);
             }
             Command::OpenPlaylist(id) => self.open_detail(DetailKey::Playlist(id)),
-            Command::OpenSimilar(list, index) => {
-                let id = self
-                    .library
-                    .as_ref()
-                    .and_then(|l| l.list(list).get(index))
-                    .map(|t| t.id);
-                if let Some(id) = id {
-                    self.open_detail(DetailKey::Similar(id));
-                }
-            }
-            Command::OpenSimilarById(id) => self.open_detail(DetailKey::Similar(id)),
             Command::OpenVersions(list, index) => {
                 let id = self
                     .library
@@ -1578,6 +1599,7 @@ impl Core {
             }
             Command::PlayQueueItem(uid) => {
                 if self.queue.go_to_uid(uid).is_some() {
+                    self.radio.pending_play_after_end = false;
                     self.begin_play_intent();
                     self.play_current(true);
                     self.emit_queue_position();
@@ -1588,6 +1610,7 @@ impl Core {
                 self.begin_play_intent();
                 self.stop_playback();
                 self.queue.clear();
+                self.radio_reset();
                 self.pb.resume_at = None;
                 self.show_current_stopped();
                 self.queue_changed();
@@ -1595,14 +1618,21 @@ impl Core {
             Command::SetRepeat(repeat) => {
                 self.update_settings(|s| s.repeat = repeat);
                 self.emit(Event::Repeat(repeat));
+                self.emit_radio_state();
                 self.sync_preload();
                 self.cast_play_mode();
+                if repeat == Repeat::Off {
+                    self.maybe_trigger_auto_continue(false);
+                }
             }
             Command::SetShuffle(shuffle) => {
-                self.queue.set_shuffle(shuffle);
+                self.radio.manual_queue_count = self
+                    .queue
+                    .set_shuffle_with_boundary(shuffle, self.radio.manual_queue_count);
                 self.update_settings(|s| s.shuffle = shuffle);
                 self.emit(Event::Shuffle(shuffle));
                 self.queue_changed();
+                self.emit_radio_state();
             }
             Command::TogglePause => {
                 if self.queue.current().is_none() {
@@ -1692,6 +1722,7 @@ impl Core {
             }
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {
+                self.radio.pending_play_after_end = false;
                 if !self.pb.idle {
                     self.stop_playback();
                 }
@@ -1724,7 +1755,14 @@ impl Core {
             Command::SetLyricsOffset(ms) => self.set_lyrics_offset(ms),
             Command::SeekToLyric(index) => self.seek_to_lyric(index),
             Command::SetLyricsSettings(lyrics) => self.set_lyrics_settings(lyrics),
-            Command::LoadRelated(id) => self.load_related(id),
+            Command::SetAutoPlaySimilar(enabled) => self.set_auto_play_similar(enabled),
+            Command::StartSimilarRadioCurrent => self.start_radio_from_current(),
+            Command::StartSimilarRadioTrack(list, index) => {
+                self.start_radio_from_list(list, index);
+            }
+            Command::StartSimilarRadioQueueItem(uid) => self.start_radio_from_queue_item(uid),
+            Command::RefreshSimilarRadio => self.refresh_auto_similar(),
+            Command::LoadMoreSimilarRadio => self.load_more_auto_similar(),
             Command::TrackInfo(list, index) => {
                 let track = self
                     .library
@@ -2027,6 +2065,25 @@ impl Core {
                 if generation == self.list_generation && self.library.is_some() {
                     self.emit(Event::Notice(text));
                 }
+            }
+            Internal::RadioFetched {
+                list_gen,
+                radio_gen,
+                api_token,
+                kind,
+                excluded_ids,
+                limit,
+                result,
+            } => {
+                self.handle_radio_fetched(
+                    list_gen,
+                    radio_gen,
+                    api_token,
+                    kind,
+                    excluded_ids,
+                    limit,
+                    result,
+                );
             }
             Internal::AudioDevicesLoaded(result) => self.handle_audio_devices_loaded(result),
             Internal::AudioDeviceSet(device, result) => {

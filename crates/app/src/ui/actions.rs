@@ -132,7 +132,6 @@ impl Ui {
             Route::Album(id) => (DetailKind::Album, id),
             Route::Artist(id) => (DetailKind::Artist, id),
             Route::Playlist(id) => (DetailKind::Playlist, id),
-            Route::Similar(id) => (DetailKind::Similar, id),
             Route::Versions(id) => (DetailKind::Versions, id),
             Route::Work(id) => (DetailKind::Work, id),
             Route::Series(id) => (DetailKind::Series, id),
@@ -168,7 +167,6 @@ impl Ui {
             Route::Album(id) => Command::OpenAlbum(id),
             Route::Artist(id) => Command::OpenArtist(id),
             Route::Playlist(id) => Command::OpenPlaylist(id),
-            Route::Similar(id) => Command::OpenSimilarById(id),
             Route::Versions(id) => Command::OpenVersionsById(id),
             Route::Work(id) => Command::OpenWork(id),
             Route::Series(id) => Command::OpenSeries(id),
@@ -439,11 +437,7 @@ impl Ui {
                     });
                 }
             }
-            "similar" => {
-                if let Some((id, _, _)) = row {
-                    self.navigate(w, Route::Similar(id));
-                }
-            }
+            "radio" => self.send(Command::StartSimilarRadioTrack(list, index)),
             "versions" => {
                 if let Some((id, _, _)) = row {
                     self.navigate(w, Route::Versions(id));
@@ -525,7 +519,7 @@ impl Ui {
                 TrackSource::Album(a.id),
             ),
             DetailView::Artist(a) => (TrackSource::Artist(a.id), TrackSource::Artist(a.id)),
-            DetailView::Playlist(_) | DetailView::Similar { .. } | DetailView::Versions { .. } => (
+            DetailView::Playlist(_) | DetailView::Versions { .. } => (
                 TrackSource::List(TrackList::Detail),
                 TrackSource::List(TrackList::Detail),
             ),
@@ -557,7 +551,6 @@ impl Ui {
                     DetailView::Album(a) => a.title.clone(),
                     DetailView::Artist(a) => a.name.clone(),
                     DetailView::Playlist(p) => p.name.clone(),
-                    DetailView::Similar { title, .. } => format!("与「{title}」相似"),
                     DetailView::Versions { title, .. } => title.clone(),
                     _ => String::new(),
                 };
@@ -623,6 +616,37 @@ impl Ui {
                 }
             });
         });
+    }
+
+    pub(super) fn queue_row_action(&self, w: &AppWindow, action: &str, uid: u64, arg: i64) {
+        let entry = self
+            .queue_all
+            .borrow()
+            .0
+            .iter()
+            .find(|e| e.uid == uid)
+            .cloned();
+        match action {
+            "play" => self.send(Command::PlayQueueItem(uid)),
+            "radio" => self.send(Command::StartSimilarRadioQueueItem(uid)),
+            "add" => self.send(Command::AddToPlaylist {
+                playlist_id: arg,
+                source: TrackSource::QueueItem(uid),
+            }),
+            "new-playlist" => {
+                let name = entry.map(|e| e.title).unwrap_or_default();
+                self.open_dialog(w, Dialog::New(Some(TrackSource::QueueItem(uid))), &name, "");
+            }
+            "album" if arg > 0 => self.navigate(w, Route::Album(arg)),
+            "artists" => {
+                if let Some(entry) = entry {
+                    let refs = artist_refs(&entry.artists);
+                    self.choose_artist(w, refs, entry.artist_id);
+                }
+            }
+            "remove" => self.send(Command::RemoveFromQueue(uid)),
+            _ => {}
+        }
     }
 
     pub(super) fn dialog_confirm(&self, name: &str, description: &str) {

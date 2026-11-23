@@ -626,34 +626,81 @@ fn detail(title: &str) -> Value {
 }
 
 fn queue() -> Value {
-    let data = [
-        ("F.A.C.E.", "キタニタツヤ", "2:29"),
-        ("火種", "キタニタツヤ", "3:24"),
-        ("ファタール", "GEMN", "3:39"),
-        ("めんどくせいな", "キタニタツヤ", "2:52"),
-        ("カルチャー", "キタニタツヤ", "2:57"),
-        ("なくしもの", "キタニタツヤ", "4:09"),
-        ("あなたのことをおしえて", "キタニタツヤ", "2:30"),
-        ("たったひとつの", "キタニタツヤ", "4:40"),
-        ("まなざしは光", "キタニタツヤ", "3:25"),
-        ("スカー", "キタニタツヤ", "3:51"),
-        ("青のすみか", "キタニタツヤ", "3:17"),
+    let manual = [
+        ("F.A.C.E.", "キタニタツヤ", "2:29", "dekai"),
+        ("火種", "キタニタツヤ", "3:24", "dekai"),
+        ("ファタール", "GEMN", "3:39", "dekai"),
     ];
-    model(
-        data.iter()
-            .enumerate()
-            .map(|(i, (t, a, d))| {
-                st(&[
-                    ("uid", n(i as f64 + 1.0)),
-                    ("number", n(i as f64 + 1.0)),
-                    ("title", s(t)),
-                    ("artist", s(a)),
-                    ("duration", s(d)),
-                    ("cover", Value::Image(art("dekai"))),
-                ])
-            })
-            .collect(),
-    )
+    let auto = [
+        ("星座になれたら", "結束バンド", "4:18", "pure", "听感相似"),
+        ("青のすみか", "キタニタツヤ", "3:17", "gunjou", "同作品"),
+        ("Wake Me Up", "ReoNa", "4:02", "wakemeup", "共现歌单"),
+        ("Ghost Pop", "須田景凪", "3:36", "ghostpop", "同作者"),
+        ("A Photon Away", "nonoc", "4:18", "photonaway", "听感相似"),
+    ];
+    let mut rows = Vec::new();
+    for (i, (t, a, d, c)) in manual.iter().enumerate() {
+        rows.push(st(&[
+            ("kind", n(0.0)),
+            ("uid", n(i as f64 + 1.0)),
+            ("play-index", n(i as f64)),
+            ("number", n(i as f64 + 1.0)),
+            ("title", s(t)),
+            ("artist", s(a)),
+            ("duration", s(d)),
+            ("cover", Value::Image(art(c))),
+            ("is-auto", Value::Bool(false)),
+            ("reason", s("")),
+            ("album-id", n(3.0)),
+            ("has-artists", Value::Bool(true)),
+        ]));
+    }
+    rows.push(st(&[
+        ("kind", n(1.0)),
+        ("uid", n(-1.0)),
+        ("play-index", n(manual.len() as f64)),
+        ("number", n(0.0)),
+        ("title", s("")),
+        ("artist", s("")),
+        ("duration", s("")),
+        ("cover", Value::Image(Image::default())),
+        ("is-auto", Value::Bool(false)),
+        ("reason", s("")),
+        ("album-id", n(0.0)),
+        ("has-artists", Value::Bool(false)),
+    ]));
+    for (j, (t, a, d, c, reason)) in auto.iter().enumerate() {
+        let idx = manual.len() + j;
+        rows.push(st(&[
+            ("kind", n(0.0)),
+            ("uid", n(idx as f64 + 1.0)),
+            ("play-index", n(idx as f64)),
+            ("number", n(idx as f64 + 1.0)),
+            ("title", s(t)),
+            ("artist", s(a)),
+            ("duration", s(d)),
+            ("cover", Value::Image(art(c))),
+            ("is-auto", Value::Bool(true)),
+            ("reason", s(reason)),
+            ("album-id", n(4.0)),
+            ("has-artists", Value::Bool(true)),
+        ]));
+    }
+    rows.push(st(&[
+        ("kind", n(2.0)),
+        ("uid", n(-2.0)),
+        ("play-index", n((manual.len() + auto.len() - 1) as f64)),
+        ("number", n(0.0)),
+        ("title", s("")),
+        ("artist", s("")),
+        ("duration", s("")),
+        ("cover", Value::Image(Image::default())),
+        ("is-auto", Value::Bool(false)),
+        ("reason", s("")),
+        ("album-id", n(0.0)),
+        ("has-artists", Value::Bool(false)),
+    ]));
+    model(rows)
 }
 
 fn lyrics() -> Value {
@@ -866,9 +913,33 @@ fn shell(inst: &ComponentInstance) {
     set(inst, "paused", Value::Bool(false));
     set(inst, "volume", n(68.0));
     set(inst, "queue", queue());
-    set(inst, "queue-total", n(11.0));
+    set(inst, "queue-total", n(8.0));
     set(inst, "queue-current", n(0.0));
     set(inst, "queue-position", n(0.0));
+    set_g(inst, "RadioState", "supported", Value::Bool(true));
+    set_g(inst, "RadioState", "auto-play", Value::Bool(true));
+    set_g(inst, "RadioState", "active-radio", Value::Bool(true));
+    set_g(inst, "RadioState", "seed-title", s("F.A.C.E."));
+    set_g(
+        inst,
+        "RadioState",
+        "section-subtitle",
+        s("基于《F.A.C.E.》 · 声学 + 元数据混合"),
+    );
+    set_g(
+        inst,
+        "RadioState",
+        "tail-title",
+        s("队列末尾将自动续播相似曲目"),
+    );
+    set_g(
+        inst,
+        "RadioState",
+        "tail-subtitle",
+        s("剩余不足 2 首时自动静默补充下一批"),
+    );
+    set_g(inst, "RadioState", "tail-action-label", s("再加一批"));
+    set_g(inst, "RadioState", "tail-action-kind", s("load-more"));
     set(inst, "lyrics", lyrics());
     set(inst, "lyrics-synced", Value::Bool(true));
     set(inst, "lyrics-active", n(2.0));

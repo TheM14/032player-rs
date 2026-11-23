@@ -17,8 +17,7 @@ export struct ListQuery {
     year-to: string,
 }
 
-// What the detail page shows. `kind`: 0 album, 1 artist, 2 playlist,
-// 3 similar tracks. `subtitle-id`: artist to open from the subtitle.
+// What the detail page shows. `subtitle-id`: artist to open from the subtitle.
 // A titled group of the artist page's releases with its own card grid.
 export struct ReleaseGroupRow {
     title: string,
@@ -366,7 +365,7 @@ component MenuRow inherits Rectangle {
     }
 }
 
-// Cover, titles and actions of an album / artist / playlist / similar page
+// Cover, titles and actions of an album / artist / playlist page
 // (v3 Editorial album head): a 380 cover, an oversized title (132, steps
 // down when long), the artist, meta, work capsules and pill buttons; on
 // wide pages the release facts sit on the right (`facts`).
@@ -600,14 +599,7 @@ export component DetailHeader inherits Rectangle {
                             root.action("favorite", root.info.favorite ? 0 : 1);
                         }
                     }
-                    if root.info.kind == DetailKind.similar: GhostButton {
-                        height: 40px;
-                        text: "另存为歌单";
-                        clicked => {
-                            root.action("new-playlist", 0);
-                        }
-                    }
-                    if root.info.kind != DetailKind.playlist && root.info.kind != DetailKind.similar: add-button := RoundIconButton {
+                    if root.info.kind != DetailKind.playlist: add-button := RoundIconButton {
                         kind: IconKind.list-plus;
                         clicked => {
                             add-menu.show();

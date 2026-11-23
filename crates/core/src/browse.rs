@@ -120,7 +120,7 @@ pub enum TrackList {
     Library,
     /// Favorite tracks.
     Favorites,
-    /// The open album / artist (top tracks) / playlist / similar page.
+    /// The open album / artist (top tracks) / playlist / versions page.
     Detail,
     /// Search preview tracks ("全部" tab).
     SearchPreview,
@@ -136,8 +136,6 @@ pub enum TrackList {
     HomeSongs,
     /// The playback history page.
     History,
-    /// Songs similar to the current track (full-screen player).
-    Related,
     /// The open artist's favorite songs (artist page).
     ArtistFavorites,
     /// The open artist's backstage credited songs (artist page, filtered by role).
@@ -330,11 +328,6 @@ pub enum DetailView {
     Album(AlbumView),
     Artist(ArtistView),
     Playlist(PlaylistView),
-    /// Tracks similar to `title`.
-    Similar {
-        track_id: i64,
-        title: String,
-    },
     /// Other recordings / versions with the same title.
     Versions {
         track_id: i64,
