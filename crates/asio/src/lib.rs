@@ -9,8 +9,9 @@ mod driver;
 #[cfg(windows)]
 mod ffi;
 mod ring;
+mod slot;
 
-pub use ring::SpscRing;
+pub use ring::{SpscConsumer, SpscProducer, spsc_ring};
 
 use std::fmt;
 
@@ -18,6 +19,8 @@ use std::fmt;
 pub enum AsioError {
     #[error("ASIO is only supported on Windows")]
     Unsupported,
+    #[error("an ASIO output stream is already active")]
+    AlreadyActive,
     #[error("ASIO driver not found: {0}")]
     DriverNotFound(String),
     #[error("invalid ASIO CLSID: {0}")]

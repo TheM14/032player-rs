@@ -1,7 +1,8 @@
 use std::ffi::{c_char, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -23,17 +24,18 @@ use crate::ffi::{
     K_ASIO_ENGINE_VERSION, K_ASIO_LATENCIES_CHANGED, K_ASIO_RESET_REQUEST, K_ASIO_RESYNC_REQUEST,
     K_ASIO_SELECTOR_SUPPORTED, K_ASIO_SUPPORTS_TIME_INFO,
 };
+use crate::slot::{CallbackSlot, StreamSlot, StreamSlotGuard};
 use crate::{
     AsioCallbackContext, AsioDriverInfo, AsioError, AsioSampleType, AsioStreamConfig,
     RenderCallback, Result, write_stereo_channel_buffers,
 };
 
-static ACTIVE_CALLBACK: AtomicPtr<CallbackState> = AtomicPtr::new(null_mut());
+static STREAM_SLOT: StreamSlot = StreamSlot::new();
+static ACTIVE_CALLBACK: CallbackSlot<CallbackState> = CallbackSlot::new();
 
 struct CallbackState {
     iasio: usize, // *mut IAsio as usize (used only for output_ready during callback)
     active: AtomicBool,
-    in_flight: AtomicUsize,
     reset_requested: AtomicBool,
     rendered_frames: Arc<AtomicU64>,
     frames: usize,
@@ -58,26 +60,44 @@ impl CallbackState {
             1 => 1,
             _ => return,
         };
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-        if self.active.load(Ordering::Acquire) {
-            self.fill_buffers(idx);
-        }
-        self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        self.fill_buffers(idx);
     }
 
     fn fill_buffers(&self, idx: usize) {
         let Some(bps) = self.sample_type.bytes_per_sample() else {
             return;
         };
-        let byte_len = self.frames * bps;
+        let Some(byte_len) = self.frames.checked_mul(bps) else {
+            return;
+        };
+        let Some(needed) = self.frames.checked_mul(2) else {
+            return;
+        };
         let ptr_l = self.buffers[idx][0] as *mut u8;
         let ptr_r = self.buffers[idx][1] as *mut u8;
-        if ptr_l.is_null() || ptr_r.is_null() {
+        if ptr_l.is_null()
+            || ptr_r.is_null()
+            || (ptr_l as usize).abs_diff(ptr_r as usize) < byte_len
+        {
             return;
         }
 
-        // SAFETY: `buffers[idx][0..2]` are valid for `frames * bps` bytes until `dispose_buffers`
-        // runs (which waits for `active == false` and `in_flight == 0`).
+        // Serialize mutable access to the DMA buffers using `render`'s lock so
+        // even a buggy driver calling `bufferSwitch` concurrently cannot alias
+        // `&mut [u8]` references.
+        let mut guard = match self.render.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::Poisoned(_)) => {
+                // Previous callback panicked; silence further callbacks safely.
+                self.active.store(false, Ordering::Release);
+                return;
+            }
+        };
+
+        // SAFETY: `ptr_l` and `ptr_r` are non-null, non-overlapping for `byte_len`
+        // bytes, serialized by `guard`, and guaranteed valid until `ACTIVE_CALLBACK.clear()`
+        // completes before `dispose_buffers()`.
         let (left, right) = unsafe {
             (
                 std::slice::from_raw_parts_mut(ptr_l, byte_len),
@@ -85,35 +105,30 @@ impl CallbackState {
             )
         };
 
-        if let Ok(mut guard) = self.render.try_lock() {
-            let needed = self.frames * 2;
-            if guard.scratch_lr.len() < needed {
-                guard.scratch_lr.resize(needed, 0.0);
-            }
-            let inner = &mut *guard;
-            let ctx = AsioCallbackContext {
-                frames: self.frames,
-                sample_rate: self.sample_rate,
-            };
-            (inner.callback)(ctx, &mut inner.scratch_lr[..needed]);
-            let _ = write_stereo_channel_buffers(
-                self.sample_type,
-                &inner.scratch_lr[..needed],
-                left,
-                right,
-                self.frames,
-            );
-        } else {
-            left.fill(0);
-            right.fill(0);
+        if guard.scratch_lr.len() < needed {
+            guard.scratch_lr.resize(needed, 0.0);
         }
+        let inner = &mut *guard;
+        let ctx = AsioCallbackContext {
+            frames: self.frames,
+            sample_rate: self.sample_rate,
+        };
+        (inner.callback)(ctx, &mut inner.scratch_lr[..needed]);
+        let _ = write_stereo_channel_buffers(
+            self.sample_type,
+            &inner.scratch_lr[..needed],
+            left,
+            right,
+            self.frames,
+        );
+        drop(guard);
 
         self.rendered_frames
             .fetch_add(self.frames as u64, Ordering::Relaxed);
 
         let raw = self.iasio as *mut IAsio;
-        if !raw.is_null() {
-            // SAFETY: `raw` remains valid while `active` is true and `in_flight > 0`.
+        if !raw.is_null() && self.active.load(Ordering::Acquire) {
+            // SAFETY: `raw` remains valid while the caller holds `ACTIVE_CALLBACK`'s read guard.
             unsafe {
                 let _ = ((*(*raw).vtbl).output_ready)(raw);
             }
@@ -122,11 +137,7 @@ impl CallbackState {
 }
 
 unsafe extern "C" fn on_buffer_switch(double_buffer_index: i32, _direct_process: AsioBool) {
-    let ptr = ACTIVE_CALLBACK.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        // SAFETY: `ptr` is kept alive until `dispose_buffers` drains `in_flight`.
-        unsafe { (&*ptr).invoke(double_buffer_index) };
-    }
+    let _ = ACTIVE_CALLBACK.with_active(|state| state.invoke(double_buffer_index));
 }
 
 unsafe extern "C" fn on_buffer_switch_time_info(
@@ -134,17 +145,15 @@ unsafe extern "C" fn on_buffer_switch_time_info(
     double_buffer_index: i32,
     direct_process: AsioBool,
 ) -> *mut AsioTime {
-    // SAFETY: delegates directly to buffer_switch and returns `params` as required by ASIO 2.0.
-    unsafe { on_buffer_switch(double_buffer_index, direct_process) };
+    let _ = ACTIVE_CALLBACK.with_active(|state| state.invoke(double_buffer_index));
+    let _ = direct_process;
     params
 }
 
 unsafe extern "C" fn on_sample_rate_did_change(_s_rate: f64) {
-    let ptr = ACTIVE_CALLBACK.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        // SAFETY: `ptr` is valid while callbacks are active.
-        unsafe { (&*ptr).reset_requested.store(true, Ordering::Release) };
-    }
+    let _ = ACTIVE_CALLBACK.with_active(|state| {
+        state.reset_requested.store(true, Ordering::Release);
+    });
 }
 
 unsafe extern "C" fn on_asio_message(
@@ -153,7 +162,7 @@ unsafe extern "C" fn on_asio_message(
     _message: *mut c_void,
     _opt: *mut f64,
 ) -> i32 {
-    match selector {
+    catch_unwind(AssertUnwindSafe(|| match selector {
         K_ASIO_SELECTOR_SUPPORTED => match value {
             K_ASIO_ENGINE_VERSION
             | K_ASIO_RESET_REQUEST
@@ -165,16 +174,15 @@ unsafe extern "C" fn on_asio_message(
         },
         K_ASIO_ENGINE_VERSION => 2,
         K_ASIO_RESET_REQUEST | K_ASIO_BUFFER_SIZE_CHANGE => {
-            let ptr = ACTIVE_CALLBACK.load(Ordering::Acquire);
-            if !ptr.is_null() {
-                // SAFETY: `ptr` is valid while callbacks are active.
-                unsafe { (&*ptr).reset_requested.store(true, Ordering::Release) };
-            }
+            let _ = ACTIVE_CALLBACK.with_active(|state| {
+                state.reset_requested.store(true, Ordering::Release);
+            });
             1
         }
         K_ASIO_RESYNC_REQUEST | K_ASIO_LATENCIES_CHANGED | K_ASIO_SUPPORTS_TIME_INFO => 1,
         _ => 0,
-    }
+    }))
+    .unwrap_or(0)
 }
 
 pub fn list_drivers() -> Vec<AsioDriverInfo> {
@@ -624,14 +632,17 @@ struct SelfInit {
 struct ActiveStream {
     handle: IAsioHandle,
     callbacks: Box<AsioCallbacks>,
-    cb_state: Option<Box<CallbackState>>,
+    cb_state: Option<Arc<CallbackState>>,
     config: AsioStreamConfig,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
+    // Dropped last (after `ActiveStream::drop` and `IAsioHandle::drop`).
+    _slot: StreamSlotGuard,
 }
 
 impl ActiveStream {
     fn open(clsid: &str, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+        let slot = STREAM_SLOT.try_acquire()?;
         let handle = IAsioHandle::open(clsid)?;
         let (_, outs) = handle.get_channels()?;
         if outs < 2 {
@@ -662,6 +673,7 @@ impl ActiveStream {
             },
             rendered_frames: Arc::new(AtomicU64::new(0)),
             output_latency: Arc::new(AtomicU64::new(0)),
+            _slot: slot,
         };
         stream.setup_and_start(sample_rate, render)?;
         Ok(stream)
@@ -673,9 +685,25 @@ impl ActiveStream {
         let frames_usize = usize::try_from(buffer_frames).unwrap_or(512);
         let ch0 = self.handle.get_output_channel_info(0)?;
         let sample_type = AsioSampleType::from_raw(ch0.sample_type);
-        if !sample_type.is_supported() {
+        let Some(bps) = sample_type
+            .is_supported()
+            .then(|| sample_type.bytes_per_sample())
+            .flatten()
+        else {
             return Err(AsioError::UnsupportedFormat(sample_type));
-        }
+        };
+        let byte_len = frames_usize
+            .checked_mul(bps)
+            .ok_or_else(|| AsioError::Driver {
+                code: ASE_NOT_PRESENT,
+                message: "ASIO buffer size overflow".into(),
+            })?;
+        let needed_samples = frames_usize
+            .checked_mul(2)
+            .ok_or_else(|| AsioError::Driver {
+                code: ASE_NOT_PRESENT,
+                message: "ASIO frame count overflow".into(),
+            })?;
 
         let mut infos = [
             AsioBufferInfo {
@@ -693,29 +721,37 @@ impl ActiveStream {
         self.handle
             .create_buffers(&mut infos, buffer_frames, &mut self.callbacks)?;
 
-        let state = Box::new(CallbackState {
+        let buffers = [
+            [infos[0].buffers[0] as usize, infos[1].buffers[0] as usize],
+            [infos[0].buffers[1] as usize, infos[1].buffers[1] as usize],
+        ];
+        for [ptr_l, ptr_r] in buffers {
+            if ptr_l == 0 || ptr_r == 0 || ptr_l.abs_diff(ptr_r) < byte_len {
+                let _ = self.handle.dispose_buffers();
+                return Err(AsioError::Driver {
+                    code: ASE_NOT_PRESENT,
+                    message: "driver returned invalid or overlapping ASIO buffer pointers".into(),
+                });
+            }
+        }
+
+        let state = Arc::new(CallbackState {
             iasio: self.handle.raw as usize,
             active: AtomicBool::new(true),
-            in_flight: AtomicUsize::new(0),
             reset_requested: AtomicBool::new(false),
             rendered_frames: self.rendered_frames.clone(),
             frames: frames_usize,
             sample_rate,
             sample_type,
-            buffers: [
-                [infos[0].buffers[0] as usize, infos[1].buffers[0] as usize],
-                [infos[0].buffers[1] as usize, infos[1].buffers[1] as usize],
-            ],
+            buffers,
             render: Mutex::new(RenderInner {
                 callback: render,
-                scratch_lr: vec![0.0; frames_usize * 2],
+                scratch_lr: vec![0.0; needed_samples],
             }),
         });
 
-        let ptr = Box::into_raw(state);
-        ACTIVE_CALLBACK.store(ptr, Ordering::Release);
-        // SAFETY: `ptr` was just allocated via `Box::into_raw` and stored in `ACTIVE_CALLBACK`.
-        self.cb_state = Some(unsafe { Box::from_raw(ptr) });
+        ACTIVE_CALLBACK.install(Arc::clone(&state));
+        self.cb_state = Some(state);
 
         if let Err(e) = self.handle.start() {
             let _ = self.teardown_buffers();
@@ -731,20 +767,18 @@ impl ActiveStream {
     }
 
     fn teardown_buffers(&mut self) -> Option<RenderCallback> {
+        let state = self.cb_state.take()?;
+        state.active.store(false, Ordering::Release);
         let _ = self.handle.stop();
-        if let Some(state) = self.cb_state.as_ref() {
-            state.active.store(false, Ordering::Release);
-            let deadline = Instant::now() + Duration::from_millis(250);
-            while state.in_flight.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(1));
-            }
-        }
-        ACTIVE_CALLBACK.store(null_mut(), Ordering::Release);
+        // Detaches the global callback slot and waits for every in-flight
+        // callback to return before disposing driver DMA buffers.
+        ACTIVE_CALLBACK.clear();
         let _ = self.handle.dispose_buffers();
-        self.cb_state.take().map(|state| {
-            let inner = state.render.into_inner().expect("render mutex");
-            inner.callback
-        })
+        let state = Arc::try_unwrap(state)
+            .ok()
+            .expect("ACTIVE_CALLBACK cleared; ActiveStream holds the sole Arc");
+        let inner = state.render.into_inner().unwrap_or_else(|e| e.into_inner());
+        Some(inner.callback)
     }
 
     fn reconfigure(&mut self, sample_rate: f64) -> Result<AsioStreamConfig> {

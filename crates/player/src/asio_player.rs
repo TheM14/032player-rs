@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use asio::SpscRing;
+use asio::{SpscConsumer, SpscProducer, spsc_ring};
 
 use crate::decoder::{DecodeError, TrackDecoder};
 use crate::http_source::{HttpMediaSource, build_http_client};
@@ -101,21 +101,25 @@ impl AudioSink for WindowsAsioSink {
 }
 
 struct SharedState {
-    ring: SpscRing,
     paused: AtomicBool,
     muted: AtomicBool,
-    /// When true, callback outputs silence without touching `ring`.
+    /// When true, callback outputs silence without touching the ring.
     seeking: AtomicBool,
+    /// Monotonic reset epoch requested by the producer (`worker_loop`).
+    /// Only the audio callback (`SpscConsumer`) advances `head` to clear the ring.
+    reset_requested: AtomicU64,
+    /// Latest reset epoch acknowledged by the audio callback after `consumer.clear()`.
+    reset_acked: AtomicU64,
     /// Producer finished decoding and no same-rate gapless track follows.
     drain_eof: AtomicBool,
     /// Consumed frame index when the sink observed an empty ring at EOF.
     /// `u64::MAX` means no drain has been observed.
     drained_eof_frame: AtomicU64,
-    /// Set by consumer when `ring` underruns while `drain_eof == false`.
+    /// Set by consumer when the ring underruns while `drain_eof == false`.
     underrun: AtomicBool,
     volume_bits: AtomicU64,
     fade_bits: AtomicU64,
-    /// Total stereo frames popped from `ring` and handed to hardware.
+    /// Total stereo frames popped from the ring and handed to hardware.
     consumed_frames: AtomicU64,
     /// Cumulative consumed frame index at which the current track started.
     track_start_consumed: AtomicU64,
@@ -127,10 +131,11 @@ struct SharedState {
 impl SharedState {
     fn new(volume: f64) -> Self {
         Self {
-            ring: SpscRing::new(RING_SAMPLES),
             paused: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             seeking: AtomicBool::new(false),
+            reset_requested: AtomicU64::new(0),
+            reset_acked: AtomicU64::new(0),
             drain_eof: AtomicBool::new(false),
             drained_eof_frame: AtomicU64::new(u64::MAX),
             underrun: AtomicBool::new(false),
@@ -348,7 +353,8 @@ fn open_and_predecode(
     rt: tokio::runtime::Handle,
     cancel: Arc<AtomicBool>,
 ) -> std::result::Result<PrefetchedTrack, DecodeError> {
-    let client = build_http_client(proxy).map_err(|e| DecodeError::Other(e.to_string()))?;
+    let client =
+        build_http_client(proxy).map_err(|e| DecodeError::Other(e.without_url().to_string()))?;
     let source = HttpMediaSource::open(client, url, rt, cancel)
         .map_err(|e| DecodeError::Other(e.to_string()))?;
     let mime = source.content_type().map(ToOwned::to_owned);
@@ -381,16 +387,21 @@ fn open_and_predecode(
     })
 }
 
-fn make_render_fn(shared: Arc<SharedState>) -> RenderFn {
+fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> RenderFn {
     let mut current_gain: Option<f32> = None;
     Box::new(move |frames: usize, out_lr: &mut [f32]| {
         let needed = frames * 2;
+        let req = shared.reset_requested.load(Ordering::Acquire);
+        if req != shared.reset_acked.load(Ordering::Relaxed) {
+            consumer.clear();
+            shared.reset_acked.store(req, Ordering::Release);
+        }
         if shared.seeking.load(Ordering::Acquire) || shared.paused.load(Ordering::Acquire) {
             out_lr[..needed].fill(0.0);
             return;
         }
 
-        let got = shared.ring.pop(&mut out_lr[..needed]);
+        let got = consumer.pop(&mut out_lr[..needed]);
         let got_frames = got / 2;
         let target_amp = shared.target_amp();
         let prev = current_gain.unwrap_or(target_amp);
@@ -461,6 +472,7 @@ fn worker_loop<S: AudioSink>(
     };
 
     let mut sink_rate: Option<u32> = None;
+    let mut producer: Option<SpscProducer> = None;
     let mut active: Option<ActiveTrack> = None;
     let mut upcoming_url: Option<String> = None;
     let mut prefetch: Option<PrefetchHandle> = None;
@@ -504,16 +516,21 @@ fn worker_loop<S: AudioSink>(
                     );
                     let was_active = active.take().is_some();
                     shared.seeking.store(true, Ordering::Release);
-                    shared.ring.clear();
+                    // Stop the sink first so its `SpscConsumer` is dropped before
+                    // discarding the producer and resetting synchronization state.
+                    sink.stop();
+                    producer = None;
+                    sink_rate = None;
+                    shared.reset_requested.store(0, Ordering::Release);
+                    shared.reset_acked.store(0, Ordering::Release);
                     shared.drain_eof.store(false, Ordering::Release);
                     shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
                     shared
                         .next_boundary_frame
                         .store(u64::MAX, Ordering::Release);
                     shared.boundary_crossed.store(false, Ordering::Release);
+                    shared.underrun.store(false, Ordering::Release);
                     shared.seeking.store(false, Ordering::Release);
-                    sink.stop();
-                    sink_rate = None;
                     if buffering_reported {
                         buffering_reported = false;
                         emit(PlayerEvent::Buffering(false));
@@ -554,20 +571,40 @@ fn worker_loop<S: AudioSink>(
                 Cmd::Seek(seconds) => {
                     if let Some(track) = active.as_mut() {
                         shared.seeking.store(true, Ordering::Release);
-                        thread::sleep(Duration::from_millis(15));
-                        shared.ring.clear();
-                        shared.drain_eof.store(false, Ordering::Release);
-                        shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
-                        shared
-                            .next_boundary_frame
-                            .store(u64::MAX, Ordering::Release);
-                        shared.boundary_crossed.store(false, Ordering::Release);
-                        shared.underrun.store(false, Ordering::Release);
-                        track.pending_pcm.clear();
-                        track.pending_offset = 0;
-                        track.eof_decoded = false;
                         match track.decoder.seek(seconds) {
                             Ok(landed) => {
+                                let reset_ok = if sink_rate.is_some() && producer.is_some() {
+                                    let epoch = request_ring_reset(&shared);
+                                    wait_ring_reset(&shared, epoch, Duration::from_millis(500))
+                                } else {
+                                    true
+                                };
+                                if !reset_ok {
+                                    let rate = sink_rate.unwrap_or(track.sample_rate);
+                                    if let Err(e) =
+                                        start_fresh_sink(&mut sink, &shared, &mut producer, rate)
+                                    {
+                                        sink_rate = None;
+                                        active = None;
+                                        shared.seeking.store(false, Ordering::Release);
+                                        emit(PlayerEvent::EndFile {
+                                            reason: EndReason::Error,
+                                            error: Some(e.to_string()),
+                                        });
+                                        continue;
+                                    }
+                                    sink_rate = Some(rate);
+                                }
+                                shared.drain_eof.store(false, Ordering::Release);
+                                shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
+                                shared
+                                    .next_boundary_frame
+                                    .store(u64::MAX, Ordering::Release);
+                                shared.boundary_crossed.store(false, Ordering::Release);
+                                shared.underrun.store(false, Ordering::Release);
+                                track.pending_pcm.clear();
+                                track.pending_offset = 0;
+                                track.eof_decoded = false;
                                 track.seek_offset_secs = landed;
                                 track.pushed_frames = 0;
                                 let consumed = shared.consumed_frames.load(Ordering::Acquire);
@@ -597,7 +634,8 @@ fn worker_loop<S: AudioSink>(
                     );
                     let was_active = active.take().is_some();
                     shared.seeking.store(true, Ordering::Release);
-                    shared.ring.clear();
+                    let reset_epoch = (sink_rate.is_some() && producer.is_some())
+                        .then(|| request_ring_reset(&shared));
                     shared.drain_eof.store(false, Ordering::Release);
                     shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
                     shared
@@ -622,16 +660,47 @@ fn worker_loop<S: AudioSink>(
                         Ok(opened) => {
                             let target_rate = opened.sample_rate;
                             let sink_res = match sink_rate {
-                                None => sink
-                                    .start(f64::from(target_rate), make_render_fn(shared.clone())),
-                                Some(r) if r != target_rate => {
-                                    sink.set_sample_rate(f64::from(target_rate))
+                                None => {
+                                    start_fresh_sink(&mut sink, &shared, &mut producer, target_rate)
                                 }
-                                Some(_) => Ok(()),
+                                Some(_) if producer.is_none() => {
+                                    start_fresh_sink(&mut sink, &shared, &mut producer, target_rate)
+                                }
+                                Some(r) => {
+                                    let rate_res = if r != target_rate {
+                                        sink.set_sample_rate(f64::from(target_rate))
+                                    } else {
+                                        Ok(())
+                                    };
+                                    match rate_res {
+                                        Ok(()) => {
+                                            if let Some(epoch) = reset_epoch
+                                                && !wait_ring_reset(
+                                                    &shared,
+                                                    epoch,
+                                                    Duration::from_millis(500),
+                                                )
+                                            {
+                                                start_fresh_sink(
+                                                    &mut sink,
+                                                    &shared,
+                                                    &mut producer,
+                                                    target_rate,
+                                                )
+                                            } else {
+                                                Ok(())
+                                            }
+                                        }
+                                        Err(e) => Err(e),
+                                    }
+                                }
                             };
                             if let Err(e) = sink_res {
                                 sink.stop();
+                                producer = None;
                                 sink_rate = None;
+                                shared.reset_requested.store(0, Ordering::Release);
+                                shared.reset_acked.store(0, Ordering::Release);
                                 shared.seeking.store(false, Ordering::Release);
                                 buffering_reported = false;
                                 emit(PlayerEvent::Buffering(false));
@@ -654,7 +723,9 @@ fn worker_loop<S: AudioSink>(
                                 pending_pcm: opened.predecoded,
                                 pending_offset: 0,
                             };
-                            push_pending(&mut track, &shared.ring);
+                            if let Some(prod) = producer.as_mut() {
+                                push_pending(&mut track, prod);
+                            }
                             let consumed = shared.consumed_frames.load(Ordering::Acquire);
                             shared
                                 .track_start_consumed
@@ -756,57 +827,57 @@ fn worker_loop<S: AudioSink>(
 
         // Decode & feed ring buffer for active track.
         if let Some(track) = active.as_mut() {
-            push_pending(track, &shared.ring);
+            if let Some(prod) = producer.as_mut() {
+                push_pending(track, prod);
 
-            while !track.eof_decoded
-                && track.pending_offset >= track.pending_pcm.len()
-                && shared.ring.available_write() >= 16_384
-            {
-                match track.decoder.next_packet_stereo(&mut packet_buf) {
-                    Ok(true) => {
-                        track.pending_pcm.clear();
-                        track.pending_pcm.extend_from_slice(&packet_buf);
-                        track.pending_offset = 0;
-                        push_pending(track, &shared.ring);
-                    }
-                    Ok(false) => {
-                        track.eof_decoded = true;
-                        break;
-                    }
-                    Err(DecodeError::Cancelled) => {
-                        track.eof_decoded = true;
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!("ASIO decode error: {e}");
-                        track.eof_decoded = true;
-                        break;
+                while !track.eof_decoded
+                    && track.pending_offset >= track.pending_pcm.len()
+                    && prod.available_write() >= 16_384
+                {
+                    match track.decoder.next_packet_stereo(&mut packet_buf) {
+                        Ok(true) => {
+                            track.pending_pcm.clear();
+                            track.pending_pcm.extend_from_slice(&packet_buf);
+                            track.pending_offset = 0;
+                            push_pending(track, prod);
+                        }
+                        Ok(false) => {
+                            track.eof_decoded = true;
+                            break;
+                        }
+                        Err(DecodeError::Cancelled) => {
+                            track.eof_decoded = true;
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!("ASIO decode error: {e}");
+                            track.eof_decoded = true;
+                            break;
+                        }
                     }
                 }
-            }
 
-            // When current track is completely decoded & pushed, handle upcoming track.
-            if track.eof_decoded
-                && track.pending_offset >= track.pending_pcm.len()
-                && shared.next_boundary_frame.load(Ordering::Acquire) == u64::MAX
-                && !shared.drain_eof.load(Ordering::Acquire)
-                && prefetch.is_none()
-            {
-                if let Some(next) = prefetched_ready.as_ref()
-                    && next.sample_rate == track.sample_rate
+                // When current track is completely decoded & pushed, handle upcoming track.
+                if track.eof_decoded
+                    && track.pending_offset >= track.pending_pcm.len()
+                    && shared.next_boundary_frame.load(Ordering::Acquire) == u64::MAX
+                    && !shared.drain_eof.load(Ordering::Acquire)
+                    && prefetch.is_none()
                 {
-                    if shared.ring.len() <= 16_384
-                        && shared.ring.available_write() >= next.predecoded.len()
+                    if let Some(next) = prefetched_ready.as_ref()
+                        && next.sample_rate == track.sample_rate
                     {
-                        let boundary = shared.track_start_consumed.load(Ordering::Acquire)
-                            + track.pushed_frames;
-                        shared
-                            .next_boundary_frame
-                            .store(boundary, Ordering::Release);
-                        let _ = shared.ring.push(&next.predecoded);
+                        if prod.len() <= 16_384 && prod.available_write() >= next.predecoded.len() {
+                            let boundary = shared.track_start_consumed.load(Ordering::Acquire)
+                                + track.pushed_frames;
+                            shared
+                                .next_boundary_frame
+                                .store(boundary, Ordering::Release);
+                            let _ = prod.push(&next.predecoded);
+                        }
+                    } else {
+                        shared.drain_eof.store(true, Ordering::Release);
                     }
-                } else {
-                    shared.drain_eof.store(true, Ordering::Release);
                 }
             }
 
@@ -835,14 +906,22 @@ fn worker_loop<S: AudioSink>(
                 if let Some(next) = prefetched_ready.take() {
                     upcoming_url = None;
                     let target_rate = next.sample_rate;
+                    shared.seeking.store(true, Ordering::Release);
                     let sink_res = match sink_rate {
-                        None => sink.start(f64::from(target_rate), make_render_fn(shared.clone())),
+                        None => start_fresh_sink(&mut sink, &shared, &mut producer, target_rate),
+                        Some(_) if producer.is_none() => {
+                            start_fresh_sink(&mut sink, &shared, &mut producer, target_rate)
+                        }
                         Some(r) if r != target_rate => sink.set_sample_rate(f64::from(target_rate)),
                         Some(_) => Ok(()),
                     };
                     if let Err(e) = sink_res {
                         sink.stop();
+                        producer = None;
                         sink_rate = None;
+                        shared.reset_requested.store(0, Ordering::Release);
+                        shared.reset_acked.store(0, Ordering::Release);
+                        shared.seeking.store(false, Ordering::Release);
                         emit(PlayerEvent::EndFile {
                             reason: EndReason::Error,
                             error: Some(e.to_string()),
@@ -864,7 +943,10 @@ fn worker_loop<S: AudioSink>(
                         shared
                             .track_start_consumed
                             .store(consumed, Ordering::Release);
-                        push_pending(&mut next_active, &shared.ring);
+                        if let Some(prod) = producer.as_mut() {
+                            push_pending(&mut next_active, prod);
+                        }
+                        shared.seeking.store(false, Ordering::Release);
                         if next_active.eof_decoded
                             && next_active.pending_offset >= next_active.pending_pcm.len()
                         {
@@ -897,7 +979,8 @@ fn worker_loop<S: AudioSink>(
                     emit(PlayerEvent::Buffering(true));
                 } else if buffering_reported && !awaiting_prefetch {
                     let min_resume = usize::try_from(track.sample_rate).unwrap_or(44_100) / 2; // 250ms stereo samples
-                    if shared.ring.len() >= min_resume || track.eof_decoded {
+                    let buffered = producer.as_ref().map_or(0, SpscProducer::len);
+                    if buffered >= min_resume || track.eof_decoded {
                         buffering_reported = false;
                         emit(PlayerEvent::Buffering(false));
                     }
@@ -919,16 +1002,55 @@ fn worker_loop<S: AudioSink>(
         }
 
         // Wait briefly if ring is well-fed or idle.
-        let busy_decoding = active
-            .as_ref()
-            .is_some_and(|t| !t.eof_decoded && shared.ring.available_write() >= 16_384);
+        let busy_decoding = active.as_ref().is_some_and(|t| {
+            !t.eof_decoded
+                && producer
+                    .as_ref()
+                    .is_some_and(|p| p.available_write() >= 16_384)
+        });
         if !busy_decoding {
             thread::sleep(Duration::from_millis(10));
         }
     }
 }
 
-fn push_pending(track: &mut ActiveTrack, ring: &SpscRing) {
+fn request_ring_reset(shared: &SharedState) -> u64 {
+    shared.reset_requested.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn wait_ring_reset(shared: &SharedState, epoch: u64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if shared.reset_acked.load(Ordering::Acquire) == epoch {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn start_fresh_sink<S: AudioSink>(
+    sink: &mut S,
+    shared: &Arc<SharedState>,
+    producer: &mut Option<SpscProducer>,
+    target_rate: u32,
+) -> Result<()> {
+    sink.stop();
+    *producer = None;
+    shared.reset_requested.store(0, Ordering::Release);
+    shared.reset_acked.store(0, Ordering::Release);
+    let (new_prod, new_cons) = spsc_ring(RING_SAMPLES);
+    sink.start(
+        f64::from(target_rate),
+        make_render_fn(shared.clone(), new_cons),
+    )?;
+    *producer = Some(new_prod);
+    Ok(())
+}
+
+fn push_pending(track: &mut ActiveTrack, ring: &mut SpscProducer) {
     if track.pending_offset >= track.pending_pcm.len() {
         return;
     }
@@ -1176,5 +1298,67 @@ mod tests {
             2 * (16_384 + 16_384 + 8_192),
             "All three tracks must be rendered"
         );
+    }
+
+    #[test]
+    fn seek_and_load_replace_reset_ring_via_consumer_without_race() {
+        let wav_a = make_wav(44_100, 44_100, 12_000);
+        let wav_b = make_wav(44_100, 8_192, 6_000);
+        let files = HashMap::from([("/a.wav", wav_a), ("/b.wav", wav_b)]);
+        let (_release_c, wait_for_release) = mpsc::channel();
+        let (base, shutdown) = spawn_http_files(files, wait_for_release);
+
+        let log = Arc::new(FakeSinkLog::default());
+        let sink = FakeSink(log.clone());
+        let (tx, rx) = mpsc::channel();
+        let player = AsioPlayer::new(sink, 100.0, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+
+        let url_a = format!("{base}/a.wav");
+        let url_b = format!("{base}/b.wav");
+
+        let wait_for = |pred: &dyn Fn(&PlayerEvent) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "timed out waiting for event");
+                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(ev) if pred(&ev) => return ev,
+                    Ok(_) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => log.render_buffer(),
+                    Err(e) => panic!("channel closed: {e}"),
+                }
+            }
+        };
+
+        player.load(&url_a).unwrap();
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_a));
+        // Render a few buffers then seek mid-track while consumer is active.
+        for _ in 0..8 {
+            log.render_buffer();
+        }
+        player.seek(0.5).unwrap();
+        wait_for(&|e| matches!(e, PlayerEvent::PlaybackRestart));
+
+        // Replace track while actively playing without stopping first.
+        for _ in 0..4 {
+            log.render_buffer();
+        }
+        player.load(&url_b).unwrap();
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_b));
+        wait_for(&|e| {
+            matches!(
+                e,
+                PlayerEvent::EndFile {
+                    reason: EndReason::Eof,
+                    ..
+                }
+            )
+        });
+
+        player.stop().unwrap();
+        shutdown.store(true, Ordering::Release);
     }
 }
