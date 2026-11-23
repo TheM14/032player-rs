@@ -15,7 +15,7 @@ pub const ACTIVE_ASIO: u8 = 2;
 
 pub struct HybridEngine {
     mpv: Player,
-    asio: Mutex<Option<AsioPlayer>>,
+    asio: Mutex<Option<Arc<AsioPlayer>>>,
     active: Arc<AtomicU8>,
     exclusive: AtomicBool,
     volume: Mutex<f64>,
@@ -59,18 +59,19 @@ impl HybridEngine {
         drop(old);
     }
 
-    fn ensure_asio(&self, url: &str) -> Result<(), String> {
+    fn ensure_asio(&self, url: &str) -> Result<Arc<AsioPlayer>, String> {
         let proxy = os::proxy::http_proxy_for(url);
         let mut guard = self.asio.lock().expect("asio lock");
         if guard.is_none() {
-            let player = self.create_asio_player()?;
+            let player = Arc::new(self.create_asio_player()?);
             *guard = Some(player);
         }
-        let asio = guard.as_ref().expect("asio initialized");
+        let asio = guard.as_ref().expect("asio initialized").clone();
+        drop(guard);
         asio.set_http_proxy(proxy.as_deref());
         asio.set_volume(*self.volume.lock().expect("volume lock"));
         asio.set_fade_gain(*self.fade_gain.lock().expect("fade lock"));
-        Ok(())
+        Ok(asio)
     }
 
     #[cfg(windows)]
@@ -108,14 +109,9 @@ impl Engine for HybridEngine {
                 self.active.store(ACTIVE_NONE, Ordering::Release);
                 let _ = self.mpv.stop();
             }
-            self.ensure_asio(url)?;
+            let asio = self.ensure_asio(url)?;
             self.active.store(ACTIVE_ASIO, Ordering::Release);
-            let guard = self.asio.lock().expect("asio lock");
-            guard
-                .as_ref()
-                .expect("asio initialized")
-                .load(url)
-                .map_err(|e| e.to_string())
+            asio.load(url).map_err(|e| e.to_string())
         } else {
             if self.active.load(Ordering::Acquire) == ACTIVE_ASIO
                 || self.asio.lock().expect("asio lock").is_some()
@@ -277,7 +273,10 @@ impl Engine for HybridEngine {
     }
 
     fn open_asio_control_panel(&self) -> Result<(), String> {
-        if let Some(asio) = self.asio.lock().expect("asio lock").as_ref() {
+        // Clone the Arc and drop the mutex before opening the control panel so
+        // playback controls (pause/seek/stop) never block behind it.
+        let asio = self.asio.lock().expect("asio lock").clone();
+        if let Some(asio) = asio {
             return asio.open_control_panel().map_err(|e| e.to_string());
         }
         player::open_fiio_control_panel_standalone().map_err(|e| e.to_string())

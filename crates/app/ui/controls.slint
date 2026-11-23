@@ -55,6 +55,9 @@ export component ValueBar inherits Rectangle {
                 root.dragging = false;
                 root.committed(root.drag-value);
             }
+            if e.kind == PointerEventKind.cancel && root.dragging {
+                root.dragging = false;
+            }
         }
         moved => {
             if root.dragging {

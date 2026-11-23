@@ -181,14 +181,14 @@ export component ArtistLinks inherits Rectangle {
                 height: root.chip-h;
                 y: (parent.height - self.height) / 2;
                 border-radius: self.height / 2;
-                background: chip-area.has-hover || chip-area.previewing ? Theme.accent-dim : Theme.raised;
-                border-width: chip-area.has-hover || chip-area.previewing ? 1px : 0px;
+                background: chip-area.has-hover || artists-popup.is-open ? Theme.accent-dim : Theme.raised;
+                border-width: chip-area.has-hover || artists-popup.is-open ? 1px : 0px;
                 border-color: Theme.accent;
                 property <bool> panel-hovered;
                 changed panel-hovered => {
                     if self.panel-hovered {
                         hover-close.running = false;
-                    } else if chip-area.previewing && !chip-area.has-hover {
+                    } else if artists-popup.is-open && !chip-area.has-hover {
                         hover-close.running = true;
                     }
                 }
@@ -196,7 +196,7 @@ export component ArtistLinks inherits Rectangle {
                     text: "+" + root.hidden-count;
                     font-size: root.chip-font-size;
                     font-weight: 600;
-                    color: chip-area.has-hover || chip-area.previewing ? Theme.accent-text : root.text-color;
+                    color: chip-area.has-hover || artists-popup.is-open ? Theme.accent-text : root.text-color;
                     vertical-alignment: center;
                     horizontal-alignment: center;
                 }
@@ -204,8 +204,12 @@ export component ArtistLinks inherits Rectangle {
                     property <length> pop-w: 248px;
                     property <length> pop-h: min(266px, 42px + root.artists.length * 32px);
                     property <bool> open-above: chip.absolute-position.y + chip.height + pop-h + 16px > Shell.window-height;
-                    x: -64px;
-                    y: open-above ? -pop-h - 4px : chip.height + 4px;
+                    property <length> min-x: 8px - chip.absolute-position.x;
+                    property <length> max-x: max(self.min-x, Shell.window-width - pop-w - 8px - chip.absolute-position.x);
+                    property <length> min-y: 8px - chip.absolute-position.y;
+                    property <length> max-y: max(self.min-y, Shell.window-height - pop-h - 8px - chip.absolute-position.y);
+                    x: clamp(-64px, self.min-x, self.max-x);
+                    y: clamp(open-above ? -pop-h - 4px : chip.height + 4px, self.min-y, self.max-y);
                     width: pop-w;
                     height: pop-h;
                     close-policy: PopupClosePolicy.close-on-click-outside;
@@ -215,7 +219,6 @@ export component ArtistLinks inherits Rectangle {
                         open(id) => {
                             hover-open.running = false;
                             hover-close.running = false;
-                            chip-area.previewing = false;
                             chip.panel-hovered = false;
                             artists-popup.close();
                             root.open(id);
@@ -227,8 +230,7 @@ export component ArtistLinks inherits Rectangle {
                     interval: 150ms;
                     triggered => {
                         self.running = false;
-                        if chip-area.has-hover {
-                            chip-area.previewing = true;
+                        if chip-area.has-hover && !artists-popup.is-open {
                             artists-popup.show();
                         }
                     }
@@ -238,21 +240,19 @@ export component ArtistLinks inherits Rectangle {
                     interval: 220ms;
                     triggered => {
                         self.running = false;
-                        if chip-area.previewing && !chip-area.has-hover && !chip.panel-hovered {
+                        if artists-popup.is-open && !chip-area.has-hover && !chip.panel-hovered {
                             artists-popup.close();
-                            chip-area.previewing = false;
                         }
                     }
                 }
                 chip-area := TouchArea {
-                    property <bool> previewing;
                     changed has-hover => {
                         if self.has-hover {
                             hover-close.running = false;
-                            if !self.previewing { hover-open.running = true; }
+                            if !artists-popup.is-open { hover-open.running = true; }
                         } else {
                             hover-open.running = false;
-                            if self.previewing && !chip.panel-hovered { hover-close.running = true; }
+                            if artists-popup.is-open && !chip.panel-hovered { hover-close.running = true; }
                         }
                     }
                     mouse-cursor: pointer;
@@ -264,7 +264,6 @@ export component ArtistLinks inherits Rectangle {
                     clicked => {
                         hover-open.running = false;
                         hover-close.running = false;
-                        chip-area.previewing = true;
                         artists-popup.show();
                     }
                 }
@@ -1224,6 +1223,7 @@ export component TrackRowView inherits Rectangle {
     // Drag in progress: rows moved from the press point (playlist mode).
     callback drag(int);
     callback drop();
+    callback cancel-drag();
     property <length> press-y;
     property <bool> dragging;
     // Album and playlist pages show the credits under the title.
@@ -1303,6 +1303,10 @@ export component TrackRowView inherits Rectangle {
                         root.dragging = false;
                         root.drop();
                     }
+                }
+                if root.mode == 2 && e.kind == PointerEventKind.cancel && root.dragging {
+                    root.dragging = false;
+                    root.cancel-drag();
                 }
             }
             moved => {
@@ -1384,8 +1388,8 @@ export component TrackRowView inherits Rectangle {
                     vertical-alignment: center;
                 }
                 // "◆ OP": the track is used in a work (click: the work).
-                if root.track.tieup != "": Rectangle {
-                    property <bool> hot: tieup-area.has-hover || tieup-area.previewing;
+                if root.track.tieup != "": tieup-chip := Rectangle {
+                    property <bool> hot: tieup-area.has-hover || tieup-popup.is-open;
                     width: tieup-row.preferred-width;
                     height: 24px;
                     y: (parent.height - self.height) / 2;
@@ -1399,14 +1403,14 @@ export component TrackRowView inherits Rectangle {
                         spacing: 6px;
                         Text {
                             text: "◆";
-                            color: tieup-area.has-hover || tieup-area.previewing ? Theme.text : Theme.accent-text;
+                            color: tieup-area.has-hover || tieup-popup.is-open ? Theme.text : Theme.accent-text;
                             font-size: 9px;
                             vertical-alignment: center;
                         }
                         Text {
                             text: root.track.tieup;
                             font-family: Fonts.family(self.text);
-                            color: tieup-area.has-hover || tieup-area.previewing ? Theme.text : Theme.accent-text;
+                            color: tieup-area.has-hover || tieup-popup.is-open ? Theme.text : Theme.accent-text;
                             font-size: 11.5px;
                             font-weight: 700;
                             vertical-alignment: center;
@@ -1427,21 +1431,29 @@ export component TrackRowView inherits Rectangle {
                         changed card-hovered => {
                             if self.card-hovered {
                                 hover-close.running = false;
-                            } else if tieup-area.previewing && !tieup-area.has-hover {
+                            } else if tieup-popup.is-open && !tieup-area.has-hover {
                                 hover-close.running = true;
                             }
                         }
                     }
                     tieup-popup := PopupWindow {
-                        x: 0px;
-                        y: parent.height + 8px;
+                        property <length> pop-w: 420px;
+                        property <length> pop-h: min(Shell.window-height - 16px, max(148px, root.track.tieup-works.length * 140px + 28px));
+                        property <bool> open-above: tieup-chip.absolute-position.y + tieup-chip.height + pop-h + 16px > Shell.window-height;
+                        property <length> min-x: 8px - tieup-chip.absolute-position.x;
+                        property <length> max-x: max(self.min-x, Shell.window-width - pop-w - 8px - tieup-chip.absolute-position.x);
+                        property <length> min-y: 8px - tieup-chip.absolute-position.y;
+                        property <length> max-y: max(self.min-y, Shell.window-height - pop-h - 8px - tieup-chip.absolute-position.y);
+                        x: clamp(0px, self.min-x, self.max-x);
+                        y: clamp(open-above ? -pop-h - 8px : tieup-chip.height + 8px, self.min-y, self.max-y);
+                        width: pop-w;
+                        close-policy: PopupClosePolicy.close-on-click-outside;
                         popup-cards := TieupCards {
                             works: root.track.tieup-works;
                             changed hovered => { tieup-badge.card-hovered = self.hovered; }
                             open-work(id) => {
                                 hover-open.running = false;
                                 hover-close.running = false;
-                                tieup-area.previewing = false;
                                 tieup-badge.card-hovered = false;
                                 tieup-popup.close();
                                 root.action("work", id);
@@ -1453,8 +1465,7 @@ export component TrackRowView inherits Rectangle {
                         interval: 150ms;
                         triggered => {
                             self.running = false;
-                            if tieup-area.has-hover {
-                                tieup-area.previewing = true;
+                            if tieup-area.has-hover && !tieup-popup.is-open {
                                 tieup-popup.show();
                             }
                         }
@@ -1464,22 +1475,20 @@ export component TrackRowView inherits Rectangle {
                         interval: 180ms;
                         triggered => {
                             self.running = false;
-                            if tieup-area.previewing && !tieup-area.has-hover && !tieup-badge.card-hovered {
+                            if tieup-popup.is-open && !tieup-area.has-hover && !tieup-badge.card-hovered {
                                 tieup-popup.close();
-                                tieup-area.previewing = false;
                             }
                         }
                     }
                     tieup-area := TouchArea {
                         // Avoid the native Tooltip's extra background and padding.
-                        property <bool> previewing;
                         changed has-hover => {
                             if self.has-hover {
                                 hover-close.running = false;
-                                if !self.previewing { hover-open.running = true; }
+                                if !tieup-popup.is-open { hover-open.running = true; }
                             } else {
                                 hover-open.running = false;
-                                if self.previewing && !tieup-badge.card-hovered { hover-close.running = true; }
+                                if tieup-popup.is-open && !tieup-badge.card-hovered { hover-close.running = true; }
                             }
                         }
                         pointer-event(e) => {
@@ -1489,7 +1498,6 @@ export component TrackRowView inherits Rectangle {
                         clicked => {
                             hover-open.running = false;
                             hover-close.running = false;
-                            tieup-area.previewing = true;
                             tieup-popup.show();
                         }
                     }
@@ -1742,6 +1750,10 @@ export component TrackList inherits Rectangle {
                     if root.drop-at >= 0 && root.drop-at != root.drag-from {
                         root.action("move", self.track.index, root.drop-at);
                     }
+                    root.drag-from = -1;
+                    root.drop-at = -1;
+                }
+                cancel-drag => {
                     root.drag-from = -1;
                     root.drop-at = -1;
                 }
@@ -2171,6 +2183,10 @@ export component QueuePanel inherits Rectangle {
                                     root.drop-at = -1;
                                 }
                             }
+                            if e.kind == PointerEventKind.cancel && root.drag-from == i {
+                                root.drag-from = -1;
+                                root.drop-at = -1;
+                            }
                         }
                         moved => {
                             if self.pressed && root.search == "" && (root.drag-from == i || abs(self.mouse-y - row-item.press-y) > 6px) {
@@ -2373,7 +2389,7 @@ component LyricsTool inherits Rectangle {
     height: 30px;
     width: max(30px, tool-row.preferred-width);
     border-radius: 8px;
-    background: root.active ? Theme.accent-dim : area.has-hover ? (root.on-stage ? #ffffff1a : Theme.surface-hover) : transparent;
+    background: root.active ? Theme.accent-dim : area.has-hover ? (root.on-stage && Theme.dark ? #ffffff1a : Theme.surface-hover) : transparent;
     tool-row := HorizontalLayout {
         padding-left: 6px;
         padding-right: 6px;
@@ -2626,7 +2642,7 @@ export component LyricsPanel inherits Rectangle {
                     }
                     height: line-col.preferred-height;
                     border-radius: 8px;
-                    background: line-area.has-hover ? (root.stage || root.large ? #ffffff0d : Theme.surface-hover) : transparent;
+                    background: line-area.has-hover ? ((root.stage || root.large) && Theme.dark ? #ffffff0d : Theme.surface-hover) : transparent;
                     line-col := VerticalLayout {
                         padding-left: 8px;
                         padding-right: 8px;
@@ -3180,7 +3196,7 @@ export component PlayerBar inherits Rectangle {
             Text {
                 text: seek-bar.dragging ? root.preview-text : root.position-text;
                 font-family: Fonts.family(self.text);
-                width: 40px;
+                width: root.duration-ms >= 3600000 ? 58px : 44px;
                 color: Theme.text-faint;
                 font-size: 12px;
                 font-weight: 500;
@@ -3201,7 +3217,7 @@ export component PlayerBar inherits Rectangle {
             Text {
                 text: root.buffering ? "缓冲中" : root.duration-text;
                 font-family: Fonts.family(self.text);
-                width: 40px;
+                width: root.duration-ms >= 3600000 ? 58px : 44px;
                 color: Theme.text-faint;
                 font-size: 12px;
                 font-weight: 500;
@@ -3437,5 +3453,11 @@ export component PlayerBar inherits Rectangle {
 
     // Seek preview while dragging.
     property <int> preview-ms;
-    property <string> preview-text: floor(root.preview-ms / 60000) + ":" + (mod(floor(root.preview-ms / 1000), 60) < 10 ? "0" : "") + mod(floor(root.preview-ms / 1000), 60);
+    property <int> preview-secs: max(0, floor(root.preview-ms / 1000));
+    property <int> preview-h: floor(root.preview-secs / 3600);
+    property <int> preview-m: mod(floor(root.preview-secs / 60), 60);
+    property <int> preview-s: mod(root.preview-secs, 60);
+    property <string> preview-text: root.preview-h > 0
+        ? root.preview-h + ":" + (root.preview-m < 10 ? "0" : "") + root.preview-m + ":" + (root.preview-s < 10 ? "0" : "") + root.preview-s
+        : root.preview-m + ":" + (root.preview-s < 10 ? "0" : "") + root.preview-s;
 }

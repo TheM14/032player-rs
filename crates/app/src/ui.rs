@@ -1005,7 +1005,7 @@ impl Ui {
                 w.set_dialog_message(format!("删除歌单「{}」？此操作不能撤销。", p.name).into());
                 self.open_dialog(w, Dialog::Delete(p.id), "", "");
             }
-            ("artwork", DetailView::Playlist(p)) => self.pick_artwork(p.id),
+            ("artwork", DetailView::Playlist(p)) => self.pick_artwork(w, p.id),
             ("artwork-reset", DetailView::Playlist(p)) => {
                 self.send(Command::SetPlaylistArtwork {
                     playlist_id: p.id,
@@ -1026,23 +1026,38 @@ impl Ui {
         }
     }
 
-    /// Asks for an image file and uploads it as the playlist artwork.
-    fn pick_artwork(&self, playlist_id: i64) {
-        let Some(path) = os::dialog::pick_image() else {
-            return;
-        };
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if size > MAX_ARTWORK_BYTES {
-            self.notice("图片太大（最大 10 MB）".into());
-            return;
-        }
-        match std::fs::read(&path) {
-            Ok(bytes) => self.send(Command::SetPlaylistArtwork {
-                playlist_id,
-                image: Some(bytes),
-            }),
-            Err(e) => self.notice(format!("读取图片失败：{e}")),
-        }
+    /// Asks for an image file asynchronously and reads it off the UI thread
+    /// before uploading it as the playlist artwork.
+    fn pick_artwork(&self, w: &AppWindow, playlist_id: i64) {
+        let handle = w.window().window_handle();
+        let fut = os::dialog::pick_image_async(Some(&handle));
+        let commander = self.commander.clone();
+        let _ = slint::spawn_local(async move {
+            let Some(path) = fut.await else {
+                return;
+            };
+            std::thread::spawn(move || {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if size > MAX_ARTWORK_BYTES {
+                    let _ = slint::invoke_from_event_loop(|| {
+                        with_ui(|ui, _| ui.notice("图片太大（最大 10 MB）".into()));
+                    });
+                    return;
+                }
+                match std::fs::read(&path) {
+                    Ok(bytes) => commander.send(Command::SetPlaylistArtwork {
+                        playlist_id,
+                        image: Some(bytes),
+                    }),
+                    Err(e) => {
+                        let msg = format!("读取图片失败：{e}");
+                        let _ = slint::invoke_from_event_loop(move || {
+                            with_ui(|ui, _| ui.notice(msg));
+                        });
+                    }
+                }
+            });
+        });
     }
 
     fn dialog_confirm(&self, name: &str, description: &str) {
@@ -1556,6 +1571,7 @@ impl Ui {
         self.queue_covers.borrow_mut().clear();
         self.show_queue(w);
         self.reload_detail_cover(w);
+        self.rescale_m032_images(w);
         let artwork = self.now.borrow().as_ref().map(|n| n.artwork.clone());
         if let Some(artwork) = artwork.filter(|a| !a.is_empty()) {
             let px = physical_box(NP_COVER, NP_COVER, scale);
@@ -1579,6 +1595,8 @@ impl Ui {
                     .unwrap_or_default(),
             );
         }
+        *self.full_cover_key.borrow_mut() = None;
+        self.full_changed(w);
     }
 
     fn mark_playing_album(&self, album_id: i64) {
@@ -1776,6 +1794,11 @@ thread_local! {
     static UI: RefCell<Option<Rc<Ui>>> = const { RefCell::new(None) };
 }
 
+/// Records the current window geometry while it is still visible.
+pub fn record_window_now() {
+    with_ui(|ui, w| ui.record_window(w));
+}
+
 /// Window size to save on quit (`None` before the UI is installed).
 pub fn window_state() -> Option<client_core::WindowState> {
     let mut state = None;
@@ -1840,8 +1863,12 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     for grid in [GRID_PLAYLISTS, GRID_HOME_PLAYLISTS, GRID_SERIES_ALBUMS] {
         grids[grid].set_fit(ArtworkFit::Contain);
     }
-    // The artist page's release groups share one Flickable (no ListView).
-    for grid in RELEASE_GRIDS {
+    // Non-virtualized `CardRows` inside a Flickable load covers only for rows in view.
+    for grid in
+        RELEASE_GRIDS
+            .into_iter()
+            .chain([GRID_WORK_ALBUMS, GRID_MEMBERS, GRID_SERIES_ALBUMS])
+    {
         grids[grid].set_lazy(true);
     }
     let new_tracks = || Rc::new(VecModel::<TrackRow>::default());
@@ -2724,8 +2751,14 @@ pub fn apply(event: Event) {
             );
         }
         Event::PlaylistDeleted(id) => {
+            {
+                let mut history = ui.history.borrow_mut();
+                history.retain(|entry| entry.route != Route::Playlist(id));
+                history.dedup_by(|a, b| a.route == b.route);
+                w.set_can_go_back(!history.is_empty());
+            }
             if ui.route.get() == Route::Playlist(id) {
-                ui.navigate(w, Route::Page(PAGE_PLAYLISTS));
+                ui.show(w, Route::Page(PAGE_PLAYLISTS));
             }
         }
         Event::Detail { view, tracks } => ui.detail_loaded(w, view, tracks),
@@ -2811,6 +2844,10 @@ pub fn apply(event: Event) {
             w.set_playing_id(-1);
             w.set_np_year("".into());
             w.set_np_favorite(false);
+            *ui.now_cover_key.borrow_mut() = None;
+            *ui.now_large_key.borrow_mut() = None;
+            w.set_np_cover(Image::default());
+            w.set_np_cover_large(Image::default());
             *ui.now.borrow_mut() = None;
             ui.full_changed(w);
         }
@@ -2834,21 +2871,23 @@ pub fn apply(event: Event) {
             let px = physical_box(NP_COVER, NP_COVER, ui.scale(w));
             let key =
                 (!now.artwork.is_empty()).then(|| image_key(&now.artwork, px, ArtworkFit::Contain));
-            match &key {
-                Some(key) => {
-                    let placeholder = ui.grids.iter().find_map(|g| g.cover(&now.artwork));
-                    w.set_np_cover(placeholder.unwrap_or_default());
-                    ui.send(Command::LoadImage {
-                        key: key.clone(),
-                        path: now.artwork.clone(),
-                        width: px.0,
-                        height: px.1,
-                        fit: ArtworkFit::Contain,
-                    });
+            if *ui.now_cover_key.borrow() != key {
+                match &key {
+                    Some(key) => {
+                        let placeholder = ui.grids.iter().find_map(|g| g.cover(&now.artwork));
+                        w.set_np_cover(placeholder.unwrap_or_default());
+                        ui.send(Command::LoadImage {
+                            key: key.clone(),
+                            path: now.artwork.clone(),
+                            width: px.0,
+                            height: px.1,
+                            fit: ArtworkFit::Contain,
+                        });
+                    }
+                    None => w.set_np_cover(Image::default()),
                 }
-                None => w.set_np_cover(Image::default()),
+                *ui.now_cover_key.borrow_mut() = key;
             }
-            *ui.now_cover_key.borrow_mut() = key;
             ui.load_now_large(w, &now.artwork);
             *ui.now.borrow_mut() = Some(now);
             ui.full_changed(w);

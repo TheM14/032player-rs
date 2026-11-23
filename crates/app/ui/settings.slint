@@ -301,13 +301,37 @@ export component SettingsView inherits Rectangle {
             SettingRow {
                 title: "音箱地址";
                 description: "自动搜索找不到音箱时（防火墙、多网卡、VPN），填写任意一台音箱的 IP，多个用逗号分隔。";
-                LineEdit {
-                    width: 260px;
-                    y: (parent.height - self.height) / 2;
-                    placeholder-text: "例如 192.168.1.30";
-                    text <=> CastState.hosts;
-                    edited => {
+                hosts-debounce := Timer {
+                    interval: 400ms;
+                    running: false;
+                    triggered => {
+                        self.running = false;
                         CastState.options-changed();
+                    }
+                }
+                editor-scope := FocusScope {
+                    width: 260px;
+                    height: hosts-edit.preferred-height;
+                    y: (parent.height - self.height) / 2;
+                    key-pressed(e) => { return e.text == Key.Tab ? reject : accept; }
+                    hosts-edit := LineEdit {
+                        width: 100%;
+                        height: 100%;
+                        placeholder-text: "例如 192.168.1.30";
+                        text <=> CastState.hosts;
+                        changed has-focus => {
+                            if !self.has-focus && hosts-debounce.running {
+                                hosts-debounce.running = false;
+                                CastState.options-changed();
+                            }
+                        }
+                        edited => {
+                            hosts-debounce.restart();
+                        }
+                        accepted => {
+                            hosts-debounce.running = false;
+                            CastState.options-changed();
+                        }
                     }
                 }
             }

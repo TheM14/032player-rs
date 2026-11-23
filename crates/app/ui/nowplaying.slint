@@ -18,7 +18,7 @@ export component PillTab inherits Rectangle {
     height: 34px;
     width: pill-row.preferred-width;
     border-radius: 9px;
-    background: root.selected ? (root.on-stage ? #ffffff24 : Theme.raised) : pill-area.has-hover ? Theme.surface-hover : transparent;
+    background: root.selected ? (root.on-stage && Theme.dark ? #ffffff24 : Theme.raised) : pill-area.has-hover ? Theme.surface-hover : transparent;
     pill-row := HorizontalLayout {
         padding-left: 14px;
         padding-right: 14px;

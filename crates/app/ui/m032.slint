@@ -174,6 +174,7 @@ export global Home {
     in property <int> songs-pages;
     in property <[YearBar]> years;
     in property <int> year;
+    in property <int> year-index: -1;
     in property <int> year-total;
     in property <[AlbumRow]> chronicle;
     in property <int> chronicle-reset-seq;
@@ -1920,16 +1921,22 @@ export component HomePage inherits Flickable {
                             }
                         }
                         for bar[i] in Home.years: Text {
-                            visible: bar.year == Home.year || mod(bar.year, chart.step) == 0;
+                            property <bool> selected: bar.year == Home.year;
+                            property <bool> near-selected: !self.selected && (
+                                Home.year-index >= 0
+                                    ? abs(i - Home.year-index) * chart.pitch < 42px
+                                    : abs(bar.year - Home.year) * chart.pitch < 42px
+                            );
+                            visible: self.selected || (mod(bar.year, chart.step) == 0 && !self.near-selected);
                             x: i * chart.pitch + (chart.pitch - chart.gap - self.width) / 2;
                             y: chart.plot + 8px;
                             width: 40px;
                             height: 16px;
                             text: bar.year;
                             font-family: Fonts.family(self.text);
-                            color: bar.year == Home.year ? Theme.accent-text : Theme.text-faint;
+                            color: self.selected ? Theme.accent-text : Theme.text-faint;
                             font-size: 12px;
-                            font-weight: bar.year == Home.year ? 700 : 500;
+                            font-weight: self.selected ? 700 : 500;
                             horizontal-alignment: center;
                         }
                     }
@@ -2338,6 +2345,7 @@ export component WorkPage inherits Flickable {
     in property <[PlaylistChoice]> playlists;
     callback card-action(string, int, int);
     callback card-layout(int, length);
+    callback card-row-shown(int);
     callback track-action(string, int, int);
     callback navigate(int, int);
     property <length> flex: max(0px, self.width - 2 * Shell.pad - 44px - 46px - 40px - 64px - 96px);
@@ -2483,6 +2491,12 @@ export component WorkPage inherits Flickable {
             rows: Lib032.work-albums;
             kind: 0;
             playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(row);
+            }
             layout-changed(n, size) => {
                 root.card-layout(n, size);
             }
@@ -2533,6 +2547,7 @@ export component SeriesDetailPage inherits Flickable {
     in property <[PlaylistChoice]> playlists;
     callback card-action(int, string, int, int);
     callback card-layout(int, int, length);
+    callback card-row-shown(int, int);
     content-height: page.preferred-height;
 
     page := VerticalLayout {
@@ -2622,6 +2637,12 @@ export component SeriesDetailPage inherits Flickable {
             rows: Lib032.series-members;
             kind: 3;
             playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(15, row);
+            }
             layout-changed(n, size) => {
                 root.card-layout(15, n, size);
             }
@@ -2648,6 +2669,12 @@ export component SeriesDetailPage inherits Flickable {
             rows: Lib032.series-albums;
             kind: 0;
             playlists: root.playlists;
+            lazy: true;
+            view-top: -root.content-y - self.y - root.height / 2;
+            view-bottom: self.view-top + root.height * 2;
+            row-shown(row) => {
+                root.card-row-shown(16, row);
+            }
             layout-changed(n, size) => {
                 root.card-layout(16, n, size);
             }
@@ -2671,6 +2698,10 @@ export component MixPage inherits VerticalLayout {
     callback open-mix(int);
     callback play-mix(int);
     property <bool> reasons-open;
+    property <int> mix-id: Lib032.mix.id;
+    changed mix-id => {
+        root.reasons-open = false;
+    }
     property <image> no-image;
 
     HorizontalLayout {
@@ -2881,19 +2912,25 @@ export component MixPage inherits VerticalLayout {
                                 font-size: 12px;
                             }
                         }
-                        HorizontalLayout {
+                        VerticalLayout {
                             spacing: 8px;
                             alignment: start;
-                            GhostButton {
-                                text: Lib032.mix.saved-playlist-id > 0 ? "再存一份为歌单" : "另存为歌单";
-                                clicked => {
-                                    Lib032.detail-action("save", 0);
+                            HorizontalLayout {
+                                alignment: start;
+                                GhostButton {
+                                    text: Lib032.mix.saved-playlist-id > 0 ? "再存一份为歌单" : "另存为歌单";
+                                    clicked => {
+                                        Lib032.detail-action("save", 0);
+                                    }
                                 }
                             }
-                            if Lib032.mix.saved-playlist-id > 0: LinkText {
-                                text: "查看已保存的歌单";
-                                clicked => {
-                                    Lib032.detail-action("saved", Lib032.mix.saved-playlist-id);
+                            if Lib032.mix.saved-playlist-id > 0: HorizontalLayout {
+                                alignment: start;
+                                LinkText {
+                                    text: "查看已保存的歌单";
+                                    clicked => {
+                                        Lib032.detail-action("saved", Lib032.mix.saved-playlist-id);
+                                    }
                                 }
                             }
                         }

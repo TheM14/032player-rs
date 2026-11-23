@@ -21,6 +21,7 @@ struct System {
     #[cfg(windows)]
     tray: RefCell<Option<os::tray::Tray>>,
     has_track: Cell<bool>,
+    track_id: Cell<Option<i64>>,
     paused: Cell<bool>,
     position_ms: Cell<i64>,
     sent_position_ms: Cell<i64>,
@@ -72,6 +73,7 @@ pub fn install(window: &AppWindow, commander: Commander) {
         #[cfg(windows)]
         tray: RefCell::new(tray()),
         has_track: Cell::new(false),
+        track_id: Cell::new(None),
         paused: Cell::new(true),
         position_ms: Cell::new(0),
         sent_position_ms: Cell::new(0),
@@ -83,6 +85,9 @@ pub fn install(window: &AppWindow, commander: Commander) {
     // Closing hides to the tray when enabled (and there is a tray), else quits.
     let weak = window.as_weak();
     window.window().on_close_requested(move || {
+        // Record geometry before hiding: once hidden, `is_visible()` becomes
+        // false and shutdown's `window_state()` would skip the final resize.
+        crate::ui::record_window_now();
         let to_tray = weak
             .upgrade()
             .is_some_and(|w| w.get_close_to_tray() && w.get_tray_available());
@@ -111,6 +116,7 @@ fn tray() -> Option<os::tray::Tray> {
             TrayAction::Previous => s.commander.send(Command::Previous),
             TrayAction::Stop => s.commander.send(Command::Stop),
             TrayAction::Quit => {
+                crate::ui::record_window_now();
                 let _ = slint::quit_event_loop();
             }
         });
@@ -174,6 +180,7 @@ impl System {
             }
             MediaCommand::Raise => self.show_window(),
             MediaCommand::Quit => {
+                crate::ui::record_window_now();
                 let _ = slint::quit_event_loop();
             }
         }
@@ -196,6 +203,10 @@ impl System {
     fn event(&self, event: &Event) {
         match event {
             Event::NowPlaying(now) => {
+                let next_id = now.as_ref().map(|n| n.track_id);
+                if self.track_id.replace(next_id) != next_id {
+                    self.position_ms.set(0);
+                }
                 self.has_track.set(now.is_some());
                 #[cfg(windows)]
                 if let Some(tray) = self.tray.borrow().as_ref() {

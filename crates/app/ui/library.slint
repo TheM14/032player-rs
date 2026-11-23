@@ -100,8 +100,17 @@ export component ListToolbar inherits HorizontalLayout {
     property <string> search: root.query.search;
     property <string> year-from: root.query.year-from;
     property <string> year-to: root.query.year-to;
+    property <int> sort-index: root.query.sort;
     spacing: 10px;
     height: 40px;
+
+    changed query => {
+        debounce.running = false;
+        root.search = root.query.search;
+        root.year-from = root.query.year-from;
+        root.year-to = root.query.year-to;
+        root.sort-index = root.query.sort;
+    }
 
     function commit(sort: int, desc: bool) {
         debounce.running = false;
@@ -140,7 +149,7 @@ export component ListToolbar inherits HorizontalLayout {
         width: 150px;
         height: 40px;
         model: root.sort-labels;
-        current-index: root.query.sort;
+        current-index <=> root.sort-index;
         selected => {
             root.commit(self.current-index, root.sort-desc[self.current-index]);
         }
@@ -1375,6 +1384,7 @@ export component AlbumInspector inherits Flickable {
     in property <[PersonRow]> people;
     in property <[FactRow]> media;
     in property <string> review;
+    in property <int> album-id;
     // Right padding (the page's).
     in property <length> pad: Shell.pad;
     // (action, id): work, artist.
@@ -1382,6 +1392,11 @@ export component AlbumInspector inherits Flickable {
     property <bool> all-works;
     property <bool> all-people;
     property <int> expanded-work: -1;
+    changed album-id => {
+        root.all-works = false;
+        root.all-people = false;
+        root.expanded-work = -1;
+    }
     content-height: col.preferred-height;
 
     col := VerticalLayout {

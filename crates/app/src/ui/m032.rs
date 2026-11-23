@@ -131,7 +131,15 @@ pub(super) enum Bind {
     Search,
 }
 
-type Setter = Box<dyn Fn(&Image)>;
+type Setter = std::rc::Rc<dyn Fn(&Image)>;
+
+#[derive(Clone)]
+struct BoundImage {
+    path: String,
+    size: (f32, f32),
+    fit: ArtworkFit,
+    set: Setter,
+}
 
 #[derive(Default)]
 pub(super) struct M032State {
@@ -149,6 +157,8 @@ pub(super) struct M032State {
     series: Option<views::SeriesView>,
     mix: Option<views::MixView>,
     bindings: HashMap<String, Vec<(Bind, Setter)>>,
+    /// Active non-queue image bindings per group, used to re-decode on DPI scale changes.
+    bound: HashMap<Bind, Vec<BoundImage>>,
     /// Open album: track id -> first linked work (the "◆ OP" marker).
     tieup_works: HashMap<i64, i64>,
 }
@@ -253,10 +263,19 @@ impl Ui {
         }
         let px = physical_box(width, height, self.scale(w));
         let key = image_key(path, px, fit);
+        let set: Setter = std::rc::Rc::new(set);
         let first = {
             let mut state = self.m032.borrow_mut();
+            if group != Bind::Queue {
+                state.bound.entry(group).or_default().push(BoundImage {
+                    path: path.to_owned(),
+                    size: (width, height),
+                    fit,
+                    set: set.clone(),
+                });
+            }
             let slots = state.bindings.entry(key.clone()).or_default();
-            slots.push((group, Box::new(set)));
+            slots.push((group, set));
             slots.len() == 1
         };
         if first {
@@ -272,10 +291,50 @@ impl Ui {
 
     pub(super) fn unbind(&self, group: Bind) {
         let mut state = self.m032.borrow_mut();
+        state.bound.remove(&group);
         state.bindings.retain(|_, slots| {
             slots.retain(|(g, _)| *g != group);
             !slots.is_empty()
         });
+    }
+
+    /// Re-requests active non-queue bound images at the current DPI scale factor.
+    pub(super) fn rescale_m032_images(&self, w: &AppWindow) {
+        let scale = self.scale(w);
+        let entries: Vec<(Bind, BoundImage)> = {
+            let mut state = self.m032.borrow_mut();
+            state.bindings.retain(|_, slots| {
+                slots.retain(|(g, _)| *g == Bind::Queue);
+                !slots.is_empty()
+            });
+            state
+                .bound
+                .iter()
+                .flat_map(|(&group, list)| list.iter().cloned().map(move |item| (group, item)))
+                .collect()
+        };
+        let mut requests = Vec::new();
+        {
+            let mut state = self.m032.borrow_mut();
+            for (group, item) in entries {
+                let px = physical_box(item.size.0, item.size.1, scale);
+                let key = image_key(&item.path, px, item.fit);
+                let slots = state.bindings.entry(key.clone()).or_default();
+                slots.push((group, item.set));
+                if slots.len() == 1 {
+                    requests.push((key, item.path, px, item.fit));
+                }
+            }
+        }
+        for (key, path, px, fit) in requests {
+            self.send(Command::LoadImage {
+                key,
+                path,
+                width: px.0,
+                height: px.1,
+                fit,
+            });
+        }
     }
 
     pub(super) fn image_arrived(&self, key: &str, image: &Image) {
@@ -722,6 +781,13 @@ impl Ui {
             })
             .collect()));
         home.set_year(c.year);
+        let year_index = c
+            .years
+            .iter()
+            .position(|y| y.year == c.year)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(-1);
+        home.set_year_index(year_index);
         home.set_year_total(int(c.total));
         // All of the same year: title and artists only (Electron rows).
         self.grids[GRID_CHRONICLE].set(
