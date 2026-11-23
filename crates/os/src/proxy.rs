@@ -20,7 +20,10 @@ fn proxy_for(matcher: &Matcher, url: &str) -> Option<String> {
     let intercept = matcher.intercept(&uri)?;
     let proxy = intercept.uri();
     // ffmpeg only speaks plain HTTP proxies (CONNECT for https streams).
-    if proxy.scheme_str() != Some("http") {
+    if !proxy
+        .scheme_str()
+        .is_some_and(|s| s.eq_ignore_ascii_case("http"))
+    {
         tracing::warn!(
             proxy = %proxy,
             "system proxy scheme not supported by mpv, connecting directly"
@@ -89,5 +92,14 @@ mod tests {
         let m = Matcher::builder().build();
         assert_eq!(proxy_for(&m, "https://example.com/"), None);
         assert_eq!(proxy_for(&m, "not a url"), None);
+    }
+
+    #[test]
+    fn uppercase_http_scheme_is_accepted() {
+        let m = matcher("HTTP://127.0.0.1:7890", "");
+        assert_eq!(
+            proxy_for(&m, "https://example.com/stream").as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
     }
 }

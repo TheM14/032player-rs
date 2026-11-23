@@ -12,7 +12,7 @@ use souvlaki::{
 const SEEK_STEP: Duration = Duration::from_secs(10);
 
 /// A request from the system (media keys, SMTC flyout, MPRIS client).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MediaCommand {
     Play,
     Pause,
@@ -26,6 +26,8 @@ pub enum MediaCommand {
         forward: bool,
         by: Duration,
     },
+    /// Absolute volume in 0.0..=1.0 (MPRIS).
+    SetVolume(f64),
     /// Show the main window.
     Raise,
     Quit,
@@ -49,6 +51,7 @@ impl MediaCommand {
                 by,
             },
             MediaControlEvent::SetPosition(MediaPosition(at)) => Self::SeekTo(at),
+            MediaControlEvent::SetVolume(v) if v.is_finite() => Self::SetVolume(v.clamp(0.0, 1.0)),
             MediaControlEvent::Raise => Self::Raise,
             MediaControlEvent::Quit => Self::Quit,
             _ => return None,
