@@ -601,3 +601,84 @@ async fn media_cover_is_cached_locally_without_media_token() {
     assert!(!cover_path.exists());
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fade_disable_mid_fade_out_pauses_loading_seek_waits_and_clear_queue_resets_lyrics() {
+    let server = server().await;
+    let engine = Arc::new(FakeEngine {
+        fade: true,
+        ..FakeEngine::default()
+    });
+    let data_dir = std::env::temp_dir().join(format!(
+        "032player-p2-11-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: data_dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+    let events = Events(rx);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    events.wait("tracks", |e| matches!(e, Event::TracksAppended { .. }));
+
+    // 1. Seek while loading is deferred until FileLoaded.
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    events.wait("now playing", |e| matches!(e, Event::NowPlaying(Some(_))));
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::Seek {
+        position_ms: 45_000,
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        !engine.calls().iter().any(|c| c.starts_with("seek ")),
+        "must not seek engine before FileLoaded: {:?}",
+        engine.calls()
+    );
+    core.engine_event(EngineEvent::FileLoaded { path: None });
+    wait_call(&engine, "seek 45").await;
+    wait_call(&engine, "gain 1.000").await;
+
+    // 2. Buffering clears on Stop.
+    core.engine_event(EngineEvent::Buffering(true));
+    events.wait("buffering on", |e| *e == Event::Buffering(true));
+    core.send(Command::Stop);
+    events.wait("buffering off", |e| *e == Event::Buffering(false));
+
+    // 3. Disabling fade_on_pause mid fade-out still pauses engine immediately.
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    events.wait("now playing 2", |e| matches!(e, Event::NowPlaying(Some(_))));
+    core.engine_event(EngineEvent::FileLoaded { path: None });
+    wait_call(&engine, "gain 1.000").await;
+    engine.calls.lock().unwrap().clear();
+    core.send(Command::TogglePause);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    core.send(Command::SetFadeOnPause(false));
+    wait_call(&engine, "pause true").await;
+    wait_call(&engine, "gain 1.000").await;
+
+    // 4. ClearQueue clears lyrics.
+    core.send(Command::ClearQueue);
+    events.wait(
+        "lyrics cleared",
+        |e| matches!(e, Event::Lyrics { lines, .. } if lines.is_empty()),
+    );
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

@@ -761,3 +761,38 @@ async fn replace_daily_mix_invalidates_cached_mixes() {
     );
     h.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn daily_mix_missing_tracks_are_filtered_on_enqueue() {
+    let server = server(json!({ "home": true, "dailyMixes": true })).await;
+    let mut missing_track = track(1);
+    missing_track["missing"] = json!(true);
+    get(
+        &server,
+        "/api/v1/daily-mixes/201",
+        json!({
+            "mix": { "id": 201, "day": "2026-11-23", "status": "active", "title": "Mix Missing" },
+            "tracks": [
+                { "position": 0, "bucket": "familiar", "track": missing_track },
+                { "position": 1, "bucket": "explore", "track": track(2) }
+            ]
+        }),
+    )
+    .await;
+
+    let h = Harness::start(&server);
+    h.send(Command::OpenDailyMix(201));
+    h.wait(
+        "daily mix detail",
+        |e| matches!(e, Event::Detail { view: DetailView::DailyMix(m), .. } if m.id == 201),
+    );
+    h.send(Command::Enqueue {
+        source: TrackSource::List(TrackList::Detail),
+        at: client_core::QueuePosition::Last,
+    });
+    h.wait(
+        "queue excludes missing row",
+        |e| matches!(e, Event::Queue { items, .. } if items.len() == 1 && items[0].title == "t2"),
+    );
+    h.shutdown().await;
+}

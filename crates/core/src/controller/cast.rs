@@ -618,6 +618,17 @@ fn repeat_from_sonos(mode: &str) -> Option<Repeat> {
     }
 }
 
+/// Non-shuffle play mode reported by Sonos; any hardware `SHUFFLE*` mode
+/// returns `None` so `cast_play_mode` explicitly clears shuffle after adopt.
+fn play_mode_from_sonos(mode: &str) -> Option<PlayMode> {
+    match mode.to_ascii_uppercase().as_str() {
+        "NORMAL" => Some(PlayMode::Normal),
+        "REPEAT_ALL" => Some(PlayMode::RepeatAll),
+        "REPEAT_ONE" => Some(PlayMode::RepeatOne),
+        _ => None,
+    }
+}
+
 /// This machine's address towards the room, when the server is on loopback
 /// (the speaker must fetch from a LAN address).
 fn lan_towards(room: &Room, library: Option<&Library>) -> Option<IpAddr> {
@@ -842,12 +853,17 @@ impl Core {
     /// and the next play resumes it at `position` without ending the
     /// reported listen (no new play is counted).
     pub(super) fn hand_over(&mut self, was_idle: bool, position: i64) {
+        self.restore_gain();
+        self.clear_buffering();
         self.idle = true;
         self.loading = false;
         self.paused = true;
         self.preloaded = None;
+        self.current_transcode = None;
+        self.preloaded_transcode = None;
         self.expected_path = None;
         self.pending_seek_ms = None;
+        self.report_seek_ms = None;
         self.stream_offset_ms = 0;
         self.started_uid = None;
         if !was_idle && let Some(item) = self.queue.current() {
@@ -860,6 +876,9 @@ impl Core {
         let Some(cast) = self.cast.as_mut() else {
             return 0;
         };
+        if !matches!(op, Op::Probe | Op::Room(_) | Op::Volume(_)) {
+            cast.probe_seq = None;
+        }
         cast.sent += 1;
         let _ = cast.ops.send((cast.sent, op));
         cast.sent
@@ -991,7 +1010,7 @@ impl Core {
             title: track.title.clone(),
         });
         let live = first.kind == Kind::LiveMp3;
-        let mode = plan::play_mode(self.settings.repeat, whole);
+        let mode = self.cast_desired_mode(whole);
         let seq = self.cast_send(Op::Replace(Box::new(Push {
             items,
             start,
@@ -1163,6 +1182,15 @@ impl Core {
         }
         if let Some(cast) = self.cast.as_mut() {
             cast.anchor = None;
+            cast.buffering = false;
+        }
+    }
+
+    fn cast_desired_mode(&self, whole: bool) -> PlayMode {
+        if self.pause_at_end() {
+            PlayMode::Normal
+        } else {
+            plan::play_mode(self.settings.repeat, whole)
         }
     }
 
@@ -1172,7 +1200,7 @@ impl Core {
             return;
         };
         let whole = cast.mirror.len() == self.queue.len();
-        let mode = plan::play_mode(self.settings.repeat, whole);
+        let mode = self.cast_desired_mode(whole);
         if cast.mode != Some(mode) {
             self.cast_send(Op::Mode(mode));
             if let Some(cast) = self.cast.as_mut() {
@@ -1330,7 +1358,7 @@ impl Core {
             } => match tracks {
                 Ok(tracks) => {
                     if self.adoptable(seq) {
-                        self.cast_adopt(&probed, &refs, Some(tracks));
+                        self.cast_adopt(&probed, &refs, Some(tracks), 0);
                     }
                 }
                 Err(e) => tracing::warn!("sonos queue tracks: {e}"),
@@ -1351,11 +1379,7 @@ impl Core {
     }
 
     fn adoptable(&self, seq: u64) -> bool {
-        self.idle
-            && self
-                .cast
-                .as_ref()
-                .is_some_and(|c| c.probe_seq == Some(seq) && c.sent == seq)
+        self.idle && self.cast.as_ref().is_some_and(|c| c.probe_seq == Some(seq))
     }
 
     fn cast_done(&mut self, seq: u64, failure: Failure, result: Result<Outcome, String>) {
@@ -1477,15 +1501,36 @@ impl Core {
         };
         let known: Vec<i64> = self.queue.in_play_order().map(|i| i.track.id).collect();
         let ids: Vec<i64> = refs.iter().map(|r| r.track_id).collect();
-        if known == ids {
-            self.cast_adopt(&probed, &refs, None);
+        // Match either the full local queue or a contiguous window of a >2000-track queue
+        // so restart adoption never truncates the local queue or refetches known tracks.
+        if let Some(window_start) = known.windows(ids.len()).position(|w| w == ids.as_slice()) {
+            self.cast_adopt(&probed, &refs, None, window_start);
+            return;
+        }
+        let mut local_tracks = std::collections::HashMap::new();
+        for item in self.queue.in_play_order() {
+            local_tracks
+                .entry(item.track.id)
+                .or_insert_with(|| item.track.clone());
+        }
+        for track in library.lists.values().flatten() {
+            local_tracks
+                .entry(track.id)
+                .or_insert_with(|| track.clone());
+        }
+        if ids.iter().all(|id| local_tracks.contains_key(id)) {
+            let tracks = ids
+                .iter()
+                .map(|id| local_tracks.get(id).expect("checked above").clone())
+                .collect();
+            self.cast_adopt(&probed, &refs, Some(tracks), 0);
             return;
         }
         let client = library.client.clone();
         let tx = self.internal.clone();
         let generation = self.cast_generation;
         tokio::spawn(async move {
-            let tracks = fetch_tracks(&client, &ids).await;
+            let tracks = fetch_tracks(&client, &ids, local_tracks).await;
             let _ = tx.send(Internal::Cast(
                 generation,
                 CastMsg::AdoptTracks {
@@ -1499,8 +1544,15 @@ impl Core {
     }
 
     /// Takes over the speaker's queue: our queue becomes it (`tracks`), or
-    /// already is (`None`), at the speaker's track, position and state.
-    fn cast_adopt(&mut self, probed: &Probed, refs: &[QueueRef], tracks: Option<Vec<Track>>) {
+    /// already contains it starting at `window_start` (`None`), at the speaker's
+    /// track, position and state.
+    fn cast_adopt(
+        &mut self,
+        probed: &Probed,
+        refs: &[QueueRef],
+        tracks: Option<Vec<Track>>,
+        window_start: usize,
+    ) {
         let identities: Vec<String> = probed.uris.iter().map(|u| plan::uri_identity(u)).collect();
         let Some(index) =
             plan::resolve_index(&identities, probed.status.index, &probed.status.track_uri)
@@ -1516,7 +1568,7 @@ impl Core {
             }
             self.queue.replace(tracks, index);
         } else {
-            self.queue.go(index);
+            self.queue.go(window_start + index);
         }
         if let Some(repeat) = repeat_from_sonos(&probed.mode)
             && repeat != self.settings.repeat
@@ -1527,6 +1579,7 @@ impl Core {
         let entries: Vec<Entry> = self
             .queue
             .in_play_order()
+            .skip(window_start)
             .zip(refs)
             .zip(identities)
             .map(|((item, r), identity)| Entry {
@@ -1542,15 +1595,16 @@ impl Core {
         let offset = refs[index].offset_ms;
         let position = probed.status.position_ms + offset;
         let paused = probed.status.state == TransportState::Paused;
-        let whole = entries.len() == self.queue.len();
-        let mode = plan::play_mode(self.settings.repeat, whole);
+        let speaker_mode = play_mode_from_sonos(&probed.mode);
         let Some(cast) = self.cast.as_mut() else {
             return;
         };
         cast.mirror = entries;
         cast.loaded = true;
         cast.probe_seq = None;
-        cast.mode = Some(mode);
+        // Reflect the speaker's actual mode (`None` for any `SHUFFLE*` mode) so
+        // `cast_play_mode` clears hardware shuffle when needed.
+        cast.mode = speaker_mode;
         cast.state = Some(probed.status.state);
         cast.anchor = (!paused).then(|| (Instant::now(), position));
         let name = cast.room.name.clone();
@@ -1585,6 +1639,7 @@ impl Core {
         self.emit(Event::Paused(paused));
         self.emit_position();
         self.queue_changed();
+        self.cast_play_mode();
         self.save_position();
         self.load_lyrics(item.track.id);
         self.update_playing_sources();
@@ -1740,11 +1795,27 @@ impl Core {
         {
             return;
         }
+        let was_loading = self.loading;
         self.loading = false;
         let mut position = status.position_ms + offset;
         let duration = self.duration_ms();
         if duration > 0 {
             position = position.min(duration);
+        }
+        // Fallback guard for Sonos repeat-one loop wrap while an EndOfTrack sleep
+        // timer is armed (in case the speaker wrapped before Mode(Normal) took effect).
+        if !was_loading
+            && self.pause_at_end()
+            && self.settings.repeat == Repeat::One
+            && duration > 0
+            && self.position_ms + 20_000 >= duration
+            && position < 3_000
+            && self.position_ms.saturating_sub(position) > 10_000
+        {
+            self.stop_playback();
+            self.show_current_stopped();
+            self.set_sleep_timer(None);
+            return;
         }
         // A live entry's stream starts at its offset.
         let speaker_duration = if status.duration_ms > 0 {
@@ -1826,14 +1897,23 @@ impl Core {
     }
 }
 
-/// The tracks `ids` (in that order) for adopting a speaker queue.
-async fn fetch_tracks(client: &Client, ids: &[i64]) -> Result<Vec<Track>, String> {
-    let mut unique = ids.to_vec();
-    unique.sort_unstable();
-    unique.dedup();
+/// The tracks `ids` (in that order) for adopting a speaker queue, reusing any
+/// tracks already known locally so large queues avoid redundant HTTP calls.
+async fn fetch_tracks(
+    client: &Client,
+    ids: &[i64],
+    mut found: std::collections::HashMap<i64, Track>,
+) -> Result<Vec<Track>, String> {
+    let mut missing: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|id| !found.contains_key(id))
+        .collect();
+    missing.sort_unstable();
+    missing.dedup();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(ADOPT_FETCHES));
     let mut tasks = tokio::task::JoinSet::new();
-    for id in unique {
+    for id in missing {
         let client = client.clone();
         let semaphore = semaphore.clone();
         tasks.spawn(async move {
@@ -1841,7 +1921,6 @@ async fn fetch_tracks(client: &Client, ids: &[i64]) -> Result<Vec<Track>, String
             (id, client.track(id).await)
         });
     }
-    let mut found = std::collections::HashMap::new();
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok((id, Ok(track))) => {

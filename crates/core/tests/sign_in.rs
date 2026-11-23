@@ -308,3 +308,40 @@ async fn rejected_saved_token_is_forgotten() {
     core.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rapid_sign_out_and_login_keeps_new_tokens() {
+    let server = server(true).await;
+    let dir = data_dir("rapid-relogin");
+    let secrets = Arc::new(MemorySecrets::default());
+    let core = Core::start(&dir, &secrets);
+
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "good".into(),
+        media_token: "media-old".into(),
+    });
+    core.wait("first login", |e| matches!(e, Event::LoggedIn { .. }));
+
+    // Immediately sign out and sign back in: the async sign-out secret cleanup
+    // must not race ahead or wipe the new tokens.
+    core.send(Command::Logout);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "good".into(),
+        media_token: "media-new".into(),
+    });
+    core.wait("second login", |e| matches!(e, Event::LoggedIn { .. }));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        secret(&secrets, "api-token", &server).as_deref(),
+        Some("good")
+    );
+    assert_eq!(
+        secret(&secrets, "media-token", &server).as_deref(),
+        Some("media-new")
+    );
+
+    core.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

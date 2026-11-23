@@ -783,3 +783,86 @@ async fn detach_cast_aborts_slow_flac_warmup_without_playing_on_speaker() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn adopts_speaker_despite_volume_and_clears_hardware_shuffle() {
+    let server = server().await;
+    for id in [1, 2] {
+        Mock::given(path(format!("/api/v1/tracks/{id}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(track(id, if id == 1 { "flac" } else { "mp3" })),
+            )
+            .mount(&server)
+            .await;
+    }
+    let fake = FakeSpeaker::start().await;
+    fake.update(|s| {
+        s.queue = vec![
+            (
+                "http://192.168.1.5:4533/api/v1/tracks/1/stream?mediaToken=media".into(),
+                "曲1".into(),
+            ),
+            (
+                "http://192.168.1.5:4533/api/v1/tracks/2/stream?mediaToken=media".into(),
+                "曲2".into(),
+            ),
+        ];
+        s.queue_source = true;
+        s.track = 1;
+        s.transport = "PLAYING".into();
+        s.position_ms = 5_000;
+        s.mode = "SHUFFLE".into();
+    });
+    let engine = Arc::new(FakeEngine::default());
+    let data_dir = std::env::temp_dir().join(format!(
+        "032player-adopt-shuffle-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let settings = Settings {
+        cast: CastSettings {
+            room: Some(client_core::CastRoomSetting {
+                id: UUID.into(),
+                name: "测试房间".into(),
+                base_url: fake.server.uri(),
+            }),
+            hosts: fake.host(),
+            ..CastSettings::default()
+        },
+        ..Settings::default()
+    };
+    let core = client_core::start(
+        engine,
+        CoreConfig {
+            data_dir: data_dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings,
+        },
+        move |e| {
+            let _ = tx.lock().unwrap().send(e);
+        },
+    );
+    let events = Events(rx);
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    // Sending volume while the startup probe is in flight must not abort adoption.
+    core.send(Command::SetVolume(55.0));
+    events.wait(
+        "adopted track",
+        |e| matches!(e, Event::NowPlaying(Some(n)) if n.track_id == 1),
+    );
+    // Hardware SHUFFLE (shuffle + repeat-all in Sonos UPnP) must be cleared to REPEAT_ALL.
+    until("shuffle cleared", || fake.state().mode == "REPEAT_ALL").await;
+
+    tokio::task::spawn_blocking(move || core.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

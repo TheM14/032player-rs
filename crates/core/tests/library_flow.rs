@@ -515,12 +515,18 @@ async fn artist_credit_playback_respects_the_role_filter_and_release_group() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/api/v1/albums"))
+        .and(path("/api/v1/browse/albums"))
         .and(query_param("artist", "7"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(page(vec![json!({"id": 10, "title": "幕后参与"})], 1)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(
+            vec![json!({
+                "id": 10,
+                "title": "幕后参与",
+                "artist": "主唱",
+                "artists": [{ "id": 9, "name": "主唱" }]
+            })],
+            1,
+        )))
+        .with_priority(1)
         .mount(&server)
         .await;
     let credited = |id, title, album, role| {
@@ -555,6 +561,8 @@ async fn artist_credit_playback_respects_the_role_filter_and_release_group() {
     };
     assert_eq!((artist.requested_id, artist.id), (6, 7));
     assert_eq!(artist.releases[1].note, "作词 · 1 首");
+    assert_eq!(artist.releases[1].artists.len(), 1);
+    assert_eq!(artist.releases[1].artists[0].id, 9);
     h.wait(
         "all credits",
         |e| matches!(e, Event::ArtistCredits { artist_id: 7, tracks, .. } if tracks.len() == 2),
@@ -911,5 +919,159 @@ async fn stale_fetched_play_intent_does_not_hijack_newer_playback() {
         !hijacked,
         "stale fetched play intent hijacked active playback"
     );
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcode_switch_while_playing_preserves_seek_mode_and_reloads_preload() {
+    let server = server().await;
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    h.wait("playing", |e| matches!(e, Event::NowPlaying(Some(_))));
+    h.wait_call("load /tracks/1/stream").await;
+    h.engine_event(EngineEvent::FileLoaded {
+        path: Some(format!(
+            "{}/api/v1/tracks/1/stream?mediaToken=media",
+            server.uri()
+        )),
+    });
+    h.wait_call("append /tracks/2/stream").await;
+
+    // Switching to lossy transcode mid-track re-preloads track 2 with MP3,
+    // while seeking track 1 still uses native engine seek (not stream restart).
+    h.send(Command::SetTranscode(Some(Transcode::Mp3(320))));
+    h.wait_call("append /tracks/2/transcode.mp3?bitrate=320")
+        .await;
+
+    h.send(Command::Seek {
+        position_ms: 60_000,
+    });
+    let calls = h.wait_call("seek 60").await;
+    assert!(
+        !calls.iter().any(|c| c.starts_with("load ")),
+        "original stream should not reload on seek after transcode switch: {calls:?}"
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_artist_without_releases_or_credits_does_not_label_own_albums_as_credit() {
+    let server = MockServer::start().await;
+    Mock::given(path("/api/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "v1", "apiRevision": 3,
+            "features": { "browse": false },
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/tracks"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![track(1, "a"), track(2, "b"), track(3, "c")], 3)),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/tracks/1/stream"))
+        .respond_with(ResponseTemplate::new(206))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/playlists"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums"))
+        .and(query_param("artist", "5"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![json!({ "id": 10, "title": "旧版个人专辑" })], 1)),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/albums"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/artists/5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "artist": { "id": 5, "name": "歌手" },
+            "releases": [],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/artists/5/credits"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/v1/favorites/tracks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![], 0)))
+        .mount(&server)
+        .await;
+
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::OpenArtist(5));
+    let Event::Detail {
+        view: DetailView::Artist(artist),
+        ..
+    } = h.wait("artist detail", |e| matches!(e, Event::Detail { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(artist.releases.len(), 1);
+    assert_eq!(artist.releases[0].relation, "");
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn move_playlist_item_retries_once_on_conflict() {
+    let server = server().await;
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempts_clone = attempts.clone();
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/playlists/2/order"))
+        .respond_with(move |_req: &Request| {
+            let n = attempts_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                ResponseTemplate::new(409).set_body_json(json!({
+                    "error": { "code": "playlist_conflict", "message": "revision mismatch" }
+                }))
+            } else {
+                ResponseTemplate::new(204)
+            }
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let h = Harness::start(&server, Settings::default()).await;
+    h.send(Command::OpenPlaylist(2));
+    h.wait("playlist detail", |e| {
+        matches!(
+            e,
+            Event::Detail {
+                view: DetailView::Playlist(_),
+                ..
+            }
+        )
+    });
+    h.send(Command::MovePlaylistItem {
+        playlist_id: 2,
+        from: 0,
+        to: 2,
+    });
+    h.wait("playlist reloaded after retry", |e| {
+        matches!(
+            e,
+            Event::Detail {
+                view: DetailView::Playlist(_),
+                ..
+            }
+        )
+    });
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     h.shutdown().await;
 }

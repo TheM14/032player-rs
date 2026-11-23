@@ -131,6 +131,9 @@ fn spawn_ramp(
                 // same lock before invalidating this generation.
                 if let Err(e) = engine.set_fade_gain(gain(now)) {
                     tracing::debug!("fade gain: {e}");
+                    if pause {
+                        break;
+                    }
                     return;
                 }
                 now

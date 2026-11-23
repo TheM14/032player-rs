@@ -256,10 +256,10 @@ pub fn album_works(
                     api::work_poster_path(link.id, ""),
                 ),
             };
-            let relation = if !usage.is_empty() {
-                usage.clone()
-            } else if ost {
+            let relation = if ost && usage == "OST" {
                 "原声集 OST".into()
+            } else if !usage.is_empty() {
+                usage.clone()
             } else {
                 "整张专辑关联".into()
             };
@@ -1511,5 +1511,25 @@ mod tests {
         };
         let rows = recent_rows(&[t(1, true), t(2, false), t(3, true), t(4, true)], &[3], 2);
         assert_eq!(rows.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 4]);
+    }
+
+    #[test]
+    fn pure_ost_album_work_uses_ost_label() {
+        let links = [api::AlbumWorkLink {
+            id: 42,
+            title: "Original Soundtrack".into(),
+            kind: "anime".into(),
+            ..api::AlbumWorkLink::default()
+        }];
+        let albums = vec![api::AlbumWork {
+            album_id: 10,
+            album_role: "ost".into(),
+            ..api::AlbumWork::default()
+        }];
+        let entries = album_works(10, &[], &links, &[(None, albums, Vec::new())]);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].ost);
+        assert_eq!(entries[0].relation, "原声集 OST");
+        assert_eq!(entries[0].usage, "OST");
     }
 }

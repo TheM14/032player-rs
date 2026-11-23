@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use api::{
     Album, AlbumListQuery, ApiError, Artist, ArtistListQuery, ArtistTrackSort, Client,
-    FavoriteKind, Page, Query, SearchCategory, Track, TrackListQuery, TrackSort, seed_key,
+    FavoriteKind, Page, Query, SearchCategory, Track, TrackListQuery, TrackSort,
 };
 use serde::de::DeserializeOwned;
 
@@ -93,24 +93,21 @@ pub(crate) fn random_seed() -> i64 {
     i64::try_from(x & 0x7fff_ffff).unwrap_or(0)
 }
 
-/// Reads every page of a list, one message per page. Random lists take
-/// their seed from `seeds` per page (stable across pages, new from offset 0).
+/// Reads every page of a list, one message per page. Random lists keep one
+/// immutable `seed` across every page of this request so concurrent shuffles
+/// never mix pages from different permutations.
 pub(super) async fn load_pages<T: DeserializeOwned>(
     client: &Client,
     path: &str,
     base: &Query,
     page_size: u32,
-    seeds: Option<&std::sync::Mutex<api::RandomSeeds>>,
+    seed: Option<i64>,
     mut each: impl FnMut(Vec<T>, usize) -> bool,
 ) -> Result<(), ApiError> {
-    let key = seed_key(path, base);
     let mut offset = 0u32;
     loop {
         let mut q = base.clone();
-        if let Some(seeds) = seeds {
-            let seed = seeds
-                .lock()
-                .map_or_else(|_| random_seed(), |mut s| s.seed(&key, offset, random_seed));
+        if let Some(seed) = seed {
             q.push("seed", seed);
         }
         q.page(offset, page_size);
@@ -156,7 +153,6 @@ impl Core {
     pub(super) fn query_albums(&mut self, favorites: bool, filter: AlbumFilter) {
         let Some(library) = &self.library else { return };
         let browse = library.browse();
-        let seeds = library.seeds.clone();
         let Some((client, tx)) = self.request() else {
             return;
         };
@@ -210,34 +206,37 @@ impl Core {
             ..AlbumListQuery::default()
         };
         let (path, q) = query.source(browse);
-        tokio::spawn(async move {
-            let result = load_pages::<Album>(
-                &client,
-                path,
-                &q,
-                PAGE,
-                random.then_some(&*seeds),
-                |items, total| {
-                    let items = items.iter().map(album_item).collect();
-                    tx.send(Internal::Loaded(
-                        Target::Albums,
-                        seq,
-                        Loaded::AlbumsPage(items, total),
-                    ))
-                    .is_ok()
-                },
-            )
+        let seed = random.then(random_seed);
+        let handle = tokio::spawn(async move {
+            let mut sent_any = false;
+            let result = load_pages::<Album>(&client, path, &q, PAGE, seed, |items, total| {
+                sent_any = true;
+                let items = items.iter().map(album_item).collect();
+                tx.send(Internal::Loaded(
+                    Target::Albums,
+                    seq,
+                    Loaded::AlbumsPage(items, total),
+                ))
+                .is_ok()
+            })
             .await;
             if let Err(e) = result {
+                if !sent_any {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::Albums,
+                        seq,
+                        Loaded::AlbumsPage(Vec::new(), 0),
+                    ));
+                }
                 let _ = tx.send(Self::failed(&client, "加载专辑", e));
             }
         });
+        self.track_task(Target::Albums, handle.abort_handle());
     }
 
     pub(super) fn query_tracks(&mut self, favorites: bool, filter: TrackFilter) {
         let Some(library) = &self.library else { return };
         let browse = library.browse();
-        let seeds = library.seeds.clone();
         let cache = library.favorite_tracks.clone();
         let Some((client, tx)) = self.request() else {
             return;
@@ -280,34 +279,37 @@ impl Core {
             ..TrackListQuery::default()
         };
         let (path, q) = query.source(browse);
-        tokio::spawn(async move {
-            let result = load_pages::<Track>(
-                &client,
-                path,
-                &q,
-                PAGE,
-                random.then_some(&*seeds),
-                |items, total| {
-                    tx.send(Internal::Loaded(
-                        Target::Tracks,
-                        seq,
-                        Loaded::TracksPage(items, total),
-                    ))
-                    .is_ok()
-                },
-            )
+        let seed = random.then(random_seed);
+        let handle = tokio::spawn(async move {
+            let mut sent_any = false;
+            let result = load_pages::<Track>(&client, path, &q, PAGE, seed, |items, total| {
+                sent_any = true;
+                tx.send(Internal::Loaded(
+                    Target::Tracks,
+                    seq,
+                    Loaded::TracksPage(items, total),
+                ))
+                .is_ok()
+            })
             .await;
             if let Err(e) = result {
+                if !sent_any {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::Tracks,
+                        seq,
+                        Loaded::TracksPage(Vec::new(), 0),
+                    ));
+                }
                 let _ = tx.send(Self::failed(&client, "加载曲目", e));
             }
         });
+        self.track_task(Target::Tracks, handle.abort_handle());
     }
 
     pub(super) fn query_artists(&mut self, favorites: bool, filter: ArtistFilter) {
         let Some(library) = &self.library else { return };
         let browse = library.browse();
         let credit_roles = library.capabilities.has(api::Feature::ArtistCreditRoles);
-        let seeds = library.seeds.clone();
         let Some((client, tx)) = self.request() else {
             return;
         };
@@ -340,36 +342,42 @@ impl Core {
             ..ArtistListQuery::default()
         };
         let (path, q) = query.source(browse);
-        tokio::spawn(async move {
+        let seed = random.then(random_seed);
+        let handle = tokio::spawn(async move {
             let mut all = Vec::new();
-            let result = load_pages::<Artist>(
-                &client,
-                path,
-                &q,
-                PAGE,
-                random.then_some(&*seeds),
-                |items, total| {
-                    let items: Vec<_> = items.iter().map(artist_item).collect();
-                    if favorites {
-                        all.extend(items);
-                        return true;
-                    }
-                    tx.send(Internal::Loaded(
-                        target,
-                        seq,
-                        Loaded::ArtistsPage(items, total),
-                    ))
-                    .is_ok()
-                },
-            )
+            let mut sent_any = false;
+            let result = load_pages::<Artist>(&client, path, &q, PAGE, seed, |items, total| {
+                let items: Vec<_> = items.iter().map(artist_item).collect();
+                if favorites {
+                    all.extend(items);
+                    return true;
+                }
+                sent_any = true;
+                tx.send(Internal::Loaded(
+                    target,
+                    seq,
+                    Loaded::ArtistsPage(items, total),
+                ))
+                .is_ok()
+            })
             .await;
             let msg = match result {
-                Err(e) => Self::failed(&client, "加载艺人", e),
+                Err(e) => {
+                    if !favorites && !sent_any {
+                        let _ = tx.send(Internal::Loaded(
+                            target,
+                            seq,
+                            Loaded::ArtistsPage(Vec::new(), 0),
+                        ));
+                    }
+                    Self::failed(&client, "加载艺人", e)
+                }
                 Ok(()) if favorites => Internal::Loaded(target, seq, Loaded::FavoriteArtists(all)),
                 Ok(()) => return,
             };
             let _ = tx.send(msg);
         });
+        self.track_task(target, handle.abort_handle());
     }
 
     pub(super) fn load_playlists(&mut self) {
@@ -433,11 +441,16 @@ impl Core {
                         (DetailView::Album(view), detail.tracks, Vec::new())
                     }
                     DetailKey::Artist(id) => {
+                        let albums_path = if browse_cap {
+                            "/browse/albums"
+                        } else {
+                            "/albums"
+                        };
                         let mut q = Query::new();
                         q.push("artist", id);
                         let (detail, matching, credits) = tokio::join!(
                             client.artist(id),
-                            client.get_all::<Album>("/albums", &q),
+                            client.get_all::<Album>(albums_path, &q),
                             client.artist_credits(id, None)
                         );
                         let detail = detail?;
@@ -446,7 +459,7 @@ impl Core {
                         } else {
                             let mut q = Query::new();
                             q.push("artist", detail.artist.id);
-                            client.get_all::<Album>("/albums", &q).await?
+                            client.get_all::<Album>(albums_path, &q).await?
                         };
                         // Older servers may not expose /artists/{id}/credits.
                         let (credit_tracks, role_counts, credits_available) = match credits {
@@ -459,8 +472,15 @@ impl Core {
                                 (Vec::new(), Vec::new(), false)
                             }
                         };
-                        // /albums?artist= matches any role: albums only reached
-                        // through credits stay visible as relation "credit".
+                        // `/browse/albums?artist=` (or `/albums?artist=`) matches any role:
+                        // albums only reached through credits stay visible as relation "credit".
+                        // Older servers without `detail.releases` or `/credits` return the
+                        // artist's own discography here, so leave `relation` empty then.
+                        let extra_relation = if detail.releases.is_empty() && !credits_available {
+                            ""
+                        } else {
+                            "credit"
+                        };
                         let mut releases: Vec<_> = detail
                             .releases
                             .iter()
@@ -472,7 +492,7 @@ impl Core {
                         let seen: HashSet<i64> = releases.iter().map(|a| a.id).collect();
                         releases.extend(matching.iter().filter(|a| !seen.contains(&a.id)).map(
                             |a| browse::AlbumItem {
-                                relation: "credit".into(),
+                                relation: extra_relation.into(),
                                 ..album_item(a)
                             },
                         ));
@@ -717,14 +737,16 @@ impl Core {
             });
             return;
         }
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut offset = 0u32;
+            let mut sent_any = false;
             loop {
                 match client
                     .search(&query, Some(category), offset, page_size)
                     .await
                 {
                     Ok(res) => {
+                        sent_any = true;
                         let (total_i64, count, artists, albums, tracks) = match category {
                             SearchCategory::Artists => (
                                 res.artists.total,
@@ -778,12 +800,26 @@ impl Core {
                         }
                     }
                     Err(e) => {
+                        if !sent_any {
+                            let _ = tx.send(Internal::Loaded(
+                                Target::Search,
+                                seq,
+                                Loaded::SearchCategoryPage {
+                                    category,
+                                    artists: Vec::new(),
+                                    albums: Vec::new(),
+                                    tracks: Vec::new(),
+                                    total: 0,
+                                },
+                            ));
+                        }
                         let _ = tx.send(Self::failed(&client, "搜索", e));
                         break;
                     }
                 }
             }
         });
+        self.track_task(Target::Search, handle.abort_handle());
     }
 
     fn refresh_queue_artists(&mut self, tracks: &[Track]) {
@@ -1092,6 +1128,9 @@ impl Core {
                     track.is_favorite = favorite;
                 }
             }
+            if let Some(home) = &mut self.home {
+                home.set_track_favorite(id, favorite);
+            }
             self.queue.set_favorite(id, favorite);
             self.schedule_queue_save();
         }
@@ -1128,14 +1167,28 @@ impl Core {
     pub(super) fn with_tracks(&mut self, source: TrackSource, intent: Intent) {
         let Some(library) = &self.library else { return };
         let with_context = library.capabilities.has(api::Feature::PlaybackContext);
-        // Playing the open daily mix: its playable rows, attributed to it.
-        if let (TrackSource::List(TrackList::Detail), Intent::Play { start, shuffle, .. }) =
-            (source, &intent)
-            && let Some((tracks, play)) = self.mix_playable(*start, true)
+        // Operating on the open daily mix: skip missing rows for play, enqueue and playlist ops.
+        if let TrackSource::List(TrackList::Detail) = source
+            && self.open_mix.is_some()
         {
-            let play = if *shuffle { play.shuffled() } else { play };
-            self.begin_play_intent();
-            self.fetched(tracks, play);
+            if let Intent::Play { start, shuffle, .. } = &intent
+                && let Some((tracks, play)) = self.mix_playable(*start, true)
+            {
+                let play = if *shuffle { play.shuffled() } else { play };
+                self.begin_play_intent();
+                self.fetched(tracks, play);
+                return;
+            }
+            if let Some((tracks, _)) = self.mix_playable(0, false) {
+                self.fetched(tracks, intent);
+                return;
+            }
+        }
+        if let TrackSource::Track(TrackList::Detail, index) = source
+            && let Some(mix) = &self.open_mix
+            && mix.rows.get(index).is_some_and(|r| r.missing)
+        {
+            self.emit(Event::Notice("文件缺失，无法操作".into()));
             return;
         }
         let tracks = match source {
@@ -1536,7 +1589,7 @@ impl Core {
         };
         let generation = self.list_generation;
         tokio::spawn(async move {
-            let result = async {
+            let reorder = || async {
                 let detail = client.playlist(playlist_id).await?;
                 let mut ids: Vec<i64> = detail.tracks.iter().map(|t| t.id).collect();
                 let Some(at) = ids.iter().position(|id| *id == moved) else {
@@ -1547,8 +1600,14 @@ impl Core {
                 client
                     .order_playlist(playlist_id, &ids, detail.playlist.revision)
                     .await
+            };
+            let mut result = reorder().await;
+            if result
+                .as_ref()
+                .is_err_and(|e| e.code() == Some("playlist_conflict"))
+            {
+                result = reorder().await;
             }
-            .await;
             let msg = match result {
                 Ok(()) => Internal::PlaylistsChanged {
                     generation,

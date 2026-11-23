@@ -993,7 +993,12 @@ fn matches_text(needle: &str, haystack: &[&str]) -> bool {
 }
 
 fn in_year_range(year: i32, from: Option<i32>, to: Option<i32>) -> bool {
-    from.is_none_or(|f| f <= 0 || year >= f) && to.is_none_or(|t| t <= 0 || year <= t)
+    let from = from.filter(|&f| f > 0);
+    let to = to.filter(|&t| t > 0);
+    if from.is_none() && to.is_none() {
+        return true;
+    }
+    year > 0 && from.is_none_or(|f| year >= f) && to.is_none_or(|t| year <= t)
 }
 
 /// Compares two keys; "missing" keys (empty, 0, never played) sort last in
@@ -1566,5 +1571,35 @@ mod tests {
             ..Playlist::default()
         };
         assert_eq!(playlist_item(&playlist).duration, None);
+    }
+
+    #[test]
+    fn year_range_excludes_unknown_year_zero() {
+        let albums = vec![
+            album(1, "No Year", 0, "A"),
+            album(2, "2019", 2019, "A"),
+            album(3, "2023", 2023, "A"),
+        ];
+        let filter = AlbumFilter {
+            year_from: None,
+            year_to: Some(2020),
+            ..AlbumFilter::default()
+        };
+        let filtered = favorite_albums(albums, &filter, None, 1);
+        assert_eq!(ids(&filtered, |a| a.id), [2]);
+
+        let t = |id, year| Track {
+            id,
+            year,
+            ..Track::default()
+        };
+        let tracks = vec![t(1, 0), t(2, 2018), t(3, 2022)];
+        let t_filter = TrackFilter {
+            year_from: None,
+            year_to: Some(2020),
+            ..TrackFilter::default()
+        };
+        let filtered_tracks = favorite_tracks(tracks, &t_filter, 1);
+        assert_eq!(ids(&filtered_tracks, |tr| tr.id), [2]);
     }
 }

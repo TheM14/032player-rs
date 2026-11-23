@@ -48,6 +48,16 @@ pub(super) struct HomeState {
     mixes: Option<api::DailyMixList>,
     mixes_date: Option<chrono::NaiveDate>,
     mix_polls: u32,
+    mix_poll_gen: u64,
+    mix_poll_task: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for HomeState {
+    fn drop(&mut self) {
+        if let Some(task) = self.mix_poll_task.take() {
+            task.abort();
+        }
+    }
 }
 
 impl HomeState {
@@ -55,6 +65,35 @@ impl HomeState {
         (self.mixes_date == Some(chrono::Local::now().date_naive()))
             .then_some(self.mixes.as_ref())
             .flatten()
+    }
+
+    pub fn cancel_mix_poll(&mut self) {
+        self.mix_poll_gen += 1;
+        if let Some(task) = self.mix_poll_task.take() {
+            task.abort();
+        }
+    }
+
+    pub fn mix_poll_gen(&self) -> u64 {
+        self.mix_poll_gen
+    }
+
+    pub fn set_track_favorite(&mut self, id: i64, favorite: bool) {
+        for track in &mut self.recent {
+            if track.id == id {
+                track.is_favorite = favorite;
+            }
+        }
+        for rec in &mut self.resume {
+            if rec.track.id == id {
+                rec.track.is_favorite = favorite;
+            }
+        }
+        if let Some(rec) = self.listening_resume.as_mut()
+            && rec.track.id == id
+        {
+            rec.track.is_favorite = favorite;
+        }
     }
 }
 
@@ -120,6 +159,7 @@ impl Core {
         };
         let state = self.home.get_or_insert_with(HomeState::default);
         state.mix_polls = 0;
+        state.cancel_mix_poll();
         let seq = self.next_seq(Target::Home);
         let home_client = client.clone();
         let home_tx = tx.clone();
@@ -162,16 +202,32 @@ impl Core {
         let Some((client, tx)) = self.request() else {
             return;
         };
+        if let Some(state) = self.home.as_mut() {
+            state.cancel_mix_poll();
+        }
         let seq = self.next_seq(Target::DailyMixes);
         tokio::spawn(async move {
-            let msg = match client.daily_mixes().await {
-                Ok(list) => Internal::Loaded(Target::DailyMixes, seq, Loaded::DailyMixes(list)),
+            match client.daily_mixes().await {
+                Ok(list) => {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::DailyMixes,
+                        seq,
+                        Loaded::DailyMixes(list),
+                    ));
+                }
                 Err(e) => {
                     tracing::debug!("daily mixes: {e}");
-                    return;
+                    if let Some(msg) = super::unauthorized(&client, &e) {
+                        let _ = tx.send(msg);
+                    } else {
+                        let _ = tx.send(Internal::Loaded(
+                            Target::DailyMixes,
+                            seq,
+                            Loaded::DailyMixesFailed,
+                        ));
+                    }
                 }
-            };
-            let _ = tx.send(msg);
+            }
         });
     }
 
@@ -308,11 +364,14 @@ impl Core {
     }
 
     fn emit_mixes(&self) {
-        let Some(list) = self.home.as_ref().and_then(|s| s.mixes.as_ref()) else {
+        let Some(state) = self.home.as_ref() else {
+            return;
+        };
+        let Some(list) = state.mixes.as_ref() else {
             return;
         };
         self.emit(Event::DailyMixes {
-            generating: list.status == "generating",
+            generating: list.status == "generating" && state.mix_poll_task.is_some(),
             items: list.items.iter().map(mix_item).collect(),
         });
     }
@@ -380,22 +439,40 @@ impl Core {
             }
             Loaded::DailyMixes(list) => {
                 let generating = list.status == "generating";
+                let list_gen = self.list_generation;
+                let tx = self.internal.clone();
                 let Some(state) = self.home.as_mut() else {
                     return;
                 };
+                state.cancel_mix_poll();
                 state.mixes = Some(list);
                 state.mixes_date = Some(chrono::Local::now().date_naive());
                 if generating && state.mix_polls < MIX_POLLS {
                     state.mix_polls += 1;
-                    let generation = self.list_generation;
-                    let tx = self.internal.clone();
-                    tokio::spawn(async move {
+                    let poll_gen = state.mix_poll_gen;
+                    let handle = tokio::spawn(async move {
                         tokio::time::sleep(MIX_POLL).await;
-                        let _ = tx.send(Internal::PollMixes(generation));
+                        let _ = tx.send(Internal::PollMixes { list_gen, poll_gen });
                     });
+                    state.mix_poll_task = Some(handle.abort_handle());
                 }
                 self.emit_mixes();
                 self.emit_recent();
+            }
+            Loaded::DailyMixesFailed => {
+                let Some(state) = self.home.as_mut() else {
+                    return;
+                };
+                state.cancel_mix_poll();
+                let items = state
+                    .mixes
+                    .as_ref()
+                    .map(|m| m.items.iter().map(mix_item).collect())
+                    .unwrap_or_default();
+                self.emit(Event::DailyMixes {
+                    generating: false,
+                    items,
+                });
             }
             Loaded::HomeWorks(page) => {
                 self.renewed(page.renewed);
@@ -484,7 +561,8 @@ impl Core {
             q.push("type", &query.kind);
         }
         q.push("sort", query.sort.as_str());
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            let mut sent_any = false;
             let result = load_pages::<api::Work>(
                 &client,
                 "/works",
@@ -492,6 +570,7 @@ impl Core {
                 super::PAGE,
                 None,
                 |items, total| {
+                    sent_any = true;
                     let items = items.iter().map(work_item).collect();
                     tx.send(Internal::Loaded(
                         Target::Works,
@@ -503,9 +582,17 @@ impl Core {
             )
             .await;
             if let Err(e) = result {
+                if !sent_any {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::Works,
+                        seq,
+                        Loaded::WorksPage(Vec::new(), 0),
+                    ));
+                }
                 let _ = tx.send(Self::failed(&client, "加载作品", e));
             }
         });
+        self.track_task(Target::Works, handle.abort_handle());
     }
 
     pub(super) fn query_series(&mut self, search: String) {
@@ -519,7 +606,8 @@ impl Core {
         if !search.is_empty() {
             q.push("q", search);
         }
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            let mut sent_any = false;
             let result = load_pages::<api::Series>(
                 &client,
                 "/series",
@@ -527,6 +615,7 @@ impl Core {
                 SERIES_PAGE,
                 None,
                 |items, total| {
+                    sent_any = true;
                     let items = items.iter().map(series_item).collect();
                     tx.send(Internal::Loaded(
                         Target::SeriesList,
@@ -538,9 +627,17 @@ impl Core {
             )
             .await;
             if let Err(e) = result {
+                if !sent_any {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::SeriesList,
+                        seq,
+                        Loaded::SeriesPage(Vec::new(), 0),
+                    ));
+                }
                 let _ = tx.send(Self::failed(&client, "加载系列", e));
             }
         });
+        self.track_task(Target::SeriesList, handle.abort_handle());
     }
 
     pub(super) fn query_history(&mut self) {
@@ -550,7 +647,8 @@ impl Core {
         let seq = self.next_seq(Target::History);
         self.set_list(TrackList::History, Vec::new());
         self.emit(Event::HistoryReset);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            let mut sent_any = false;
             let result = load_pages::<PlaybackRecord>(
                 &client,
                 "/playback/history",
@@ -558,6 +656,7 @@ impl Core {
                 super::PAGE,
                 None,
                 |items, total| {
+                    sent_any = true;
                     tx.send(Internal::Loaded(
                         Target::History,
                         seq,
@@ -568,9 +667,17 @@ impl Core {
             )
             .await;
             if let Err(e) = result {
+                if !sent_any {
+                    let _ = tx.send(Internal::Loaded(
+                        Target::History,
+                        seq,
+                        Loaded::HistoryPage(Vec::new(), 0),
+                    ));
+                }
                 let _ = tx.send(Self::failed(&client, "加载播放记录", e));
             }
         });
+        self.track_task(Target::History, handle.abort_handle());
     }
 
     pub(super) fn history_page(&mut self, records: Vec<PlaybackRecord>, total: usize) {

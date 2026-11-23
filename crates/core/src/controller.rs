@@ -13,12 +13,13 @@ pub use m032::PlayingSources;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::{
-    AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, RandomSeeds, SearchCategory,
-    Track, Transcode,
+    AuthError, Capabilities, Client, FavoriteKind, Feature, Playlist, SearchCategory, Track,
+    Transcode,
 };
 use session::{AdapterStatus, AdapterTrack};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -809,8 +810,8 @@ enum Internal {
     /// From the Sonos room of this generation.
     Cast(u64, cast::CastMsg),
     CastRooms(Result<Vec<sonos::Room>, String>),
-    LoggedIn(Box<(Client, Capabilities)>),
-    LoginFailed(LoginFailure),
+    LoggedIn(u64, Box<(Client, Capabilities)>),
+    LoginFailed(u64, LoginFailure),
     /// A request with this API token got 401.
     Unauthorized {
         api_token: String,
@@ -884,7 +885,10 @@ enum Internal {
         track_id: i64,
         works: Vec<api::TrackWork>,
     },
-    PollMixes(u64),
+    PollMixes {
+        list_gen: u64,
+        poll_gen: u64,
+    },
     HistoryCleared(u64),
     MixChanged {
         generation: u64,
@@ -980,6 +984,7 @@ enum Loaded {
     HomeUnavailable,
     HomeRecent(Vec<Track>),
     DailyMixes(api::DailyMixList),
+    DailyMixesFailed,
     HomeWorks(api::RotationPage<api::HomeWorkCard>),
     HomeSongs(api::RotationPage<api::HomeSongRow>),
     HomeChronicle(api::Chronicle),
@@ -1108,7 +1113,6 @@ struct Library {
     images: Arc<Images>,
     /// Rows of the playable track lists.
     lists: HashMap<TrackList, Vec<Track>>,
-    seeds: Arc<Mutex<RandomSeeds>>,
     favorite_tracks: Arc<Mutex<library::FavoriteTracks>>,
 }
 
@@ -1173,34 +1177,52 @@ async fn write_token(
 }
 
 /// Signs in; empty tokens come from the store. Saves both tokens on
-/// success; forgets a saved token the server rejected.
+/// success; forgets a saved token the server rejected. All secret-store
+/// operations are serialized via `secret_lock` and gated by `auth_seq` so
+/// concurrent sign-out / restore / login tasks never overwrite newer credentials.
+#[allow(clippy::too_many_arguments)]
 async fn sign_in(
     secrets: Arc<dyn SecretStore>,
+    secret_lock: Arc<tokio::sync::Mutex<()>>,
+    auth_seq: Arc<AtomicU64>,
+    my_auth_seq: u64,
     sink: Sink,
     server_url: String,
     api_token: String,
     media_token: String,
 ) -> Internal {
     let Ok(server) = api::normalize_base_url(&server_url) else {
-        return Internal::LoginFailed(LoginFailure::InvalidUrl);
+        return Internal::LoginFailed(my_auth_seq, LoginFailure::InvalidUrl);
     };
     let api_saved = api_token.is_empty();
-    let api_token = if api_saved {
-        read_token(&secrets, &server, TokenKind::Api).await
-    } else {
-        api_token
-    };
     let media_saved = media_token.is_empty();
-    let media_token = if media_saved {
-        read_token(&secrets, &server, TokenKind::Media).await
+    let (api_token, media_token) = if api_saved || media_saved {
+        let _guard = secret_lock.lock().await;
+        if auth_seq.load(Ordering::Acquire) != my_auth_seq {
+            return Internal::LoginFailed(my_auth_seq, LoginFailure::CredentialsRequired);
+        }
+        let api_token = if api_saved {
+            read_token(&secrets, &server, TokenKind::Api).await
+        } else {
+            api_token
+        };
+        let media_token = if media_saved {
+            read_token(&secrets, &server, TokenKind::Media).await
+        } else {
+            media_token
+        };
+        (api_token, media_token)
     } else {
-        media_token
+        (api_token, media_token)
     };
     match api::authenticate(&server, &api_token, &media_token).await {
         Ok(ok) => {
-            write_token(&secrets, &server, TokenKind::Api, Some(api_token)).await;
-            write_token(&secrets, &server, TokenKind::Media, Some(media_token)).await;
-            Internal::LoggedIn(Box::new(ok))
+            let _guard = secret_lock.lock().await;
+            if auth_seq.load(Ordering::Acquire) == my_auth_seq {
+                write_token(&secrets, &server, TokenKind::Api, Some(api_token)).await;
+                write_token(&secrets, &server, TokenKind::Media, Some(media_token)).await;
+            }
+            Internal::LoggedIn(my_auth_seq, Box::new(ok))
         }
         Err(e) => {
             let failure = LoginFailure::from(e);
@@ -1214,15 +1236,18 @@ async fn sign_in(
                 _ => None,
             };
             if let Some(kind) = rejected {
-                write_token(&secrets, &server, kind, None).await;
-                sink(Event::SavedLogin(SavedLogin {
-                    server_url: server,
-                    has_api_token: kind != TokenKind::Api && !api_token.is_empty(),
-                    has_media_token: kind != TokenKind::Media && !media_token.is_empty(),
-                    signing_in: false,
-                }));
+                let _guard = secret_lock.lock().await;
+                if auth_seq.load(Ordering::Acquire) == my_auth_seq {
+                    write_token(&secrets, &server, kind, None).await;
+                    sink(Event::SavedLogin(SavedLogin {
+                        server_url: server,
+                        has_api_token: kind != TokenKind::Api && !api_token.is_empty(),
+                        has_media_token: kind != TokenKind::Media && !media_token.is_empty(),
+                        signing_in: false,
+                    }));
+                }
             }
-            Internal::LoginFailed(failure)
+            Internal::LoginFailed(my_auth_seq, failure)
         }
     }
 }
@@ -1251,6 +1276,10 @@ struct Core {
     /// Bumped on every sign-in and sign-out; results of older background
     /// work (list pages, reporter timers) are dropped.
     list_generation: u64,
+    /// Serializes secret-store reads / writes across restore, login and sign-out.
+    secret_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Monotonic counter for restore / login / sign-out operations.
+    auth_seq: Arc<AtomicU64>,
     queue: Queue,
     /// Nothing loaded in the engine (before the first play, after the end
     /// of the queue or a failure): play reloads the current entry.
@@ -1259,6 +1288,7 @@ struct Core {
     /// and end-of-file signals still belong to the previous file.
     loading: bool,
     paused: bool,
+    buffering: bool,
     position_ms: i64,
     reported_step: i64,
     engine_duration_ms: i64,
@@ -1277,8 +1307,12 @@ struct Core {
     asio_fallback: bool,
     /// Track IDs confirmed to contain Opus at runtime (fallback on subsequent plays).
     opus_fallback_tracks: std::collections::HashSet<i64>,
-    /// Queue entry appended to the engine for gapless playback.
-    preloaded: Option<u64>,
+    /// Transcode active on the currently open local stream (independent of live setting changes).
+    current_transcode: Option<Transcode>,
+    /// Transcode active on the preloaded upcoming stream.
+    preloaded_transcode: Option<Transcode>,
+    /// Queue entry and URL appended to the engine for gapless playback.
+    preloaded: Option<(u64, String)>,
     /// URL of the file being loaded; a different `FileLoaded` is a stale preload.
     expected_path: Option<String>,
     /// Entry of the last started play (repeat-one passes start it again).
@@ -1307,6 +1341,8 @@ struct Core {
     /// Request counter; `latest` holds the newest request per target.
     seq: u64,
     latest: HashMap<Target, u64>,
+    /// Active paginated tasks by target, aborted when superseded or on sign-out.
+    target_tasks: HashMap<Target, tokio::task::AbortHandle>,
     /// Filters of the loaded lists (reloaded after favorite changes).
     track_filter: TrackFilter,
     favorite_albums: Option<AlbumFilter>,
@@ -1365,10 +1401,13 @@ impl Core {
             library: None,
             reporter: None,
             list_generation: 0,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            auth_seq: Arc::new(AtomicU64::new(0)),
             queue,
             idle: true,
             loading: false,
             paused: false,
+            buffering: false,
             position_ms: 0,
             reported_step: -1,
             engine_duration_ms: 0,
@@ -1382,6 +1421,8 @@ impl Core {
             asio_active: false,
             asio_fallback: false,
             opus_fallback_tracks: std::collections::HashSet::new(),
+            current_transcode: None,
+            preloaded_transcode: None,
             preloaded: None,
             expected_path: None,
             started_uid: None,
@@ -1399,6 +1440,7 @@ impl Core {
             play_intent_seq: 0,
             seq: 0,
             latest: HashMap::new(),
+            target_tasks: HashMap::new(),
             track_filter: TrackFilter::default(),
             favorite_albums: None,
             favorite_tracks: None,
@@ -1433,6 +1475,22 @@ impl Core {
     pub(super) fn begin_play_intent(&mut self) -> u64 {
         self.play_intent_seq += 1;
         self.play_intent_seq
+    }
+
+    fn bump_auth_seq(&self) -> u64 {
+        self.auth_seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(super) fn track_task(&mut self, target: Target, handle: tokio::task::AbortHandle) {
+        if let Some(prev) = self.target_tasks.insert(target, handle) {
+            prev.abort();
+        }
+    }
+
+    fn abort_all_tasks(&mut self) {
+        for (_, handle) in self.target_tasks.drain() {
+            handle.abort();
+        }
     }
 
     fn enqueue_queue_write(&mut self, path: PathBuf, bytes: Vec<u8>) {
@@ -1588,6 +1646,8 @@ impl Core {
         if let Some(task) = self.sleep_task.take() {
             task.abort();
         }
+        self.abort_all_tasks();
+        self.home = None;
         self.save_settings();
         self.save_position();
         if self.queue_revision != self.saved_queue_revision
@@ -1612,17 +1672,33 @@ impl Core {
     fn command(&mut self, command: Command) {
         match command {
             Command::Restore => {
+                if self.library.is_some() {
+                    return;
+                }
+                let my_auth_seq = self.bump_auth_seq();
                 let server = self.session_file.get(SERVER_KEY).unwrap_or_default();
                 if server.is_empty() {
                     self.emit(Event::SavedLogin(SavedLogin::default()));
                     return;
                 }
                 let secrets = self.config.secrets.clone();
+                let secret_lock = self.secret_lock.clone();
+                let auth_seq = self.auth_seq.clone();
                 let sink = self.sink.clone();
                 let tx = self.internal.clone();
                 tokio::spawn(async move {
-                    let api = read_token(&secrets, &server, TokenKind::Api).await;
-                    let media = read_token(&secrets, &server, TokenKind::Media).await;
+                    let (api, media) = {
+                        let _guard = secret_lock.lock().await;
+                        if auth_seq.load(Ordering::Acquire) != my_auth_seq {
+                            return;
+                        }
+                        let api = read_token(&secrets, &server, TokenKind::Api).await;
+                        let media = read_token(&secrets, &server, TokenKind::Media).await;
+                        (api, media)
+                    };
+                    if auth_seq.load(Ordering::Acquire) != my_auth_seq {
+                        return;
+                    }
                     let signing_in = !api.is_empty() && !media.is_empty();
                     sink(Event::SavedLogin(SavedLogin {
                         server_url: server.clone(),
@@ -1632,8 +1708,17 @@ impl Core {
                     }));
                     if signing_in {
                         // Empty tokens: sign_in reads (and may forget) the saved ones.
-                        let msg =
-                            sign_in(secrets, sink, server, String::new(), String::new()).await;
+                        let msg = sign_in(
+                            secrets,
+                            secret_lock,
+                            auth_seq,
+                            my_auth_seq,
+                            sink,
+                            server,
+                            String::new(),
+                            String::new(),
+                        )
+                        .await;
                         let _ = tx.send(msg);
                     }
                 });
@@ -1646,11 +1731,24 @@ impl Core {
                 if self.library.is_some() {
                     return;
                 }
+                let my_auth_seq = self.bump_auth_seq();
                 let secrets = self.config.secrets.clone();
+                let secret_lock = self.secret_lock.clone();
+                let auth_seq = self.auth_seq.clone();
                 let sink = self.sink.clone();
                 let tx = self.internal.clone();
                 tokio::spawn(async move {
-                    let msg = sign_in(secrets, sink, server_url, api_token, media_token).await;
+                    let msg = sign_in(
+                        secrets,
+                        secret_lock,
+                        auth_seq,
+                        my_auth_seq,
+                        sink,
+                        server_url,
+                        api_token,
+                        media_token,
+                    )
+                    .await;
                     let _ = tx.send(msg);
                 });
             }
@@ -1760,8 +1858,8 @@ impl Core {
             }
             Command::SetTranscode(transcode) => {
                 self.update_settings(|s| s.transcode = transcode);
-                // The next file (and the preload) uses the new stream.
-                self.preloaded = None;
+                // Keep `self.preloaded` intact so `sync_preload` sees URL / backend
+                // differences and calls `clear_upcoming()` even when `want` becomes `None`.
                 self.sync_preload();
             }
             Command::PlayQueueItem(uid) => {
@@ -1776,7 +1874,8 @@ impl Core {
                 self.begin_play_intent();
                 self.stop_playback();
                 self.queue.clear();
-                self.emit_now_playing(None);
+                self.resume_at = None;
+                self.show_current_stopped();
                 self.queue_changed();
             }
             Command::SetRepeat(repeat) => {
@@ -1923,8 +2022,15 @@ impl Core {
             }
             Command::SetFadeOnPause(on) => {
                 self.update_settings(|s| s.fade_on_pause = on);
-                if !on && !self.paused {
-                    self.restore_gain();
+                if !on {
+                    if self.fade.target() == Some(true) {
+                        // A fade-out to pause was already underway (and UI shows paused):
+                        // pause immediately before restoring full fade gain.
+                        let _ = self.engine.set_paused(true);
+                        self.restore_gain();
+                    } else if !self.paused {
+                        self.restore_gain();
+                    }
                 }
             }
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
@@ -2074,7 +2180,18 @@ impl Core {
                 self.emit(Event::Notice(e));
                 return;
             }
-        } else if self.lossy_transcode() {
+        } else if self.loading {
+            // While the file is still loading, avoid sending an early seek to the
+            // engine and override any pending initial resume seek instead.
+            if self.current_lossy_transcode() {
+                if !self.reload_at(position_ms) {
+                    return;
+                }
+            } else {
+                self.pending_seek_ms = Some(position_ms);
+                self.report_seek_ms = None;
+            }
+        } else if self.current_lossy_transcode() {
             // No byte ranges: restart the stream at the new position.
             if !self.reload_at(position_ms) {
                 return;
@@ -2131,12 +2248,19 @@ impl Core {
                 self.queue.go(pos);
                 self.show_current_stopped();
                 self.emit_queue_position();
+                if matches!(
+                    self.sleep.as_ref().map(|s| s.timer),
+                    Some(SleepTimer::EndOfTrack | SleepTimer::EndOfAlbum)
+                ) {
+                    self.set_sleep_timer(None);
+                }
             }
         }
     }
 
     /// Stops the engine and ends the reported play; the queue is untouched.
     fn stop_playback(&mut self) {
+        self.restore_gain();
         if !self.idle {
             if self.casting() {
                 self.cast_stop();
@@ -2147,13 +2271,17 @@ impl Core {
                 r.act(|a| a.on_status(AdapterStatus::Stopped));
             }
         }
+        self.clear_buffering();
         self.idle = true;
         self.loading = false;
         self.paused = true;
         self.preloaded = None;
+        self.current_transcode = None;
+        self.preloaded_transcode = None;
         self.expected_path = None;
         self.position_ms = 0;
         self.pending_seek_ms = None;
+        self.report_seek_ms = None;
         if self.asio_active || self.asio_fallback {
             self.asio_active = false;
             self.asio_fallback = false;
@@ -2250,18 +2378,24 @@ impl Core {
     }
 
     /// MP3 / Opus transcodes are generated live and cannot seek by range.
-    fn lossy_transcode(&self) -> bool {
-        matches!(
-            self.transcode(),
-            Some(Transcode::Mp3(_) | Transcode::Ogg(_))
-        )
+    fn is_lossy_transcode(transcode: Option<Transcode>) -> bool {
+        matches!(transcode, Some(Transcode::Mp3(_) | Transcode::Ogg(_)))
     }
 
-    /// Stream URL of a track, starting at `offset_ms` (lossy transcodes).
-    fn track_url(&self, track_id: i64, offset_ms: i64) -> Option<String> {
+    fn current_lossy_transcode(&self) -> bool {
+        Self::is_lossy_transcode(self.current_transcode)
+    }
+
+    /// Stream URL of a track using `transcode`, starting at `offset_ms` (lossy transcodes).
+    fn track_url_for(
+        &self,
+        track_id: i64,
+        transcode: Option<Transcode>,
+        offset_ms: i64,
+    ) -> Option<String> {
         let library = self.library.as_ref()?;
         Some(
-            match self.transcode() {
+            match transcode {
                 Some(t) => library.client.transcode_url(track_id, t, offset_ms),
                 None => library.client.stream_url(track_id),
             }
@@ -2274,7 +2408,7 @@ impl Core {
         let Some(id) = self.queue.current().map(|i| i.track.id) else {
             return false;
         };
-        let Some(url) = self.track_url(id, position_ms) else {
+        let Some(url) = self.track_url_for(id, self.current_transcode, position_ms) else {
             return false;
         };
         if let Err(e) = self.engine.load_for(&url, self.asio_active) {
@@ -2286,6 +2420,9 @@ impl Core {
         }
         self.loading = true;
         self.preloaded = None;
+        self.preloaded_transcode = None;
+        self.pending_seek_ms = None;
+        self.report_seek_ms = None;
         self.expected_path = Some(url);
         self.stream_offset_ms = position_ms;
         true
@@ -2385,8 +2522,9 @@ impl Core {
             self.sleep_task = Some(handle.abort_handle());
         }
         self.emit_sleep();
-        // Whether the engine may continue into the next file changed.
+        // Whether the engine or Sonos may continue into the next file changed.
         self.sync_preload();
+        self.cast_play_mode();
     }
 
     fn emit_sleep(&self) {
@@ -2511,21 +2649,26 @@ impl Core {
             Some(Step::Play(pos)) => self.queue.at(pos),
             _ => None,
         };
+        let next_transcode = self.transcode();
         let want = next
             .filter(|item| self.want_asio_for(&item.track).0 == self.asio_active)
             .map(|item| (item.uid, item.track.id))
-            .and_then(|(uid, id)| Some((uid, self.track_url(id, 0)?)));
-        if want.as_ref().map(|(uid, _)| *uid) == self.preloaded {
+            .and_then(|(uid, id)| Some((uid, self.track_url_for(id, next_transcode, 0)?)));
+        if want == self.preloaded {
             return;
         }
         self.preloaded = None;
+        self.preloaded_transcode = None;
         if let Err(e) = self.engine.clear_upcoming() {
             tracing::warn!("clearing the preloaded file: {e}");
             return;
         }
         if let Some((uid, url)) = want {
             match self.engine.append_for(&url, self.asio_active) {
-                Ok(()) => self.preloaded = Some(uid),
+                Ok(()) => {
+                    self.preloaded = Some((uid, url));
+                    self.preloaded_transcode = next_transcode;
+                }
                 Err(e) => tracing::warn!("preloading the next file: {e}"),
             }
         }
@@ -2563,8 +2706,15 @@ impl Core {
         } else {
             self.want_asio_for(&item.track)
         };
+        let stream_transcode = if casting {
+            None
+        } else if load {
+            self.transcode()
+        } else {
+            self.preloaded_transcode
+        };
         // Lossy transcodes start the stream there instead of seeking.
-        let offset_ms = if !casting && self.lossy_transcode() {
+        let offset_ms = if !casting && Self::is_lossy_transcode(stream_transcode) {
             resume_ms.unwrap_or(0)
         } else {
             0
@@ -2572,7 +2722,7 @@ impl Core {
         let url = if casting {
             None
         } else {
-            let Some(url) = self.track_url(item.track.id, offset_ms) else {
+            let Some(url) = self.track_url_for(item.track.id, stream_transcode, offset_ms) else {
                 return;
             };
             Some(url)
@@ -2613,6 +2763,8 @@ impl Core {
         self.loading = !casting || load;
         self.paused = false;
         self.preloaded = None;
+        self.current_transcode = stream_transcode;
+        self.preloaded_transcode = None;
         self.expected_path = url;
         self.stream_offset_ms = if casting { cast_offset } else { offset_ms };
         self.pending_seek_ms = resume_ms.filter(|_| !casting && offset_ms == 0);
@@ -2719,10 +2871,18 @@ impl Core {
     }
 
     fn apply_buffering(&mut self, buffering: bool) {
+        self.buffering = buffering;
         if let Some(r) = self.reporter.as_mut() {
             r.act(|a| a.on_buffering(buffering));
         }
         self.emit(Event::Buffering(buffering));
+    }
+
+    pub(super) fn clear_buffering(&mut self) {
+        if self.buffering {
+            self.buffering = false;
+            self.emit(Event::Buffering(false));
+        }
     }
 
     /// The current file played to its end.
@@ -2740,8 +2900,10 @@ impl Core {
                 self.set_sleep_timer(None);
             }
             Some(Step::Play(pos)) => {
-                let gapless =
-                    self.preloaded.is_some() && self.queue.at(pos).map(|i| i.uid) == self.preloaded;
+                let gapless = self
+                    .preloaded
+                    .as_ref()
+                    .is_some_and(|(uid, _)| self.queue.at(pos).map(|i| i.uid) == Some(*uid));
                 self.queue.go(pos);
                 // Gapless: the engine already moved on to the preload.
                 self.start_current(false, !gapless);
@@ -2758,7 +2920,11 @@ impl Core {
             return;
         }
         if self.asio_active && error.contains("Opus is not supported") {
-            if let Some(item) = self.queue.current() {
+            // Only remember tracks whose *original* stream is Opus; never blacklist
+            // a lossless track just because an Ogg transcode was active.
+            if self.current_transcode.is_none()
+                && let Some(item) = self.queue.current()
+            {
                 self.opus_fallback_tracks.insert(item.track.id);
             }
             let position = self.position_ms;
@@ -2770,9 +2936,13 @@ impl Core {
             self.play_current(false);
             return;
         }
+        self.restore_gain();
+        self.clear_buffering();
         // Keeps the engine from moving on into the preload.
         let _ = self.engine.stop();
         self.preloaded = None;
+        self.current_transcode = None;
+        self.preloaded_transcode = None;
         self.idle = true;
         self.loading = false;
         self.paused = true;
@@ -2882,8 +3052,15 @@ impl Core {
                     r.handle(msg);
                 }
             }
-            Internal::LoginFailed(failure) => self.emit(Event::LoginFailed(failure)),
-            Internal::LoggedIn(ok) => {
+            Internal::LoginFailed(auth_seq, failure) => {
+                if auth_seq == self.auth_seq.load(Ordering::Acquire) {
+                    self.emit(Event::LoginFailed(failure));
+                }
+            }
+            Internal::LoggedIn(auth_seq, ok) => {
+                if auth_seq != self.auth_seq.load(Ordering::Acquire) {
+                    return;
+                }
                 let (client, capabilities) = *ok;
                 if self.library.is_none() {
                     self.logged_in(client, capabilities);
@@ -3034,8 +3211,13 @@ impl Core {
                     self.update_playing_sources();
                 }
             }
-            Internal::PollMixes(generation) => {
-                if generation == self.list_generation && self.home.is_some() {
+            Internal::PollMixes { list_gen, poll_gen } => {
+                if list_gen == self.list_generation
+                    && self
+                        .home
+                        .as_ref()
+                        .is_some_and(|h| h.mix_poll_gen() == poll_gen)
+                {
                     self.load_mixes();
                 }
             }
@@ -3183,7 +3365,11 @@ impl Core {
         let Some(library) = self.library.take() else {
             return;
         };
+        let my_auth_seq = self.bump_auth_seq();
         self.list_generation += 1;
+        self.abort_all_tasks();
+        self.restore_gain();
+        self.clear_buffering();
         if let Some(mut reporter) = self.reporter.take()
             && !self.idle
         {
@@ -3202,10 +3388,13 @@ impl Core {
         self.loading = false;
         self.paused = true;
         self.preloaded = None;
+        self.current_transcode = None;
+        self.preloaded_transcode = None;
         self.expected_path = None;
         self.started_uid = None;
         self.resume_at = None;
         self.pending_seek_ms = None;
+        self.report_seek_ms = None;
         self.sleep = None;
         self.sleep_generation += 1;
         if let Some(task) = self.sleep_task.take() {
@@ -3233,10 +3422,16 @@ impl Core {
 
         let server = library.client.base_url().to_owned();
         let secrets = self.config.secrets.clone();
+        let secret_lock = self.secret_lock.clone();
+        let auth_seq = self.auth_seq.clone();
         let has_media_token = reason == SignOutReason::Expired;
         {
             let server = server.clone();
             tokio::spawn(async move {
+                let _guard = secret_lock.lock().await;
+                if auth_seq.load(Ordering::Acquire) != my_auth_seq {
+                    return;
+                }
                 write_token(&secrets, &server, TokenKind::Api, None).await;
                 if !has_media_token {
                     write_token(&secrets, &server, TokenKind::Media, None).await;
@@ -3248,7 +3443,7 @@ impl Core {
         self.emit_now_playing(None);
         self.emit(Event::Paused(true));
         self.emit_position();
-        self.clear_lyrics();
+        self.reset_lyrics_session();
         self.update_playing_sources();
         self.emit(Event::AlbumsReset);
         self.emit(Event::TracksReset);
@@ -3305,7 +3500,6 @@ impl Core {
             client: client.clone(),
             capabilities,
             lists: HashMap::new(),
-            seeds: Arc::new(Mutex::new(RandomSeeds::new())),
             favorite_tracks: Arc::default(),
         });
         self.emit(Event::LoggedIn {

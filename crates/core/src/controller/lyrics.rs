@@ -41,6 +41,14 @@ impl Core {
         state.offsets.get(&state.track_id).copied().unwrap_or(0)
     }
 
+    /// Clears session-wide lyrics preferences (offsets, server translation flag)
+    /// when signing out so switching servers starts fresh.
+    pub(super) fn reset_lyrics_session(&mut self) {
+        self.lyr.offsets.clear();
+        self.lyr.translation_off = false;
+        self.clear_lyrics();
+    }
+
     /// Hides the lyrics (no current track, signed out).
     pub(super) fn clear_lyrics(&mut self) {
         self.latest.remove(&Target::Lyrics);
@@ -60,6 +68,8 @@ impl Core {
             source: None,
         });
         self.emit(Event::LyricsActive(None));
+        self.emit(Event::LyricsSearchResults(Vec::new()));
+        self.emit(Event::LyricsPreview(Vec::new()));
         self.emit_lyrics_tools();
     }
 
@@ -376,15 +386,23 @@ impl Core {
             return;
         };
         tokio::spawn(async move {
-            let msg = match client.search_lyrics(&name, &artist, duration).await {
-                Ok(results) => Internal::LyricsResults {
-                    seq,
-                    track_id,
-                    results,
-                },
-                Err(e) => Self::failed(&client, "搜索歌词", e),
-            };
-            let _ = tx.send(msg);
+            match client.search_lyrics(&name, &artist, duration).await {
+                Ok(results) => {
+                    let _ = tx.send(Internal::LyricsResults {
+                        seq,
+                        track_id,
+                        results,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Internal::LyricsResults {
+                        seq,
+                        track_id,
+                        results: Vec::new(),
+                    });
+                    let _ = tx.send(Self::failed(&client, "搜索歌词", e));
+                }
+            }
         });
     }
 
@@ -413,16 +431,23 @@ impl Core {
         let seq = self.next_seq(Target::LyricsPreview);
         self.emit(Event::LyricsPreview(Vec::new()));
         tokio::spawn(async move {
-            let msg = match client.remote_lyrics(&pick.source, &pick.id).await {
-                Ok(lyrics) => Internal::LyricsPreview(
-                    seq,
-                    lyrics
-                        .map(|l| l.lines.into_iter().map(|l| l.text).collect())
-                        .unwrap_or_default(),
-                ),
-                Err(e) => Self::failed(&client, "预览歌词", e),
-            };
-            let _ = tx.send(msg);
+            match client.remote_lyrics(&pick.source, &pick.id).await {
+                Ok(lyrics) => {
+                    let _ = tx.send(Internal::LyricsPreview(
+                        seq,
+                        lyrics
+                            .map(|l| l.lines.into_iter().map(|l| l.text).collect())
+                            .unwrap_or_default(),
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(Internal::LyricsPreview(
+                        seq,
+                        vec!["（预览失败）".to_owned()],
+                    ));
+                    let _ = tx.send(Self::failed(&client, "预览歌词", e));
+                }
+            }
         });
     }
 
