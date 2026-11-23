@@ -431,41 +431,87 @@ fn open_and_predecode(
     })
 }
 
+const RAMP_FRAMES: usize = 64;
+
 fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> RenderFn {
     let mut current_gain: Option<f32> = None;
+    let mut was_silenced = false;
     Box::new(move |frames: usize, out_lr: &mut [f32]| {
         let needed = frames * 2;
         let req = shared.reset_requested.load(Ordering::Acquire);
         if req != shared.reset_acked.load(Ordering::Relaxed) {
             consumer.clear();
             shared.reset_acked.store(req, Ordering::Release);
+            was_silenced = true;
+            current_gain = Some(0.0);
         }
-        if shared.seeking.load(Ordering::Acquire) || shared.paused.load(Ordering::Acquire) {
-            out_lr[..needed].fill(0.0);
+        let seeking = shared.seeking.load(Ordering::Acquire);
+        let paused = shared.paused.load(Ordering::Acquire);
+        if seeking || paused {
+            if paused
+                && !seeking
+                && !was_silenced
+                && let Some(prev) = current_gain.filter(|g| *g > 1e-6)
+            {
+                // Micro fade-out before entering silence to avoid pause clicks.
+                let fade_frames = frames.min(RAMP_FRAMES);
+                let got = consumer.pop(&mut out_lr[..(fade_frames * 2)]);
+                let got_frames = got / 2;
+                if got_frames > 0 {
+                    let denom = got_frames as f32;
+                    for f in 0..got_frames {
+                        let g = prev * (1.0 - (f + 1) as f32 / denom);
+                        out_lr[f * 2] *= g;
+                        out_lr[f * 2 + 1] *= g;
+                    }
+                    let new_consumed = shared
+                        .consumed_frames
+                        .fetch_add(got_frames as u64, Ordering::AcqRel)
+                        + got_frames as u64;
+                    let boundary = shared.next_boundary_frame.load(Ordering::Acquire);
+                    if new_consumed >= boundary {
+                        shared.boundary_crossed.store(true, Ordering::Release);
+                    }
+                }
+                out_lr[got..needed].fill(0.0);
+            } else {
+                out_lr[..needed].fill(0.0);
+            }
+            current_gain = Some(0.0);
+            was_silenced = true;
             return;
         }
 
         let got = consumer.pop(&mut out_lr[..needed]);
         let got_frames = got / 2;
         let target_amp = shared.target_amp();
-        let prev = current_gain.unwrap_or(target_amp);
-        let ramp_samples = got.min(128);
-        if (prev - target_amp).abs() > 1e-6 && ramp_samples > 0 {
-            let denom = ramp_samples as f32;
-            for (i, sample) in out_lr[..got].iter_mut().enumerate() {
-                let gain = if i < ramp_samples {
-                    prev + (target_amp - prev) * ((i + 1) as f32 / denom)
+        let prev = if was_silenced {
+            0.0
+        } else {
+            current_gain.unwrap_or(target_amp)
+        };
+        let ramp_frames = got_frames.min(RAMP_FRAMES);
+        if (prev - target_amp).abs() > 1e-6 && ramp_frames > 0 {
+            // Step per stereo frame so L and R receive identical gain.
+            let denom = ramp_frames as f32;
+            for f in 0..got_frames {
+                let gain = if f < ramp_frames {
+                    prev + (target_amp - prev) * ((f + 1) as f32 / denom)
                 } else {
                     target_amp
                 };
-                *sample *= gain;
+                out_lr[f * 2] *= gain;
+                out_lr[f * 2 + 1] *= gain;
             }
         } else if (target_amp - 1.0).abs() > 1e-6 {
             for sample in &mut out_lr[..got] {
                 *sample *= target_amp;
             }
         }
-        current_gain = Some(target_amp);
+        if got_frames > 0 {
+            was_silenced = false;
+            current_gain = Some(target_amp);
+        }
 
         if got < needed {
             out_lr[got..needed].fill(0.0);
@@ -1633,5 +1679,48 @@ mod tests {
             "sink must be stopped after decode error"
         );
         let _ = srv.join();
+    }
+
+    #[test]
+    fn volume_ramp_steps_per_stereo_frame_and_fades_pause_resume() {
+        let shared = Arc::new(super::SharedState::new(100.0));
+        let (mut prod, cons) = asio::spsc_ring(4096);
+        let input = vec![1.0f32; 2048];
+        assert_eq!(prod.push(&input), 2048);
+
+        let mut render = super::make_render_fn(shared.clone(), cons);
+        let mut out = vec![0.0f32; 256];
+
+        // Start steady at 1.0.
+        render(128, &mut out);
+        assert!((out[0] - 1.0).abs() < 1e-6 && (out[1] - 1.0).abs() < 1e-6);
+
+        // Drop fade gain to 0.5: every stereo frame during ramp must have equal L and R.
+        shared.fade_bits.store(0.5_f64.to_bits(), Ordering::Relaxed);
+        render(128, &mut out);
+        for f in 0..super::RAMP_FRAMES {
+            assert!(
+                (out[f * 2] - out[f * 2 + 1]).abs() < 1e-6,
+                "frame {f} L/R mismatch: {} vs {}",
+                out[f * 2],
+                out[f * 2 + 1]
+            );
+        }
+        assert!(out[0] < 1.0 && out[0] > 0.5);
+        assert!((out[super::RAMP_FRAMES * 2] - 0.5).abs() < 1e-6);
+
+        // Pausing performs a micro fade-out to silence rather than a hard step.
+        shared.paused.store(true, Ordering::Release);
+        render(128, &mut out);
+        assert!(out[0] > 0.0 && out[0] < 0.5);
+        assert!((out[(super::RAMP_FRAMES - 1) * 2]).abs() < 1e-6);
+        assert!((out[super::RAMP_FRAMES * 2]).abs() < 1e-6);
+
+        // Resuming fades back up from 0.0 per stereo frame.
+        shared.paused.store(false, Ordering::Release);
+        render(128, &mut out);
+        assert!(out[0] > 0.0 && out[0] < 0.1);
+        assert!((out[0] - out[1]).abs() < 1e-6);
+        assert!((out[super::RAMP_FRAMES * 2] - 0.5).abs() < 1e-6);
     }
 }

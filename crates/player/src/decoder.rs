@@ -261,11 +261,85 @@ fn to_interleaved_stereo(decoded: &AudioBufferRef<'_>, scratch: &mut Vec<f32>, o
             out.extend_from_slice(scratch);
         }
         _ => {
-            for frame in scratch.chunks_exact(channels) {
-                out.push(frame[0]);
-                out.push(frame[1]);
-            }
+            downmix_multichannel(spec.channels, channels, scratch, out);
         }
+    }
+}
+
+/// Downmixes multi-channel PCM (>2 channels) to interleaved stereo using
+/// ITU-R BS.775 coefficients when channel roles are known, normalized so the
+/// combined weights never exceed 1.0.
+fn downmix_multichannel(
+    layout: symphonia::core::audio::Channels,
+    channels: usize,
+    scratch: &[f32],
+    out: &mut Vec<f32>,
+) {
+    use symphonia::core::audio::Channels;
+
+    const SQRT1_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    let mut weights: Vec<(f32, f32)> = Vec::with_capacity(channels);
+    if layout.count() == channels {
+        for bit in 0..32u32 {
+            let Some(ch) = Channels::from_bits(1u32 << bit) else {
+                continue;
+            };
+            if !layout.contains(ch) {
+                continue;
+            }
+            let w = match ch {
+                Channels::FRONT_LEFT | Channels::FRONT_LEFT_CENTRE => (1.0, 0.0),
+                Channels::FRONT_RIGHT | Channels::FRONT_RIGHT_CENTRE => (0.0, 1.0),
+                Channels::FRONT_CENTRE => (SQRT1_2, SQRT1_2),
+                Channels::LFE1 | Channels::LFE2 => (0.0, 0.0),
+                Channels::REAR_LEFT
+                | Channels::SIDE_LEFT
+                | Channels::TOP_FRONT_LEFT
+                | Channels::TOP_REAR_LEFT => (SQRT1_2, 0.0),
+                Channels::REAR_RIGHT
+                | Channels::SIDE_RIGHT
+                | Channels::TOP_FRONT_RIGHT
+                | Channels::TOP_REAR_RIGHT => (0.0, SQRT1_2),
+                Channels::REAR_CENTRE
+                | Channels::TOP_CENTRE
+                | Channels::TOP_FRONT_CENTRE
+                | Channels::TOP_REAR_CENTRE => (0.5, 0.5),
+                _ => (0.5, 0.5),
+            };
+            weights.push(w);
+        }
+    }
+    if weights.len() != channels {
+        weights.clear();
+        for idx in 0..channels {
+            let w = match idx {
+                0 => (1.0, 0.0),
+                1 => (0.0, 1.0),
+                2 => (SQRT1_2, SQRT1_2),
+                3 => (0.0, 0.0), // LFE in standard 5.1/7.1 order
+                n if n % 2 == 0 => (SQRT1_2, 0.0),
+                _ => (0.0, SQRT1_2),
+            };
+            weights.push(w);
+        }
+    }
+    let sum_l: f32 = weights.iter().map(|(l, _)| *l).sum();
+    let sum_r: f32 = weights.iter().map(|(_, r)| *r).sum();
+    let norm = sum_l.max(sum_r).max(1.0);
+    for (l, r) in &mut weights {
+        *l /= norm;
+        *r /= norm;
+    }
+
+    for frame in scratch.chunks_exact(channels) {
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        for (&sample, &(wl, wr)) in frame.iter().zip(&weights) {
+            left += sample * wl;
+            right += sample * wr;
+        }
+        out.push(left.clamp(-1.0, 1.0));
+        out.push(right.clamp(-1.0, 1.0));
     }
 }
 
@@ -320,5 +394,50 @@ mod tests {
 
         let landed = dec.seek(0.5).unwrap();
         assert!((landed - 0.5).abs() < 0.05);
+    }
+
+    #[test]
+    fn downmixes_multichannel_center_into_stereo() {
+        // 6-channel (5.1) PCM WAV where only channel 2 (Front Center) has audio.
+        let frames = 256usize;
+        let channels = 6u16;
+        let block_align = channels * 2;
+        let sample_rate = 48_000u32;
+        let data_bytes = u32::try_from(frames * usize::from(block_align)).unwrap();
+        let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * u32::from(block_align)).to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        for _ in 0..frames {
+            for ch in 0..channels {
+                let v: i16 = if ch == 2 { 16_000 } else { 0 };
+                wav.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        let mut dec = TrackDecoder::open(
+            Box::new(Cursor::new(wav)),
+            Some("http://example/51.wav"),
+            Some("audio/wav"),
+        )
+        .unwrap();
+        let mut pcm = Vec::new();
+        assert!(dec.next_packet_stereo(&mut pcm).unwrap());
+        assert_eq!(pcm.len(), frames * 2);
+        for frame in pcm.as_chunks::<2>().0 {
+            assert!(
+                frame[0] > 0.1 && (frame[0] - frame[1]).abs() < 1e-6,
+                "center channel must fold equally into L and R: {frame:?}"
+            );
+        }
     }
 }
