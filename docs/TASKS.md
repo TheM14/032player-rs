@@ -5,6 +5,7 @@
 
 ## 当前状态（2026-11-23）
 
+- **v0.2.27 正式版构建已安排**：汇总完成全仓库 P0 / P1 / P2 / P3 审计修复及架构、性能与工程化第 1-4 批整改（ASIO 内存安全与 SPSC 拆分、`mediaToken` 全路径脱敏、API/会话/播放器/Sonos/Core 鲁棒性修复、图片单飞与 64 MiB 字节预算、Slint / `ui.rs` / `controller.rs` 模块化拆分与强类型枚举、OFL 字体许可打包与 CI SHA 固定）。正式安装包由 `v0.2.27` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.27 。
 - [x] P0-1 [asio] 修复 `ACTIVE_CALLBACK` / `CallbackState` 内存安全：新增 `StreamSlot` 禁止并发 ASIO 流，用 `CallbackSlot`（`RwLock<Option<Arc<CallbackState>>>`）消除裸指针 TOCTOU UAF 与 `Box` 别名 UB，移除 250ms 超时强行 `dispose_buffers()`，所有 `extern "C"` 回调包裹 `catch_unwind` 并校验 DMA 缓冲区不重叠。
 - [x] P0-2 [asio / player] 将 `SpscRing` 拆分为 64 字节对齐且 `!Sync` 的 `(SpscProducer, SpscConsumer)`；`AsioPlayer` 通过 `reset_requested` / `reset_acked` 由音频回调独占清环，消除生产侧 `clear()` 与 `sleep(15ms)` 数据竞争。
 - [x] P0-3 [api / player / core / os] 封堵 `mediaToken` 多路径泄露：`reqwest::Error` 统一 `.without_url()`、`api::Client` 手写脱敏 `Debug`、`media_url` 仅同源附加凭据、`work_poster_path` 拒绝 `//` 与 `/\`、`controller` 调试日志与 `mpv.log`（经 `mpv_request_log_messages` + `Event::LogMessage`）落盘前脱敏、SMTC / MPRIS 改为本地临时缓存封面文件并在登出/退出清理。
