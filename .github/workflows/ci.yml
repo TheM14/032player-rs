@@ -18,11 +18,13 @@ jobs:
         with:
           components: clippy, rustfmt
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmpv-dev libfontconfig1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmpv-dev libfontconfig1-dev pkg-config
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --exclude player --exclude app
+      - run: cargo test --workspace
+      - name: UI snapshot regression
+        run: cargo run --manifest-path tools/ui-snapshot/Cargo.toml -- /tmp/ui-snapshot
 
   windows:
     runs-on: windows-latest
@@ -38,5 +40,5 @@ jobs:
           path: target/libmpv
           key: libmpv-${{ hashFiles('crates/player/build.rs') }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --exclude app
+      - run: cargo test --workspace
       - run: cargo build -p app

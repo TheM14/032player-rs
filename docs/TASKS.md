@@ -11,6 +11,18 @@
 - [x] P0-4 [os] `open_url` 仅放行带主机的 `http` / `https` URL，拆出 `open_path(&Path)` 供打开本地日志目录。
 - [x] P0-5 [os] 单实例回环监听增加 128 B / 32 B 读取上限与每实例 128-bit 随机 nonce（原子写入 `instance.port`，Unix `0600`），退出时优雅停线程并清理端口文件。
 - [ ] **[Win]** 验证 P0 改动：ASIO 播放 / 切歌 / 拖动进度 / 采样率切换与停止无崩溃或残留音；系统媒体控件（SMTC）封面正常显示且 `logs/mpv.log` 不含明文 `mediaToken`；设置页「打开日志文件夹」与外部链接正常；双开窗口可唤起已有实例。
+- [x] P1-1 ~ P1-5 [api / session] 为 `api::Client` 配置连接 / 读取与分场景单次请求超时；`normalize_base_url` 剥离 `?query`/`#fragment` 且 `media_url` 保留反代子路径；修复 `session` 的 `block_resume_invalid` 误锁新曲、重试 `End` 收到幂等 200 误清断点、`recover_expired` 提前落盘、`recover_missing` 未递增深度且保留心跳、`dispose()` 未取消重试定时器问题，并补齐单元测试。
+- [x] P1-6 ~ P1-8 [player] 为 `HttpMediaSource` 引入可立即唤醒的 `CancelToken`、修复 `discard_until` 重连覆写 `self.pos`、修复 `fetch_chunk` 重连退避重试与截断流误返 `Ok(0)`；`TrackDecoder::seek` 透传取消错误；`AsioPlayer` 修复 `Cancelled` 误置 `eof_decoded` 并合并丢弃连切时过期 `Cmd::Load`。
+- [x] P1-9 ~ P1-15 [core / sonos] 修复 Sonos 暂停改队失败导致 `cast_resync` 无限循环；`warm_flac` 改为可立即中止且降级同步 `mirror.identity`、完成后刷新 `settle_until`；SSDP 绑定 `IP_MULTICAST_IF`；睡眠分钟定时器保存并在取消 / 登出 / 退出时中止 `AbortHandle`；队列持久化改用唯一临时文件与串行后台写入队列消除并发竞态；`Internal::Fetched` 与翻译 401 补齐代次 / 播放序号 / 发起方 token 校验；`AudioDevicesLoaded` 热插拔触发后端交接并修复无缝切歌 `asio_active` 状态反转。
+- [x] P1-16 ~ P1-19 [api / core / app] 新增 `artistCreditRoles` 能力位门控幕后职责筛选，收藏艺人列表改用 `role=all`；`Queue::refresh_artists` 不再用空 `album_artists` 清空已有专辑艺人链接；每日推荐缓存按本地日期校验并在换一个后强制失效重拉；歌词加载 / 翻译 / 搜索接入 `seq` 保护，非同步歌词显式清空 `timeline`，翻译进行中切换目标语言可发起新请求。
+- [x] P1-20 ~ P1-25 [os / app / packaging / ci] Windows 托盘设置 `.with_menu_on_left_click(false)` 并将事件处理器注册移到 `.build()` 之前；新增 `Event::ImageFailed` 清理图片绑定并允许卡片重试，细分主页 / 详情 / 队列图片绑定分组，`queue_covers` 改为容量上限 128 的缓存，`Event::QueuePosition` 仅更新高亮索引不重建队列模型；收藏更新按实体类型限定网格并同步 `m032.panes`；补齐登出全量状态清理、`Route::Similar`/`Versions` 改存 `track_id`、`restore_scroll` 完成 / 超时 / 用户手动滚动时停止并清零；修复 `WorkPage` 列宽公式与 `CardShelf` 切换重置 `offset`；补齐 NSIS 组件页 / `un.onInit` / Inno 兼容卸载键 / 预发布版本号兼容，CI 启用全量 workspace 测试与 `ui-snapshot` 回归，`release.yml` 增加测试前置 job。
+- [ ] **[Win]** 验证 P1 改动：
+  - 系统托盘左键单击直接唤起主窗口（不弹出阻塞菜单），右键菜单各项正常；
+  - ASIO 弱网快速连切、断流重连与热插拔 DAC 自动交接正常；
+  - Sonos 投放中（含高解析度 FLAC 预热期间）切回本机不会双端同时出声，暂停改队失败无弹窗风暴，存在 VPN / WSL / Hyper-V 网卡时 SSDP 可发现音箱；
+  - 切换服务器重新登录后旧封面 / 队列 / 历史 / 歌词无残留；返回相似歌曲 / 其他版本及滚动位置恢复不与手动滚动对抗；
+  - 作品页曲目时长列无裁切；首页编年切年份与作品漫游切类型 / 换一批时横滑卡片回到最左；收藏专辑不再影响同 ID 艺人卡片；
+  - `cargo test -p app`、`cargo test -p player`、`ui-snapshot` 回归及 NSIS 安装 / 覆盖升级 / 运行中卸载提示正常。
 
 ### 2026-11-21
 

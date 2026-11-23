@@ -11,6 +11,16 @@ ManifestDPIAware true
 !ifndef AppVersion
   !define AppVersion "0.0.0"
 !endif
+!ifndef AppFileVersion
+  ; VIProductVersion requires four numeric parts (X.Y.Z.W); strip any
+  ; semver prerelease / build suffix (e.g. "0.3.0-rc1" -> "0.3.0.0").
+  !searchparse /noerrors "${AppVersion}" "" _AppBaseVersion "-"
+  !ifdef _AppBaseVersion
+    !define AppFileVersion "${_AppBaseVersion}.0"
+  !else
+    !define AppFileVersion "${AppVersion}.0"
+  !endif
+!endif
 !ifndef SourceDir
   !define SourceDir "..\..\target\x86_64-pc-windows-msvc\release"
 !endif
@@ -18,18 +28,24 @@ ManifestDPIAware true
   !define OutputDir "..\..\dist"
 !endif
 
+; Share the Inno Setup AppId uninstall key so switching between Inno Setup
+; and NSIS upgrades in place instead of creating duplicate uninstall entries.
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F1C3E52-7D0B-4E1A-9C55-032032032032}_is1"
+!define LEGACY_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player"
+
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 
 Name "032player"
 OutFile "${OutputDir}/032player-${AppVersion}-windows-x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\032player"
+InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 RequestExecutionLevel user
 Icon "..\..\crates\app\assets\icon.ico"
 UninstallIcon "..\..\crates\app\assets\icon.ico"
 BrandingText "032"
 
-VIProductVersion "${AppVersion}.0"
+VIProductVersion "${AppFileVersion}"
 VIAddVersionKey "ProductName" "032player"
 VIAddVersionKey "ProductVersion" "${AppVersion}"
 VIAddVersionKey "FileDescription" "032player installer"
@@ -41,6 +57,7 @@ VIAddVersionKey "LegalCopyright" "032player"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch 032player"
 !insertmacro MUI_PAGE_LICENSE "..\..\LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -57,6 +74,15 @@ Function .onInit
   ready:
 FunctionEnd
 
+Function un.onInit
+  retry:
+    FindWindow $0 "" "032player"
+    IntCmp $0 0 ready
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "032player is running. Close it before uninstalling." IDRETRY retry
+    Abort
+  ready:
+FunctionEnd
+
 Section "032player" SEC_MAIN
   SectionIn RO
   SetOutPath "$INSTDIR"
@@ -69,16 +95,17 @@ Section "032player" SEC_MAIN
   CreateShortcut "$SMPROGRAMS\032player\032player.lnk" "$INSTDIR\032player.exe"
   CreateShortcut "$SMPROGRAMS\032player\Uninstall 032player.lnk" "$INSTDIR\Uninstall.exe"
 
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "DisplayName" "032player"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "DisplayVersion" "${AppVersion}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "DisplayIcon" "$INSTDIR\032player.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "Publisher" "032"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "URLInfoAbout" "https://github.com/lux032/032player-rs"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player" "NoRepair" 1
+  DeleteRegKey HKCU "${LEGACY_UNINSTALL_KEY}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "032player"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${AppVersion}"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\032player.exe"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "032"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout" "https://github.com/lux032/032player-rs"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
 SectionEnd
 
 Section /o "Create desktop shortcut" SEC_DESKTOP
@@ -95,5 +122,6 @@ Section "Uninstall"
   Delete "$DESKTOP\032player.lnk"
   RMDir "$SMPROGRAMS\032player"
   RMDir "$INSTDIR"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\032player"
+  DeleteRegKey HKCU "${UNINSTALL_KEY}"
+  DeleteRegKey HKCU "${LEGACY_UNINSTALL_KEY}"
 SectionEnd
