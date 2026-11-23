@@ -39,6 +39,10 @@
   - ASIO 播放多声道（5.1/7.1）曲目能完整下混人声中置与环绕声道，音量调节与暂停/恢复切换无爆音；
   - 睡眠定时未开启时定时菜单顶部无空白占位行；作品页无数据与无搜索结果提示区分正常，空成员系列提示正确；
   - Windows 安装包与便携 zip 包含 `LICENSE.txt` 及 `licenses/OFL-NotoSansSC.txt`、`licenses/OFL-SourceSerif4.txt`、`licenses/FONTS.md`，卸载后清理干净。
+- [x] 架构、性能与工程化改进（第 2 / 3 / 4 批）[core / player / sonos / app / ci]：
+  - 第 2 批（性能）：`core/images.rs` 单飞去重（`watch` + drop guard）、64 MiB 字节预算缓存与 Lanczos3 解码并发限流（2-4）；`browse.rs` / `m032.rs` 用 `HashMap` 消除 `O(N^2)` 扫描并预分配排序键；`controller/library.rs` 为详情 / 搜索 / 收藏加载补齐覆盖取消；`player` `TrackDecoder` 复用 `SampleBuffer`、`AsioPlayer` 复用 `reqwest::Client`；`app` 移除时间/数字/静态标签的冗余 `Fonts.family()`；`sonos` `Speaker::status()` 通过 `tokio::try_join!` 并行请求。
+  - 第 3 批（架构）：拆分 `crates/core/src/controller.rs` 为 `auth` / `output` / `sleep` / `playback` 并统一 `Core::reset_transport()`；拆分 `crates/app/ui/views.slint`（`context_menu.slint` / `queue_lyrics.slint` / `player_bar.slint`）、`m032.slint`（`m032_shared.slint` / `home.slint` / `m032_pages.slint`）及 `crates/app/src/ui.rs`（`actions.rs` / `events.rs` / `wire.rs`）；新增 `ids.slint` 导出 `GridId` / `TrackListId` / `DetailKind` / `DialogKind` 替代裸 `i32`（同步更新 `tools/ui-snapshot`）。
+  - 第 4 批（工程化）：`ci.yml` / `release.yml` / `package.yml` 全部第三方 Actions 固定到完整 commit SHA；补齐 `sonos` 拓扑旧格式 / 卫星音箱 / 缺失节点及并行 `status()` 单测。
 
 ### 2026-11-21
 
