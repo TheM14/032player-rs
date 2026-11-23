@@ -61,33 +61,48 @@ pub async fn discover(
     }
 
     let soap = Soap::new(http.clone());
-    let mut rooms = Vec::new();
-    for player in players.values() {
+    let mut sorted_players: Vec<&Player> = players.values().collect();
+    sorted_players.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+
+    let mut covered = BTreeSet::new();
+    let mut rooms_by_id: HashMap<String, Room> = HashMap::new();
+    for player in sorted_players {
+        if covered.contains(&player.uuid) {
+            continue;
+        }
         let url = format!("{}/ZoneGroupTopology/Control", player.base_url);
         let call = soap.call(&url, ZONE_GROUP_TOPOLOGY, "GetZoneGroupState", &[]);
         if let Ok(Ok(values)) = tokio::time::timeout(DESCRIPTION_TIMEOUT, call).await
             && let Some(state) = values.get("ZoneGroupState")
+            && let Some((parsed_rooms, members)) = parse_zone_groups_with_members(state, &players)
+            && !members.is_empty()
         {
-            rooms = parse_zone_groups(state, &players);
-            if !rooms.is_empty() {
-                break;
+            covered.extend(members);
+            covered.insert(player.uuid.clone());
+            for room in parsed_rooms {
+                rooms_by_id.entry(room.id.clone()).or_insert(room);
             }
         }
     }
-    if rooms.is_empty() {
-        rooms = players
-            .into_values()
-            .map(|p| Room {
-                host: host_of(&p.base_url),
-                id: p.uuid,
-                name: p.name,
-                base_url: p.base_url,
+    for player in players.into_values() {
+        if !covered.contains(&player.uuid) {
+            rooms_by_id.entry(player.uuid.clone()).or_insert(Room {
+                host: host_of(&player.base_url),
+                id: player.uuid,
+                name: player.name,
+                base_url: player.base_url,
                 member_count: 1,
-                model: p.model,
-            })
-            .collect();
+                model: player.model,
+            });
+        }
     }
-    rooms.sort_by_key(|r| r.name.to_lowercase());
+    let mut rooms: Vec<Room> = rooms_by_id.into_values().collect();
+    rooms.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
     Ok(rooms)
 }
 
@@ -97,15 +112,23 @@ fn static_location(host: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    if host.contains("://") {
-        return Some(host.to_owned());
-    }
-    let with_port = if host.contains(':') {
+    let has_scheme = host.contains("://");
+    let raw = if has_scheme {
         host.to_owned()
     } else {
-        format!("{host}:1400")
+        format!("http://{host}")
     };
-    Some(format!("http://{with_port}/xml/device_description.xml"))
+    let mut url = url::Url::parse(&raw).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    if !has_scheme && url.port().is_none() {
+        let _ = url.set_port(Some(1400));
+    }
+    if url.path().is_empty() || url.path() == "/" {
+        url.set_path("/xml/device_description.xml");
+    }
+    Some(url.into())
 }
 
 /// IPv4 addresses to search from: every non-loopback, non-link-local
@@ -249,19 +272,29 @@ pub(crate) fn parse_description(location: &str, xml: &str) -> Option<Player> {
 
 /// Rooms of a `GetZoneGroupState` document (newer firmware wraps the
 /// groups in `<ZoneGroupState>`, older sends `<ZoneGroups>`).
+#[cfg(test)]
 pub(crate) fn parse_zone_groups(state: &str, known: &HashMap<String, Player>) -> Vec<Room> {
-    let Ok(doc) = roxmltree::Document::parse(state) else {
-        return Vec::new();
-    };
+    parse_zone_groups_with_members(state, known)
+        .map(|(rooms, _)| rooms)
+        .unwrap_or_default()
+}
+
+/// Parses visible rooms and every member/satellite UUID referenced by a
+/// `GetZoneGroupState` document. Purely invisible groups (e.g. Sonos Bridge,
+/// Boost, or bonded satellites) are recorded as covered members but omitted
+/// from the returned room list.
+fn parse_zone_groups_with_members(
+    state: &str,
+    known: &HashMap<String, Player>,
+) -> Option<(Vec<Room>, BTreeSet<String>)> {
+    let doc = roxmltree::Document::parse(state).ok()?;
     let mut rooms = Vec::new();
+    let mut members = BTreeSet::new();
     for group in doc
         .descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == "ZoneGroup")
     {
         let coordinator = group.attribute("Coordinator").unwrap_or("").to_owned();
-        if coordinator.is_empty() {
-            continue;
-        }
         let mut names: Vec<String> = Vec::new();
         let mut base_url = String::new();
         let mut visible = 0;
@@ -269,17 +302,33 @@ pub(crate) fn parse_zone_groups(state: &str, known: &HashMap<String, Player>) ->
             .children()
             .filter(|n| n.is_element() && n.tag_name().name() == "ZoneGroupMember")
         {
+            if let Some(uuid) = member.attribute("UUID").filter(|u| !u.is_empty()) {
+                members.insert(uuid.to_owned());
+            }
+            for sat in member
+                .descendants()
+                .filter(|n| n.is_element() && n.tag_name().name() == "Satellite")
+            {
+                if let Some(uuid) = sat.attribute("UUID").filter(|u| !u.is_empty()) {
+                    members.insert(uuid.to_owned());
+                }
+            }
             let invisible = member.attribute("Invisible") == Some("1");
             let name = member.attribute("ZoneName").unwrap_or("").trim().to_owned();
             if member.attribute("UUID") == Some(coordinator.as_str()) {
                 base_url = origin(member.attribute("Location").unwrap_or(""));
-                names.insert(0, name);
+                if !invisible {
+                    names.insert(0, name);
+                }
             } else if !invisible {
                 names.push(name);
             }
             if !invisible {
                 visible += 1;
             }
+        }
+        if coordinator.is_empty() || visible == 0 {
+            continue;
         }
         if base_url.is_empty() {
             if let Some(p) = known.get(&coordinator) {
@@ -306,10 +355,10 @@ pub(crate) fn parse_zone_groups(state: &str, known: &HashMap<String, Player>) ->
             id: coordinator,
             name,
             base_url,
-            member_count: visible.max(1),
+            member_count: visible,
         });
     }
-    rooms
+    Some((rooms, members))
 }
 
 #[cfg(test)]
@@ -367,6 +416,23 @@ mod tests {
             static_location(" 10.0.0.2:1401 ").unwrap(),
             "http://10.0.0.2:1401/xml/device_description.xml"
         );
+        assert_eq!(
+            static_location("192.168.1.30/").unwrap(),
+            "http://192.168.1.30:1400/xml/device_description.xml"
+        );
+        assert_eq!(
+            static_location("http://192.168.1.30:1400").unwrap(),
+            "http://192.168.1.30:1400/xml/device_description.xml"
+        );
+        assert_eq!(
+            static_location("http://192.168.1.30:1400/").unwrap(),
+            "http://192.168.1.30:1400/xml/device_description.xml"
+        );
+        assert_eq!(
+            static_location("http://192.168.1.30:1400/custom.xml").unwrap(),
+            "http://192.168.1.30:1400/custom.xml"
+        );
+        assert_eq!(static_location("ftp://192.168.1.30/x"), None);
         assert_eq!(static_location("  "), None);
         assert_eq!(
             header_value(
@@ -376,5 +442,97 @@ mod tests {
             .unwrap(),
             "http://a:1400/x.xml"
         );
+    }
+
+    #[test]
+    fn skips_invisible_only_zone_groups() {
+        let state = r#"<ZoneGroupState><ZoneGroups>
+            <ZoneGroup Coordinator="RINCON_BRIDGE" ID="g0">
+              <ZoneGroupMember UUID="RINCON_BRIDGE" Location="http://10.0.0.10:1400/xml/device_description.xml" ZoneName="BRIDGE" Invisible="1"/>
+            </ZoneGroup>
+            <ZoneGroup Coordinator="RINCON_LIVE" ID="g1">
+              <ZoneGroupMember UUID="RINCON_LIVE" Location="http://10.0.0.11:1400/xml/device_description.xml" ZoneName="客厅"/>
+            </ZoneGroup>
+        </ZoneGroups></ZoneGroupState>"#;
+        let (rooms, members) = parse_zone_groups_with_members(state, &HashMap::new()).unwrap();
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].id, "RINCON_LIVE");
+        assert!(members.contains("RINCON_BRIDGE"));
+        assert!(members.contains("RINCON_LIVE"));
+    }
+
+    #[tokio::test]
+    async fn discover_merges_multiple_households_and_excludes_invisible_bridge() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn spawn_sonos_node(
+            uuid: &'static str,
+            room: &'static str,
+            state_xml: String,
+        ) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let base = format!("http://{addr}");
+            let desc = format!(
+                r#"<?xml version="1.0"?><root><device><deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType><manufacturer>Sonos, Inc.</manufacturer><modelName>Sonos One</modelName><UDN>uuid:{uuid}</UDN><roomName>{room}</roomName></device></root>"#
+            );
+            let soap = format!(
+                r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetZoneGroupStateResponse xmlns:u="{ZONE_GROUP_TOPOLOGY}"><ZoneGroupState>{}</ZoneGroupState></u:GetZoneGroupStateResponse></s:Body></s:Envelope>"#,
+                crate::soap::escape(&state_xml.replace("{BASE}", &base))
+            );
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let desc = desc.clone();
+                    let soap = soap.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let body = if req.starts_with("GET /xml/device_description.xml") {
+                            desc
+                        } else {
+                            soap
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=\"utf-8\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    });
+                }
+            });
+            base
+        }
+
+        let s1_state = r#"<ZoneGroupState><ZoneGroups>
+            <ZoneGroup Coordinator="RINCON_BRIDGE" ID="b0">
+              <ZoneGroupMember UUID="RINCON_BRIDGE" Location="{BASE}/xml/device_description.xml" ZoneName="BRIDGE" Invisible="1"/>
+            </ZoneGroup>
+            <ZoneGroup Coordinator="RINCON_S1" ID="g1">
+              <ZoneGroupMember UUID="RINCON_S1" Location="{BASE}/xml/device_description.xml" ZoneName="S1 客厅"/>
+            </ZoneGroup>
+        </ZoneGroups></ZoneGroupState>"#
+            .to_owned();
+        let s2_state = r#"<ZoneGroupState><ZoneGroups>
+            <ZoneGroup Coordinator="RINCON_S2" ID="g2">
+              <ZoneGroupMember UUID="RINCON_S2" Location="{BASE}/xml/device_description.xml" ZoneName="S2 书房"/>
+            </ZoneGroup>
+        </ZoneGroups></ZoneGroupState>"#
+            .to_owned();
+
+        let h1 = spawn_sonos_node("RINCON_S1", "S1 客厅", s1_state).await;
+        let h2 = spawn_sonos_node("RINCON_S2", "S2 书房", s2_state).await;
+
+        let http = crate::http_client();
+        let rooms = discover(&http, Duration::from_millis(50), &[h1, h2])
+            .await
+            .unwrap();
+        let ids: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["RINCON_S1", "RINCON_S2"]);
     }
 }

@@ -13,7 +13,21 @@ pub(crate) const ZONE_GROUP_TOPOLOGY: &str = "urn:schemas-upnp-org:service:ZoneG
 /// Response arguments by element name.
 pub(crate) type Values = HashMap<String, String>;
 
-/// Escapes text for XML content and attributes.
+/// XML 1.0 valid character range (Section 2.2): rejects NUL, most C0 controls,
+/// and U+FFFE/U+FFFF noncharacters which cause Sonos UPnP XML parsers to reject
+/// the entire batch.
+fn is_valid_xml_char(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\r'
+            | '\u{20}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}'
+    )
+}
+
+/// Escapes text for XML content and attributes, stripping illegal XML 1.0 characters.
 pub(crate) fn escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -23,7 +37,8 @@ pub(crate) fn escape(value: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            c => out.push(c),
+            c if is_valid_xml_char(c) => out.push(c),
+            _ => {}
         }
     }
     out
@@ -178,5 +193,11 @@ mod tests {
         assert_eq!(parse_duration("1:00:01.500"), 3_601_500);
         assert_eq!(parse_duration("NOT_IMPLEMENTED"), 0);
         assert_eq!(parse_duration(""), 0);
+    }
+
+    #[test]
+    fn escape_strips_illegal_xml_control_chars_and_keeps_valid_whitespace() {
+        let dirty = "Song\0\x01\x08\x0B\x0C\x1F\t\n\r & <tag> 曲\u{FFFE}\u{FFFF}";
+        assert_eq!(escape(dirty), "Song\t\n\r &amp; &lt;tag&gt; 曲");
     }
 }
