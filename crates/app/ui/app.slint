@@ -686,11 +686,19 @@ export component AppWindow inherits Window {
     in-out property <int> exclusive-mode;
     in property <bool> asio-available;
     in property <bool> asio-fallback;
+    in property <[string]> asio-drivers;
+    in-out property <int> asio-driver-index;
+    in property <string> asio-status;
+    in property <[string]> asio-channel-pairs;
+    in-out property <int> asio-channel-pair-index;
     in-out property <bool> output-busy;
     callback settings-opened();
     callback audio-device-selected(int);
     callback exclusive-toggled(bool);
     callback exclusive-mode-selected(int);
+    callback asio-driver-selected(int);
+    callback asio-channel-pair-selected(int);
+    callback refresh-asio-driver();
     callback open-asio-control-panel();
     // Windows tray exists: closing can hide to it.
     in property <bool> tray-available;
@@ -2214,6 +2222,11 @@ export component AppWindow inherits Window {
                     exclusive-mode <=> root.exclusive-mode;
                     asio-available: root.asio-available;
                     asio-fallback: root.asio-fallback;
+                    asio-drivers: root.asio-drivers;
+                    asio-driver-index <=> root.asio-driver-index;
+                    asio-status: root.asio-status;
+                    asio-channel-pairs: root.asio-channel-pairs;
+                    asio-channel-pair-index <=> root.asio-channel-pair-index;
                     output-busy: root.output-busy;
                     opened => {
                         root.settings-opened();
@@ -2229,6 +2242,15 @@ export component AppWindow inherits Window {
                     exclusive-mode-selected(m) => {
                         root.output-busy = true;
                         root.exclusive-mode-selected(m);
+                    }
+                    asio-driver-selected(i) => {
+                        root.asio-driver-selected(i);
+                    }
+                    asio-channel-pair-selected(i) => {
+                        root.asio-channel-pair-selected(i);
+                    }
+                    refresh-asio-driver => {
+                        root.refresh-asio-driver();
                     }
                     open-asio-control-panel => {
                         root.open-asio-control-panel();

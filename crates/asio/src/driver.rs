@@ -1,5 +1,6 @@
 use std::ffi::{c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
@@ -9,27 +10,27 @@ use std::time::{Duration, Instant};
 use windows_registry::LOCAL_MACHINE;
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, S_FALSE, S_OK};
 use windows_sys::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    CLSCTX_INPROC_SERVER, CLSIDFromString, COINIT_APARTMENTTHREADED, CoCreateInstance,
+    CoInitializeEx, CoUninitialize,
 };
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumThreadWindows, GetDesktopWindow, IsWindowVisible, MSG, PM_REMOVE,
-    PeekMessageW, TranslateMessage,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, EnumThreadWindows, GetDesktopWindow,
+    IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
 };
 use windows_sys::core::{BOOL, GUID};
 
 use crate::ffi::{
     ASE_NOT_PRESENT, ASE_OK, ASE_SUCCESS, ASIO_FALSE, ASIO_TRUE, AsioBool, AsioBufferInfo,
-    AsioCallbacks, AsioChannelInfo, AsioErrorCode, AsioTime, CLSID_MM_DEVICE_ENUMERATOR, IAsio,
-    IID_IMM_DEVICE_ENUMERATOR, IMMDevice, IMMDeviceEnumerator, K_ASIO_BUFFER_SIZE_CHANGE,
+    AsioCallbacks, AsioChannelInfo, AsioErrorCode, AsioTime, IAsio, K_ASIO_BUFFER_SIZE_CHANGE,
     K_ASIO_ENGINE_VERSION, K_ASIO_LATENCIES_CHANGED, K_ASIO_RESET_REQUEST, K_ASIO_RESYNC_REQUEST,
     K_ASIO_SELECTOR_SUPPORTED, K_ASIO_SUPPORTS_TIME_INFO,
 };
 use crate::slot::{CallbackSlot, StreamSlot, StreamSlotGuard};
 use crate::{
-    AsioCallbackContext, AsioDriverInfo, AsioError, AsioSampleType, AsioStreamConfig,
-    RenderCallback, Result, choose_buffer_frames, write_stereo_channel_buffers,
+    AsioCallbackContext, AsioCapabilities, AsioDriverInfo, AsioError, AsioSampleType,
+    AsioStreamConfig, AsioTarget, RenderCallback, Result, STANDARD_SAMPLE_RATES,
+    build_channel_pairs, choose_buffer_frames, write_stereo_channel_buffers,
 };
 
 static STREAM_SLOT: StreamSlot = StreamSlot::new();
@@ -87,6 +88,7 @@ fn has_visible_thread_window() -> bool {
 
 struct CallbackState {
     iasio: usize, // *mut IAsio as usize (used only for output_ready during callback)
+    supports_output_ready: AtomicBool,
     active: AtomicBool,
     reset_requested: AtomicBool,
     rendered_frames: Arc<AtomicU64>,
@@ -178,11 +180,14 @@ impl CallbackState {
         self.rendered_frames
             .fetch_add(self.frames as u64, Ordering::Relaxed);
 
-        let raw = self.iasio as *mut IAsio;
-        if !raw.is_null() && self.active.load(Ordering::Acquire) {
-            // SAFETY: `raw` remains valid while the caller holds `ACTIVE_CALLBACK`'s read guard.
-            unsafe {
-                let _ = ((*(*raw).vtbl).output_ready)(raw);
+        if self.supports_output_ready.load(Ordering::Relaxed) {
+            let raw = self.iasio as *mut IAsio;
+            if !raw.is_null() && self.active.load(Ordering::Acquire) {
+                // SAFETY: `raw` remains valid while the caller holds `ACTIVE_CALLBACK`'s read guard.
+                let rc = unsafe { ((*(*raw).vtbl).output_ready)(raw) };
+                if rc == ASE_NOT_PRESENT {
+                    self.supports_output_ready.store(false, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -252,6 +257,9 @@ pub fn list_drivers() -> Vec<AsioDriverInfo> {
         let Ok(clsid) = sub.get_string("CLSID") else {
             continue;
         };
+        if !inproc_dll_exists(&clsid) {
+            continue;
+        }
         let name = sub
             .get_string("Description")
             .ok()
@@ -263,61 +271,29 @@ pub fn list_drivers() -> Vec<AsioDriverInfo> {
             clsid,
         });
     }
+    drivers.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+            .then_with(|| a.clsid.cmp(&b.clsid))
+    });
     drivers
 }
 
-pub fn default_audio_endpoint_guid() -> Option<String> {
-    // SAFETY: standard COM initialization and IMMDeviceEnumerator query.
-    unsafe {
-        let hr = CoInitializeEx(null(), COINIT_MULTITHREADED as u32);
-        let initialized = hr == S_OK || hr == S_FALSE;
-        let mut enumerator: *mut IMMDeviceEnumerator = null_mut();
-        let hr_create = CoCreateInstance(
-            &CLSID_MM_DEVICE_ENUMERATOR,
-            null_mut(),
-            CLSCTX_INPROC_SERVER,
-            &IID_IMM_DEVICE_ENUMERATOR,
-            (&raw mut enumerator).cast(),
-        );
-        if hr_create < 0 || enumerator.is_null() {
-            if initialized {
-                CoUninitialize();
-            }
-            return None;
-        }
-        let mut device: *mut IMMDevice = null_mut();
-        // eRender = 0, eMultimedia = 1
-        let hr_ep =
-            ((*(*enumerator).vtbl).get_default_audio_endpoint)(enumerator, 0, 1, &raw mut device);
-        let guid = if hr_ep >= 0 && !device.is_null() {
-            let mut id_ptr = null_mut();
-            let hr_id = ((*(*device).vtbl).get_id)(device, &raw mut id_ptr);
-            let out = if hr_id >= 0 && !id_ptr.is_null() {
-                let len = (0..).take_while(|&i| *id_ptr.add(i) != 0).count();
-                let wide = std::slice::from_raw_parts(id_ptr, len);
-                let full = String::from_utf16_lossy(wide);
-                CoTaskMemFree(id_ptr.cast());
-                extract_endpoint_guid(&full)
-            } else {
-                None
-            };
-            ((*(*device).vtbl).release)(device);
-            out
-        } else {
-            None
-        };
-        ((*(*enumerator).vtbl).release)(enumerator);
-        if initialized {
-            CoUninitialize();
-        }
-        guid
+fn inproc_dll_exists(clsid: &str) -> bool {
+    let path = format!("SOFTWARE\\Classes\\CLSID\\{clsid}\\InprocServer32");
+    let Ok(key) = LOCAL_MACHINE.open(&path) else {
+        return false;
+    };
+    let Ok(raw_dll) = key.get_string("") else {
+        return false;
+    };
+    let dll = raw_dll.trim().trim_matches('"');
+    if dll.is_empty() {
+        return false;
     }
-}
-
-fn extract_endpoint_guid(id: &str) -> Option<String> {
-    let start = id.rfind('{')?;
-    let end = id[start..].find('}')? + start;
-    Some(id[start..=end].to_string())
+    let p = Path::new(dll);
+    if p.is_absolute() { p.exists() } else { true }
 }
 
 fn parse_clsid(clsid: &str) -> Result<GUID> {
@@ -358,8 +334,65 @@ impl Drop for ComGuard {
     }
 }
 
+/// Hidden window owned by the STA thread so driver `init()` and `controlPanel()`
+/// receive an HWND attached to the pumping message loop.
+struct HwndGuard {
+    hwnd: HWND,
+    owned: bool,
+}
+
+impl HwndGuard {
+    fn create() -> Self {
+        let class_name: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "032player-asio\0".encode_utf16().collect();
+        // SAFETY: creates a hidden window using the built-in STATIC class.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if !hwnd.is_null() {
+            Self { hwnd, owned: true }
+        } else {
+            // SAFETY: fallback to the desktop window if hidden window creation fails.
+            let desktop = unsafe { GetDesktopWindow() };
+            Self {
+                hwnd: desktop,
+                owned: false,
+            }
+        }
+    }
+
+    fn as_ptr(&self) -> *mut c_void {
+        self.hwnd
+    }
+}
+
+impl Drop for HwndGuard {
+    fn drop(&mut self) {
+        if self.owned && !self.hwnd.is_null() {
+            // SAFETY: `hwnd` was created on this thread by `CreateWindowExW`.
+            unsafe {
+                DestroyWindow(self.hwnd);
+            }
+        }
+    }
+}
+
 struct IAsioHandle {
     raw: *mut IAsio,
+    _hwnd: HwndGuard,
     _com: ComGuard,
 }
 
@@ -386,9 +419,14 @@ impl IAsioHandle {
                 }),
             ));
         }
-        let handle = Self { raw, _com: com };
-        // SAFETY: `GetDesktopWindow` provides a valid HWND for driver dialogs.
-        let ok = unsafe { ((*(*handle.raw).vtbl).init)(handle.raw, GetDesktopWindow()) };
+        let hwnd = HwndGuard::create();
+        let handle = Self {
+            raw,
+            _hwnd: hwnd,
+            _com: com,
+        };
+        // SAFETY: `handle._hwnd` stays alive for the lifetime of the IASIO handle.
+        let ok = unsafe { ((*(*handle.raw).vtbl).init)(handle.raw, handle._hwnd.as_ptr()) };
         if ok != ASIO_TRUE {
             let msg = handle.error_message();
             return Err(AsioError::Driver {
@@ -552,7 +590,7 @@ fn c_char_buf_to_string(buf: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes[..len]).into_owned()
 }
 
-pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
+pub fn probe_driver(clsid: &str) -> Result<AsioCapabilities> {
     let clsid = clsid.to_owned();
     thread::Builder::new()
         .name("asio-probe".into())
@@ -562,21 +600,43 @@ pub fn probe_driver(clsid: &str, sample_rate: f64) -> Result<AsioStreamConfig> {
             if outs < 2 {
                 return Err(AsioError::NotEnoughChannels(outs));
             }
-            if !handle.can_sample_rate(sample_rate) {
-                return Err(AsioError::UnsupportedSampleRate(sample_rate));
+            let out_count = usize::try_from(outs).unwrap_or(2);
+            let mut channels = Vec::with_capacity(out_count);
+            let mut first_sample_type = None;
+            for ch in 0..outs {
+                let info = handle.get_output_channel_info(ch)?;
+                if first_sample_type.is_none() {
+                    first_sample_type = Some(AsioSampleType::from_raw(info.sample_type));
+                }
+                let name = c_char_buf_to_string(&info.name);
+                channels.push((usize::try_from(ch).unwrap_or(0), name));
             }
-            let (min_sz, max_sz, pref, gran) = handle.get_buffer_size()?;
-            let buffer_frames = choose_buffer_frames(min_sz, max_sz, pref, gran);
-            let ch0 = handle.get_output_channel_info(0)?;
-            let sample_type = AsioSampleType::from_raw(ch0.sample_type);
+            let sample_type = first_sample_type.unwrap_or(AsioSampleType::Unknown(-1));
             if !sample_type.is_supported() {
                 return Err(AsioError::UnsupportedFormat(sample_type));
             }
-            Ok(AsioStreamConfig {
-                sample_rate,
-                buffer_size: usize::try_from(buffer_frames).unwrap_or(512),
+            let (min_sz, max_sz, pref, gran) = handle.get_buffer_size()?;
+            let buffer_frames = choose_buffer_frames(min_sz, max_sz, pref, gran);
+            let mut supported_sample_rates: Vec<u32> = STANDARD_SAMPLE_RATES
+                .iter()
+                .copied()
+                .filter(|&r| handle.can_sample_rate(f64::from(r)))
+                .collect();
+            if supported_sample_rates.is_empty()
+                && let Ok(cur) = handle.get_sample_rate()
+                && cur.is_finite()
+                && cur > 0.0
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                supported_sample_rates.push(cur.round() as u32);
+            }
+            let channel_pairs = build_channel_pairs(&channels);
+            Ok(AsioCapabilities {
+                output_channels: out_count,
+                channel_pairs,
+                supported_sample_rates,
                 sample_type,
-                output_channels: usize::try_from(outs).unwrap_or(2),
+                buffer_size: usize::try_from(buffer_frames).unwrap_or(512),
             })
         })
         .map_err(|_| AsioError::Stopped)?
@@ -651,17 +711,18 @@ pub struct AsioOutputHandle {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl AsioOutputHandle {
-    pub fn start(clsid: &str, sample_rate: f64, render: RenderCallback) -> Result<Self> {
-        let clsid = clsid.to_owned();
+    pub fn start(target: &AsioTarget, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+        let target = target.clone();
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<SelfInit>>(1);
         let (cmd_tx, cmd_rx) = mpsc::channel::<ActorCmd>();
         let thread = thread::Builder::new()
             .name("asio-com".into())
-            .spawn(move || actor_main(&clsid, sample_rate, render, init_tx, cmd_rx))
+            .spawn(move || actor_main(&target, sample_rate, render, init_tx, cmd_rx))
             .map_err(|_| AsioError::Stopped)?;
 
         let init = init_rx.recv().map_err(|_| AsioError::Stopped)??;
@@ -670,6 +731,7 @@ impl AsioOutputHandle {
             config: init.config,
             rendered_frames: init.rendered_frames,
             output_latency: init.output_latency,
+            last_error: init.last_error,
             thread: Some(thread),
         })
     }
@@ -692,6 +754,10 @@ impl AsioOutputHandle {
 
     pub fn output_latency_frames(&self) -> u64 {
         self.output_latency.load(Ordering::Relaxed)
+    }
+
+    pub fn take_error(&self) -> Option<String> {
+        self.last_error.lock().expect("asio error lock").take()
     }
 
     pub fn open_control_panel(&self) -> Result<()> {
@@ -722,6 +788,7 @@ struct SelfInit {
     config: Arc<Mutex<AsioStreamConfig>>,
     rendered_frames: Arc<AtomicU64>,
     output_latency: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 struct ActiveStream {
@@ -736,15 +803,29 @@ struct ActiveStream {
 }
 
 impl ActiveStream {
-    fn open(clsid: &str, sample_rate: f64, render: RenderCallback) -> Result<Self> {
+    fn open(target: &AsioTarget, sample_rate: f64, render: RenderCallback) -> Result<Self> {
         close_standalone_control_panel();
         let slot = STREAM_SLOT.try_acquire()?;
-        let handle = IAsioHandle::open(clsid)?;
+        let handle = IAsioHandle::open(&target.clsid)?;
         let (_, outs) = handle.get_channels()?;
         if outs < 2 {
             return Err(AsioError::NotEnoughChannels(outs));
         }
+        let out_count = usize::try_from(outs).unwrap_or(2);
+        if target.left_channel >= out_count
+            || target.right_channel >= out_count
+            || target.left_channel == target.right_channel
+        {
+            return Err(AsioError::InvalidChannelPair {
+                left: target.left_channel,
+                right: target.right_channel,
+                available: out_count,
+            });
+        }
 
+        if !handle.can_sample_rate(sample_rate) {
+            return Err(AsioError::UnsupportedSampleRate(sample_rate));
+        }
         let current_rate = handle.get_sample_rate().unwrap_or(0.0);
         if (current_rate - sample_rate).abs() > 0.5 {
             handle.set_sample_rate(sample_rate)?;
@@ -765,7 +846,9 @@ impl ActiveStream {
                 sample_rate,
                 buffer_size: 0,
                 sample_type: AsioSampleType::Int32Lsb,
-                output_channels: usize::try_from(outs).unwrap_or(2),
+                output_channels: out_count,
+                left_channel: target.left_channel,
+                right_channel: target.right_channel,
             },
             rendered_frames: Arc::new(AtomicU64::new(0)),
             output_latency: Arc::new(AtomicU64::new(0)),
@@ -779,13 +862,26 @@ impl ActiveStream {
         let (min_sz, max_sz, pref, gran) = self.handle.get_buffer_size()?;
         let buffer_frames = choose_buffer_frames(min_sz, max_sz, pref, gran);
         let frames_usize = usize::try_from(buffer_frames).unwrap_or(512);
-        let ch0 = self.handle.get_output_channel_info(0)?;
-        let sample_type = AsioSampleType::from_raw(ch0.sample_type);
-        let Some(bps) = sample_type
-            .is_supported()
-            .then(|| sample_type.bytes_per_sample())
-            .flatten()
-        else {
+        let left_ch = i32::try_from(self.config.left_channel).unwrap_or(0);
+        let right_ch = i32::try_from(self.config.right_channel).unwrap_or(1);
+        let ch_l = self.handle.get_output_channel_info(left_ch)?;
+        let ch_r = self.handle.get_output_channel_info(right_ch)?;
+        let sample_type_l = AsioSampleType::from_raw(ch_l.sample_type);
+        let sample_type_r = AsioSampleType::from_raw(ch_r.sample_type);
+        if !sample_type_l.is_supported() {
+            return Err(AsioError::UnsupportedFormat(sample_type_l));
+        }
+        if !sample_type_r.is_supported() {
+            return Err(AsioError::UnsupportedFormat(sample_type_r));
+        }
+        if sample_type_l != sample_type_r {
+            return Err(AsioError::ChannelFormatMismatch {
+                left: sample_type_l,
+                right: sample_type_r,
+            });
+        }
+        let sample_type = sample_type_l;
+        let Some(bps) = sample_type.bytes_per_sample() else {
             return Err(AsioError::UnsupportedFormat(sample_type));
         };
         let byte_len = frames_usize
@@ -804,12 +900,12 @@ impl ActiveStream {
         let mut infos = [
             AsioBufferInfo {
                 is_input: ASIO_FALSE,
-                channel_num: 0,
+                channel_num: left_ch,
                 buffers: [null_mut(), null_mut()],
             },
             AsioBufferInfo {
                 is_input: ASIO_FALSE,
-                channel_num: 1,
+                channel_num: right_ch,
                 buffers: [null_mut(), null_mut()],
             },
         ];
@@ -833,6 +929,7 @@ impl ActiveStream {
 
         let state = Arc::new(CallbackState {
             iasio: self.handle.raw as usize,
+            supports_output_ready: AtomicBool::new(true),
             active: AtomicBool::new(true),
             reset_requested: AtomicBool::new(false),
             rendered_frames: self.rendered_frames.clone(),
@@ -878,6 +975,9 @@ impl ActiveStream {
     }
 
     fn reconfigure(&mut self, sample_rate: f64) -> Result<AsioStreamConfig> {
+        if !self.handle.can_sample_rate(sample_rate) {
+            return Err(AsioError::UnsupportedSampleRate(sample_rate));
+        }
         let render = self.teardown_buffers().ok_or(AsioError::Stopped)?;
         let current = self.handle.get_sample_rate().unwrap_or(0.0);
         if (current - sample_rate).abs() > 0.5
@@ -890,13 +990,6 @@ impl ActiveStream {
         self.setup_and_start(sample_rate, render)?;
         Ok(self.config)
     }
-
-    fn sync_rendered_frames(&self) {
-        if let Some(state) = self.cb_state.as_ref() {
-            // Keep monotonic rendered frames up to date for observers.
-            let _ = state;
-        }
-    }
 }
 
 impl Drop for ActiveStream {
@@ -906,13 +999,13 @@ impl Drop for ActiveStream {
 }
 
 fn actor_main(
-    clsid: &str,
+    target: &AsioTarget,
     sample_rate: f64,
     render: RenderCallback,
     init_tx: mpsc::SyncSender<Result<SelfInit>>,
     cmd_rx: mpsc::Receiver<ActorCmd>,
 ) {
-    let mut stream = match ActiveStream::open(clsid, sample_rate, render) {
+    let mut stream = match ActiveStream::open(target, sample_rate, render) {
         Ok(s) => s,
         Err(e) => {
             let _ = init_tx.send(Err(e));
@@ -922,10 +1015,12 @@ fn actor_main(
     let shared_cfg = Arc::new(Mutex::new(stream.config));
     let rendered_frames = stream.rendered_frames.clone();
     let output_latency = stream.output_latency.clone();
+    let last_error = Arc::new(Mutex::new(None));
     let _ = init_tx.send(Ok(SelfInit {
         config: shared_cfg.clone(),
         rendered_frames,
         output_latency,
+        last_error: last_error.clone(),
     }));
 
     loop {
@@ -949,16 +1044,17 @@ fn actor_main(
         if let Some(state) = stream.cb_state.as_ref()
             && state.reset_requested.swap(false, Ordering::AcqRel)
         {
-            let target_rate = stream
-                .handle
-                .get_sample_rate()
-                .unwrap_or(stream.config.sample_rate);
+            let target_rate = stream.config.sample_rate;
             tracing::info!(sample_rate = target_rate, "ASIO reset requested by driver");
-            if let Ok(cfg) = stream.reconfigure(target_rate) {
-                *shared_cfg.lock().expect("config lock") = cfg;
+            match stream.reconfigure(target_rate) {
+                Ok(cfg) => *shared_cfg.lock().expect("config lock") = cfg,
+                Err(e) => {
+                    tracing::warn!("ASIO reset reconfigure failed: {e}");
+                    *last_error.lock().expect("asio error lock") = Some(e.to_string());
+                    return;
+                }
             }
         }
-        stream.sync_rendered_frames();
         thread::sleep(Duration::from_millis(5));
     }
 }
@@ -979,46 +1075,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_guid_from_mmdevice_id() {
-        assert_eq!(
-            extract_endpoint_guid("{0.0.0.00000000}.{ef05e2a9-d17f-46af-8fed-022ced0cb378}"),
-            Some("{ef05e2a9-d17f-46af-8fed-022ced0cb378}".into())
-        );
-    }
-
-    #[test]
-    #[ignore = "requires physical FiiO K9 Pro / FiiO ASIO Driver connected on Windows"]
-    fn probe_fiio_asio_hardware() {
+    #[ignore = "requires an installed and connected Windows ASIO device"]
+    fn probe_and_stream_installed_asio_hardware() {
         let drivers = list_drivers();
-        println!("ASIO drivers: {drivers:?}");
-        println!("Default endpoint GUID: {:?}", default_audio_endpoint_guid());
-        let fiio = crate::find_fiio_driver().expect("FiiO ASIO Driver not registered");
-        let cfg = probe_driver(&fiio.clsid, 44_100.0).expect("probe 44.1kHz");
-        println!("44.1kHz config: {cfg:?}");
-        let cfg96 = probe_driver(&fiio.clsid, 96_000.0).expect("probe 96kHz");
-        println!("96kHz config: {cfg96:?}");
-    }
+        println!("Installed ASIO drivers ({}): {drivers:?}", drivers.len());
+        assert!(!drivers.is_empty(), "expected at least one ASIO driver");
 
-    #[test]
-    #[ignore = "requires physical FiiO K9 Pro / FiiO ASIO Driver connected on Windows"]
-    fn stream_fiio_asio_silent_smoke_and_rate_switch() {
-        let fiio = crate::find_fiio_driver().expect("FiiO ASIO Driver not registered");
-        let output =
-            crate::AsioOutput::start(&fiio.clsid, 44_100.0, Box::new(|_ctx, buf| buf.fill(0.0)))
-                .expect("start 44.1kHz ASIO stream");
+        let mut probed_any = None;
+        for d in &drivers {
+            match probe_driver(&d.clsid) {
+                Ok(caps) => {
+                    println!("Probed [{}] ({}): {caps:?}", d.name, d.clsid);
+                    if probed_any.is_none() {
+                        probed_any = Some((d.clone(), caps));
+                    }
+                }
+                Err(e) => {
+                    println!("Skipped [{}] ({}): {e}", d.name, d.clsid);
+                }
+            }
+        }
+
+        let (driver, caps) = probed_any.expect("no connected ASIO hardware responded to probe");
+        let first_pair = caps
+            .channel_pairs
+            .first()
+            .expect("expected at least one stereo output pair");
+        let target = AsioTarget::new(&driver.clsid, first_pair.left, first_pair.right);
+        let rate1 = *caps
+            .supported_sample_rates
+            .first()
+            .expect("expected at least one supported sample rate");
+
+        let output = crate::AsioOutput::start(
+            &target,
+            f64::from(rate1),
+            Box::new(|_ctx, buf| buf.fill(0.0)),
+        )
+        .expect("start silent ASIO stream");
         thread::sleep(Duration::from_millis(200));
-        let frames_44 = output.rendered_frames();
-        assert!(frames_44 > 0, "expected rendered frames at 44.1kHz, got 0");
-        let cfg96 = output
-            .set_sample_rate(96_000.0)
-            .expect("switch ASIO sample rate to 96kHz");
-        assert!((cfg96.sample_rate - 96_000.0).abs() < 1.0);
-        thread::sleep(Duration::from_millis(200));
-        let frames_96 = output.rendered_frames();
-        assert!(
-            frames_96 > frames_44,
-            "expected rendered frames to advance after 96kHz switch: {frames_44} -> {frames_96}"
-        );
+        let frames_1 = output.rendered_frames();
+        assert!(frames_1 > 0, "expected rendered frames at {rate1} Hz");
+
+        if let Some(&rate2) = caps.supported_sample_rates.iter().find(|&&r| r != rate1) {
+            let cfg2 = output
+                .set_sample_rate(f64::from(rate2))
+                .expect("switch ASIO sample rate");
+            assert!((cfg2.sample_rate - f64::from(rate2)).abs() < 1.0);
+            thread::sleep(Duration::from_millis(200));
+            let frames_2 = output.rendered_frames();
+            assert!(
+                frames_2 > frames_1,
+                "expected frames to advance after switch to {rate2} Hz: {frames_1} -> {frames_2}"
+            );
+        }
+
+        if let Some(&unsupported) = STANDARD_SAMPLE_RATES
+            .iter()
+            .find(|r| !caps.supported_sample_rates.contains(r))
+        {
+            let err = output
+                .set_sample_rate(f64::from(unsupported))
+                .expect_err("expected unsupported sample rate error");
+            assert!(
+                matches!(err, AsioError::UnsupportedSampleRate(_)),
+                "unexpected error for {unsupported} Hz: {err:?}"
+            );
+            println!("Verified strict rejection for unsupported {unsupported} Hz: {err}");
+        }
         drop(output);
     }
 }

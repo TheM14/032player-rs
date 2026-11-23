@@ -31,7 +31,9 @@ use crate::browse::{
     AlbumFilter, AlbumItem, ArtistFilter, ArtistItem, DetailView, PlaylistFilter, PlaylistItem,
     SearchBestMatch, TrackFilter, TrackItem, TrackList,
 };
-use crate::engine::{AudioDevice, Engine, EngineEvent};
+use crate::engine::{
+    AsioCapabilities, AsioChannelPair, AsioDriver, AudioDevice, Engine, EngineEvent,
+};
 use crate::format;
 use crate::images::{Images, Rgba};
 use crate::m032::{
@@ -216,6 +218,12 @@ pub enum Command {
     SetExclusive(bool),
     /// Answered with [`Event::OutputMode`] (old state on failure).
     SetExclusiveMode(ExclusiveMode),
+    /// Selects an installed ASIO driver by CLSID and probes its ports.
+    SetAsioDriver(String),
+    /// Selects a stereo output channel pair `(left, right)` for the active ASIO driver.
+    SetAsioChannelPair(usize, usize),
+    /// Refreshes installed ASIO drivers and re-probes the selected driver.
+    RefreshAsioDriver,
     /// Opens the ASIO driver control panel when supported.
     OpenAsioControlPanel,
     /// Layout of the right panel (queue / lyrics).
@@ -700,6 +708,8 @@ pub enum Event {
         asio_available: bool,
         asio_fallback: bool,
     },
+    /// Snapshot of discovered ASIO drivers, selected target, and probed capabilities.
+    AsioState(AsioStateView),
     /// Lines of the current track (empty: none). `synced` false = plain text.
     Lyrics {
         lines: Vec<LyricRow>,
@@ -795,6 +805,18 @@ pub enum Event {
     Notice(String),
 }
 
+/// UI-facing snapshot of installed ASIO drivers and the selected driver's probed ports.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AsioStateView {
+    pub drivers: Vec<AsioDriver>,
+    pub selected_clsid: Option<String>,
+    pub channel_pairs: Vec<AsioChannelPair>,
+    pub selected_channels: (usize, usize),
+    pub supported_sample_rates: Vec<u32>,
+    pub status: String,
+    pub ready: bool,
+}
+
 /// A lyrics line as shown.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LyricRow {
@@ -865,7 +887,14 @@ enum Internal {
         notice: Option<String>,
         deleted: Option<i64>,
     },
-    AudioDevicesLoaded(Result<Vec<AudioDevice>, String>),
+    AudioDevicesLoaded(Result<Vec<AudioDevice>, String>, Vec<AsioDriver>),
+    AsioDriversRefreshed(Vec<AsioDriver>),
+    AsioDriverProbed {
+        clsid: String,
+        seq: u64,
+        result: Result<AsioCapabilities, String>,
+        handover: bool,
+    },
     AudioDeviceSet(Option<String>, Result<(), String>),
     ExclusiveSet(bool, Result<(), String>),
     ExclusiveModeSet(ExclusiveMode, Result<(), String>),
@@ -1679,6 +1708,9 @@ impl Core {
             Command::SetAudioDevice(device) => self.set_audio_device(device),
             Command::SetExclusive(enabled) => self.set_exclusive(enabled),
             Command::SetExclusiveMode(mode) => self.set_exclusive_mode(mode),
+            Command::SetAsioDriver(clsid) => self.set_asio_driver(clsid),
+            Command::SetAsioChannelPair(left, right) => self.set_asio_channel_pair(left, right),
+            Command::RefreshAsioDriver => self.refresh_asio_driver(),
             Command::OpenAsioControlPanel => self.open_asio_control_panel(),
             Command::SetRightPanel(panel) => self.update_settings(|s| s.right_panel = panel),
             Command::SetShortcuts(keys) => self.update_settings(|s| s.shortcuts = keys),
@@ -2085,7 +2117,16 @@ impl Core {
                     result,
                 );
             }
-            Internal::AudioDevicesLoaded(result) => self.handle_audio_devices_loaded(result),
+            Internal::AudioDevicesLoaded(result, drivers) => {
+                self.handle_audio_devices_loaded(result, drivers);
+            }
+            Internal::AsioDriversRefreshed(drivers) => self.handle_asio_drivers_refreshed(drivers),
+            Internal::AsioDriverProbed {
+                clsid,
+                seq,
+                result,
+                handover,
+            } => self.handle_asio_driver_probed(clsid, seq, result, handover),
             Internal::AudioDeviceSet(device, result) => {
                 self.handle_audio_device_set(device, result)
             }

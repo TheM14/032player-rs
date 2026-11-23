@@ -40,9 +40,20 @@ pub trait Engine: Send + Sync + 'static {
         self.append(url)
     }
 
-    /// Returns true when ASIO is supported for the given device list and selection.
-    fn supports_asio(&self, _devices: &[AudioDevice], _selected: Option<&str>) -> bool {
-        false
+    /// Enumerates installed ASIO drivers without opening hardware.
+    fn asio_drivers(&self) -> Vec<AsioDriver> {
+        Vec::new()
+    }
+
+    /// Probes a single ASIO driver by CLSID to inspect its output channel pairs
+    /// and supported sample rates.
+    fn probe_asio_driver(&self, _clsid: &str) -> Result<AsioCapabilities, String> {
+        Err("ASIO not supported".into())
+    }
+
+    /// Configures the active ASIO target (driver CLSID and output channel pair).
+    fn set_asio_target(&self, _target: Option<AsioTarget>) -> Result<(), String> {
+        Ok(())
     }
 
     /// Applies an [`ExclusiveMode`](crate::settings::ExclusiveMode) change.
@@ -66,6 +77,39 @@ pub struct AudioDevice {
     /// Engine name (`wasapi/{guid}`, `auto`).
     pub name: String,
     pub description: String,
+}
+
+/// An installed ASIO driver discovered from the OS registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioDriver {
+    pub clsid: String,
+    pub name: String,
+}
+
+/// A stereo pair of output channels exposed by an ASIO driver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioChannelPair {
+    pub left: usize,
+    pub right: usize,
+    pub name: String,
+}
+
+/// Selected ASIO driver and stereo output channel pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioTarget {
+    pub clsid: String,
+    pub left_channel: usize,
+    pub right_channel: usize,
+}
+
+/// Hardware capabilities obtained by probing an ASIO driver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AsioCapabilities {
+    pub output_channels: usize,
+    pub channel_pairs: Vec<AsioChannelPair>,
+    pub supported_sample_rates: Vec<u32>,
+    pub sample_format: String,
+    pub buffer_size: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

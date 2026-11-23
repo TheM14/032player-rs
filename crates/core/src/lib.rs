@@ -26,11 +26,14 @@ pub use browse::{
     SearchBestMatch, TrackFilter, TrackItem, TrackList, release_groups,
 };
 pub use controller::{
-    CastRoom, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure, LyricRow,
-    LyricsResultItem, LyricsTools, NowPlaying, PlayingSources, QueueEntry, QueuePosition,
+    AsioStateView, CastRoom, Command, Commander, CoreConfig, CoreHandle, Event, LoginFailure,
+    LyricRow, LyricsResultItem, LyricsTools, NowPlaying, PlayingSources, QueueEntry, QueuePosition,
     SavedLogin, ServerFeatures, SignOutReason, SleepStatus, SleepTimer, TrackSource, start,
 };
-pub use engine::{AudioDevice, Engine, EngineEnd, EngineEvent};
+pub use engine::{
+    AsioCapabilities, AsioChannelPair, AsioDriver, AsioTarget, AudioDevice, Engine, EngineEnd,
+    EngineEvent,
+};
 pub use images::{ArtworkFit, Rgba, decode, decode_fit, fitted_size, server_size};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use radio::{
@@ -38,7 +41,7 @@ pub use radio::{
 };
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::{
-    CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LyricsSettings, RightPanel,
-    Settings, ThemeMode, TranslationMode, WindowState,
+    AsioProfile, CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LyricsSettings,
+    RightPanel, Settings, ThemeMode, TranslationMode, WindowState,
 };
 pub use storage::FileStorage;

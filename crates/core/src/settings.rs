@@ -1,6 +1,7 @@
 //! User settings in `settings.json`. Missing or corrupt files and fields
 //! fall back to defaults.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,10 @@ pub struct Settings {
     pub exclusive: bool,
     /// Prefer ASIO output when `exclusive` is enabled and available.
     pub asio: bool,
+    /// User-selected ASIO driver CLSID.
+    pub asio_driver: Option<String>,
+    /// Per-driver ASIO output port settings keyed by CLSID.
+    pub asio_profiles: BTreeMap<String, AsioProfile>,
     pub right_panel: RightPanel,
     /// Left sidebar width in logical px (dragged by its right edge).
     pub sidebar_width: f32,
@@ -54,6 +59,30 @@ pub enum ExclusiveMode {
     Off,
     Wasapi,
     Asio,
+}
+
+/// Per-driver ASIO configuration persisted by CLSID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AsioProfile {
+    /// Selected stereo output channel pair `[left, right]` (0-based indices).
+    pub channel_pair: [usize; 2],
+}
+
+impl Default for AsioProfile {
+    fn default() -> Self {
+        Self {
+            channel_pair: [0, 1],
+        }
+    }
+}
+
+impl AsioProfile {
+    fn sanitize(&mut self) {
+        if self.channel_pair[0] == self.channel_pair[1] {
+            self.channel_pair = [0, 1];
+        }
+    }
 }
 
 /// Sonos hi-res lossless (> 48 kHz) tracks (MusicBridge `SonosHiResTranscodeMode`).
@@ -273,6 +302,8 @@ impl Default for Settings {
             audio_device: None,
             exclusive: false,
             asio: false,
+            asio_driver: None,
+            asio_profiles: BTreeMap::new(),
             right_panel: RightPanel::default(),
             sidebar_width: SIDEBAR_WIDTH,
             window: WindowState::default(),
@@ -324,6 +355,24 @@ impl Settings {
         }
     }
 
+    /// Returns the saved stereo channel pair `(left, right)` for `clsid`.
+    #[must_use]
+    pub fn asio_channel_pair(&self, clsid: &str) -> (usize, usize) {
+        self.asio_profiles
+            .get(clsid)
+            .filter(|p| p.channel_pair[0] != p.channel_pair[1])
+            .map_or((0, 1), |p| (p.channel_pair[0], p.channel_pair[1]))
+    }
+
+    /// Saves the selected stereo channel pair `(left, right)` for `clsid`.
+    pub fn set_asio_channel_pair(&mut self, clsid: &str, left: usize, right: usize) {
+        if left == right {
+            return;
+        }
+        let profile = self.asio_profiles.entry(clsid.to_owned()).or_default();
+        profile.channel_pair = [left, right];
+    }
+
     /// Reads `settings.json` in `data_dir`; backs up corrupt files and falls
     /// back to defaults when missing or corrupt.
     pub fn load(data_dir: &Path) -> Self {
@@ -367,6 +416,13 @@ impl Settings {
         settings.audio_device = settings
             .audio_device
             .filter(|d| !d.is_empty() && d != "auto");
+        settings.asio_driver = settings
+            .asio_driver
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        for profile in settings.asio_profiles.values_mut() {
+            profile.sanitize();
+        }
         settings
     }
 
@@ -399,6 +455,13 @@ mod tests {
             audio_device: Some("wasapi/{x}".into()),
             exclusive: true,
             asio: true,
+            asio_driver: Some("{TEST-ASIO-CLSID}".into()),
+            asio_profiles: BTreeMap::from([(
+                "{TEST-ASIO-CLSID}".into(),
+                AsioProfile {
+                    channel_pair: [2, 3],
+                },
+            )]),
             right_panel: RightPanel {
                 open: false,
                 queue_tab: true,

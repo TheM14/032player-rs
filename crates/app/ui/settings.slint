@@ -56,12 +56,20 @@ export component SettingsView inherits Rectangle {
     in-out property <int> exclusive-mode;
     in property <bool> asio-available;
     in property <bool> asio-fallback;
+    in property <[string]> asio-drivers;
+    in-out property <int> asio-driver-index;
+    in property <string> asio-status;
+    in property <[string]> asio-channel-pairs;
+    in-out property <int> asio-channel-pair-index;
     // A device / exclusive change is being applied.
     in property <bool> output-busy;
     callback opened();
     callback device-selected(int);
     callback exclusive-toggled(bool);
     callback exclusive-mode-selected(int);
+    callback asio-driver-selected(int);
+    callback asio-channel-pair-selected(int);
+    callback refresh-asio-driver();
     callback open-asio-control-panel();
     in property <bool> tray-available;
     in-out property <bool> close-to-tray;
@@ -181,8 +189,10 @@ export component SettingsView inherits Rectangle {
             }
 
             SettingRow {
-                title: "输出设备";
-                description: "mpv 的音频输出设备";
+                title: root.asio-available ? "WASAPI 输出设备" : "输出设备";
+                description: root.asio-available
+                    ? "用于共享或 WASAPI 独占模式（及 ASIO 模式下的 Opus 回落）。"
+                    : "mpv 的音频输出设备";
                 ComboBox {
                     width: 320px;
                     y: (parent.height - self.height) / 2;
@@ -211,28 +221,68 @@ export component SettingsView inherits Rectangle {
             if root.asio-available: SettingRow {
                 title: "独占模式";
                 description: root.asio-fallback
-                    ? "当前设备支持 FiiO ASIO（Opus 音轨已自动回落到 WASAPI 独占）。"
-                    : "选择独占输出模式：WASAPI 独占或 FiiO ASIO（自动切换原声采样率，播放中可热切换）。";
+                    ? "ASIO 独占已开启（Opus 音轨已自动回落到 WASAPI 独占）。"
+                    : "选择独占输出模式：WASAPI 独占或 ASIO（原生采样率独占输出，播放中可热切换）。";
+                ComboBox {
+                    width: 170px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["关闭", "WASAPI 独占", "ASIO"];
+                    current-index <=> root.exclusive-mode;
+                    enabled: !root.output-busy;
+                    selected => {
+                        root.exclusive-mode-selected(self.current-index);
+                    }
+                }
+            }
+
+            if root.asio-available: SettingRow {
+                title: "ASIO 驱动";
+                description: root.asio-status != ""
+                    ? root.asio-status
+                    : "从系统已安装的 ASIO 驱动中选择输出设备。";
                 HorizontalLayout {
                     y: (parent.height - self.height) / 2;
                     spacing: 8px;
                     ComboBox {
-                        width: 170px;
+                        width: 240px;
                         y: (parent.height - self.height) / 2;
-                        model: ["关闭", "WASAPI 独占", "ASIO"];
-                        current-index <=> root.exclusive-mode;
+                        model: root.asio-drivers;
+                        current-index <=> root.asio-driver-index;
                         enabled: !root.output-busy;
                         selected => {
-                            root.exclusive-mode-selected(self.current-index);
+                            root.asio-driver-selected(self.current-index);
                         }
                     }
                     GhostButton {
                         y: (parent.height - self.height) / 2;
-                        text: "ASIO 控制面板";
+                        text: "刷新";
+                        enabled: !root.output-busy;
+                        clicked => {
+                            root.refresh-asio-driver();
+                        }
+                    }
+                    GhostButton {
+                        y: (parent.height - self.height) / 2;
+                        text: "控制面板";
                         enabled: !root.output-busy;
                         clicked => {
                             root.open-asio-control-panel();
                         }
+                    }
+                }
+            }
+
+            if root.asio-available && root.asio-channel-pairs.length > 0: SettingRow {
+                title: "ASIO 输出端口";
+                description: "选择该 ASIO 驱动使用的立体声输出通道对（按驱动分别记忆）。";
+                ComboBox {
+                    width: 280px;
+                    y: (parent.height - self.height) / 2;
+                    model: root.asio-channel-pairs;
+                    current-index <=> root.asio-channel-pair-index;
+                    enabled: !root.output-busy && root.asio-channel-pairs.length > 1;
+                    selected => {
+                        root.asio-channel-pair-selected(self.current-index);
                     }
                 }
             }

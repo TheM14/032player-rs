@@ -18,9 +18,9 @@ use std::time::Duration;
 
 use client_core::m032::SpotlightTab;
 use client_core::{
-    AlbumSort, ArtistSort, AudioDevice, Command, Commander, DetailView, LoginFailure, NowPlaying,
-    PlaylistSort, Repeat, Rgba, ServerFeatures, SortOrder, TrackItem, TrackList, TrackSort,
-    TrackSource, Transcode,
+    AlbumSort, ArtistSort, AsioStateView, AudioDevice, Command, Commander, DetailView,
+    LoginFailure, NowPlaying, PlaylistSort, Repeat, Rgba, ServerFeatures, SortOrder, TrackItem,
+    TrackList, TrackSort, TrackSource, Transcode,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -443,6 +443,10 @@ struct Ui {
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
     selected_device: RefCell<Option<String>>,
+    /// CLSIDs behind the ASIO driver combo box (`None` = placeholder).
+    asio_driver_clsids: RefCell<Vec<Option<String>>>,
+    /// `(left, right)` channel indices behind the ASIO output port combo box.
+    asio_channel_pairs: RefCell<Vec<(usize, usize)>>,
     /// Sonos rooms and the output.
     cast: RefCell<cast::CastView>,
     /// Similar Track Radio and Queue Auto-Continue status.
@@ -483,6 +487,57 @@ impl Ui {
         *self.device_names.borrow_mut() = names;
         w.set_audio_devices(ModelRc::new(VecModel::from(labels)));
         w.set_audio_device_index(self.device_index());
+    }
+
+    fn set_asio_state(&self, w: &AppWindow, state: AsioStateView) {
+        let mut clsids: Vec<Option<String>> = Vec::new();
+        let mut labels: Vec<SharedString> = Vec::new();
+        if state.selected_clsid.is_none() {
+            clsids.push(None);
+            labels.push("请选择 ASIO 驱动".into());
+        }
+        for d in &state.drivers {
+            clsids.push(Some(d.clsid.clone()));
+            labels.push(d.name.clone().into());
+        }
+        if let Some(selected) = state.selected_clsid.as_ref()
+            && !state
+                .drivers
+                .iter()
+                .any(|d| d.clsid.eq_ignore_ascii_case(selected))
+        {
+            clsids.push(Some(selected.clone()));
+            labels.push(format!("{selected}（未安装）").into());
+        }
+        let driver_index = state
+            .selected_clsid
+            .as_deref()
+            .and_then(|sel| {
+                clsids
+                    .iter()
+                    .position(|c| c.as_deref().is_some_and(|v| v.eq_ignore_ascii_case(sel)))
+            })
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0);
+        *self.asio_driver_clsids.borrow_mut() = clsids;
+        w.set_asio_drivers(ModelRc::new(VecModel::from(labels)));
+        w.set_asio_driver_index(driver_index);
+        w.set_asio_status(state.status.into());
+
+        let mut pair_coords = Vec::with_capacity(state.channel_pairs.len());
+        let mut pair_labels: Vec<SharedString> = Vec::with_capacity(state.channel_pairs.len());
+        for p in &state.channel_pairs {
+            pair_coords.push((p.left, p.right));
+            pair_labels.push(p.name.clone().into());
+        }
+        let pair_index = pair_coords
+            .iter()
+            .position(|&pair| pair == state.selected_channels)
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(0);
+        *self.asio_channel_pairs.borrow_mut() = pair_coords;
+        w.set_asio_channel_pairs(ModelRc::new(VecModel::from(pair_labels)));
+        w.set_asio_channel_pair_index(pair_index);
     }
 
     fn send(&self, command: Command) {
