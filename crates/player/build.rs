@@ -56,13 +56,17 @@ fn main() {
 }
 
 /// `target/` (or `$CARGO_TARGET_DIR`) and `target/<triple?>/<profile>/`,
-/// derived strictly from absolute `OUT_DIR = <profile dir>/build/<pkg>-<hash>/out`
-/// so relative `CARGO_TARGET_DIR` values never resolve against `crates/player/`.
+/// derived strictly from absolute `OUT_DIR` so relative `CARGO_TARGET_DIR`
+/// values never resolve against `crates/player/`.
+/// Handles both classic (`<profile>/build/<pkg>-<hash>/out`) and fine-grained
+/// (`<profile>/build/<pkg>/<hash>/out`) Cargo layouts.
 fn target_dirs() -> (PathBuf, PathBuf) {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let profile_dir = out
         .ancestors()
-        .nth(3)
+        .find(|p| p.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .or_else(|| out.ancestors().nth(3))
         .expect("OUT_DIR layout")
         .to_path_buf();
     let target_triple = env::var_os("TARGET");
