@@ -1087,6 +1087,7 @@ fn album_artist_regression(
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp".into());
+    std::fs::create_dir_all(&out).unwrap();
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/app/ui/app.slint");
 
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
