@@ -139,6 +139,23 @@ impl HttpMediaSource {
         })?;
 
         let status = resp.status();
+        if offset > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            if self.total_len.is_none()
+                && let Some(cr) = resp
+                    .headers()
+                    .get(CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+            {
+                self.total_len = parse_content_range_total(cr);
+            }
+            self.response = None;
+            if reset_buf || offset != self.buf_end() {
+                self.buf.clear();
+                self.buf_start = offset;
+            }
+            self.eof = true;
+            return Ok(offset);
+        }
         if !status.is_success() {
             let kind = if status.is_client_error() {
                 io::ErrorKind::InvalidInput
@@ -241,7 +258,11 @@ impl HttpMediaSource {
                 }
                 let resume_at = self.buf_end();
                 match self.connect_at(resume_at, false) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if self.eof {
+                            return Ok(0);
+                        }
+                    }
                     Err(e)
                         if matches!(
                             e.kind(),
@@ -434,7 +455,7 @@ impl Seek for HttpMediaSource {
 
 impl MediaSource for HttpMediaSource {
     fn is_seekable(&self) -> bool {
-        self.accept_ranges || self.total_len.is_some()
+        self.accept_ranges
     }
 
     fn byte_len(&self) -> Option<u64> {
@@ -694,5 +715,69 @@ mod tests {
     fn parses_content_range_header() {
         assert_eq!(parse_content_range_total("bytes 0-99/12345"), Some(12345));
         assert_eq!(parse_content_range_total("bytes 0-99/*"), None);
+    }
+
+    #[test]
+    fn non_range_stream_with_content_length_is_not_seekable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = read_http_request(&mut s);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\n0123456789abcdef",
+                );
+            }
+        });
+
+        let rt = test_runtime();
+        let src = HttpMediaSource::open(
+            test_client(),
+            format!("http://{addr}/no-ranges.flac"),
+            rt.handle().clone(),
+            CancelToken::new(),
+        )
+        .unwrap();
+        assert!(!src.is_seekable());
+        assert_eq!(src.byte_len(), Some(16));
+        drop(server);
+    }
+
+    #[test]
+    fn seek_to_eof_with_416_returns_clean_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            // Request 1: Accept-Ranges: bytes without Content-Length (unknown total length).
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = read_http_request(&mut s);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nABCD\r\n0\r\n\r\n",
+                );
+            }
+            // Request 2: Range starting at exact EOF returns 416.
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = read_http_request(&mut s);
+                let _ = s.write_all(
+                    b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */4\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        let rt = test_runtime();
+        let mut src = HttpMediaSource::open(
+            test_client(),
+            format!("http://{addr}/chunked.flac"),
+            rt.handle().clone(),
+            CancelToken::new(),
+        )
+        .unwrap();
+        assert!(src.is_seekable());
+        // Seek far past the small-forward-skip threshold so `read` issues a Range request.
+        src.seek(SeekFrom::Start(512 * 1024)).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(src.read(&mut buf).unwrap(), 0);
+        assert_eq!(src.byte_len(), Some(4));
+        drop(server);
     }
 }

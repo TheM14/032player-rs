@@ -56,7 +56,8 @@ fn main() {
 }
 
 /// `target/` (or `$CARGO_TARGET_DIR`) and `target/<triple?>/<profile>/`,
-/// derived from `OUT_DIR = <profile dir>/build/<pkg>-<hash>/out`.
+/// derived strictly from absolute `OUT_DIR = <profile dir>/build/<pkg>-<hash>/out`
+/// so relative `CARGO_TARGET_DIR` values never resolve against `crates/player/`.
 fn target_dirs() -> (PathBuf, PathBuf) {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     let profile_dir = out
@@ -64,15 +65,20 @@ fn target_dirs() -> (PathBuf, PathBuf) {
         .nth(3)
         .expect("OUT_DIR layout")
         .to_path_buf();
-    let target_dir = env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            profile_dir
-                .ancestors()
-                .find(|p| p.file_name().is_some_and(|n| n == "target"))
-                .unwrap_or(&profile_dir)
-                .to_path_buf()
-        });
+    let target_triple = env::var_os("TARGET");
+    let target_dir = match profile_dir.parent() {
+        Some(parent) => {
+            if target_triple
+                .as_deref()
+                .is_some_and(|t| parent.file_name() == Some(t))
+            {
+                parent.parent().unwrap_or(parent).to_path_buf()
+            } else {
+                parent.to_path_buf()
+            }
+        }
+        None => profile_dir.clone(),
+    };
     (target_dir, profile_dir)
 }
 
@@ -111,8 +117,12 @@ fn fetch() -> Result<PathBuf, String> {
         ));
     }
 
-    let _ = fs::remove_dir_all(&dir);
-    let staging = dir.with_extension("tmp");
+    let parent = dir.parent().ok_or("bad libmpv target directory")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let staging = parent.join(format!("{name}.tmp-{}-{nonce}", std::process::id()));
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let archive = staging.join("mpv-dev.7z");
@@ -126,9 +136,17 @@ fn fetch() -> Result<PathBuf, String> {
     // GNU ld finds libmpv.dll.a; MSVC link.exe reads the same COFF import
     // archive under the name it looks for.
     fs::copy(&import, root.join("mpv.lib")).map_err(|e| e.to_string())?;
-    fs::rename(&root, &dir).map_err(|e| e.to_string())?;
+    fs::write(root.join(".sha256"), &sha256).map_err(|e| e.to_string())?;
+    if let Err(rename_err) = fs::rename(&root, &dir) {
+        // Another concurrent build (e.g. rust-analyzer) may have published `dir` first.
+        if !(fs::read_to_string(&marker).is_ok_and(|s| s.trim() == sha256)
+            && dir.join(DLL).exists())
+        {
+            let _ = fs::remove_dir_all(&dir);
+            fs::rename(&root, &dir).map_err(|e| format!("{rename_err}; retry: {e}"))?;
+        }
+    }
     let _ = fs::remove_dir_all(&staging);
-    fs::write(&marker, &sha256).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 

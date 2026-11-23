@@ -316,14 +316,9 @@ impl Player {
         Ok(self.mpv.set_property("http-proxy", proxy.unwrap_or(""))?)
     }
 
-    /// Drops every playlist entry after the current one.
+    /// Drops every playlist entry except the currently playing one.
     pub fn clear_upcoming(&self) -> Result<()> {
-        let pos: i64 = self.mpv.get_property("playlist-pos")?;
-        let count: i64 = self.mpv.get_property("playlist-count")?;
-        for index in (pos + 1..count).rev() {
-            self.mpv.command("playlist-remove", &[&index.to_string()])?;
-        }
-        Ok(())
+        Ok(self.mpv.command("playlist-clear", &[])?)
     }
 
     pub fn next(&self) -> Result<()> {

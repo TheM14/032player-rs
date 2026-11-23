@@ -342,6 +342,7 @@ struct PrefetchedTrack {
     url: String,
     decoder: TrackDecoder,
     predecoded: Vec<f32>,
+    pushed_at_boundary: usize,
     eof_in_predecode: bool,
     sample_rate: u32,
     duration_secs: Option<f64>,
@@ -402,7 +403,9 @@ fn open_and_predecode(
     let sample_rate = decoder.sample_rate();
     let duration_secs = decoder.duration_secs();
 
-    let target_samples = usize::try_from(sample_rate).unwrap_or(44_100) * 2; // 1 second
+    // Target up to 1 second of stereo PCM, capped to half the ring buffer so even
+    // ultra-high sample rates (e.g. 768 kHz) fit cleanly for gapless handoff.
+    let target_samples = (usize::try_from(sample_rate).unwrap_or(44_100) * 2).min(RING_SAMPLES / 2);
     let mut predecoded = Vec::with_capacity(target_samples);
     let mut pkt = Vec::new();
     let mut eof_in_predecode = false;
@@ -421,6 +424,7 @@ fn open_and_predecode(
         url: url.to_owned(),
         decoder,
         predecoded,
+        pushed_at_boundary: 0,
         eof_in_predecode,
         sample_rate,
         duration_secs,
@@ -819,7 +823,8 @@ fn worker_loop<S: AudioSink>(
                             }
                         }
                         Err(e) => {
-                            shared.seeking.store(false, Ordering::Release);
+                            // Release exclusive ASIO ownership when idle after load failure.
+                            stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
                             if buffering_reported {
                                 buffering_reported = false;
                                 emit(PlayerEvent::Buffering(false));
@@ -870,9 +875,13 @@ fn worker_loop<S: AudioSink>(
             cur.sample_rate = next_track.sample_rate;
             cur.duration_secs = next_track.duration_secs;
             cur.seek_offset_secs = 0.0;
-            cur.pushed_frames = next_track.predecoded.len() as u64 / 2;
+            cur.pushed_frames = (next_track.pushed_at_boundary / 2) as u64;
             cur.eof_decoded = next_track.eof_in_predecode;
-            cur.pending_pcm.clear();
+            if next_track.pushed_at_boundary < next_track.predecoded.len() {
+                cur.pending_pcm = next_track.predecoded[next_track.pushed_at_boundary..].to_vec();
+            } else {
+                cur.pending_pcm.clear();
+            }
             cur.pending_offset = 0;
 
             emit(PlayerEvent::EndFile {
@@ -912,8 +921,23 @@ fn worker_loop<S: AudioSink>(
                         }
                         Err(e) => {
                             tracing::warn!("ASIO decode error: {e}");
-                            track.eof_decoded = true;
-                            break;
+                            clear_upcoming(
+                                &mut upcoming_url,
+                                &mut prefetch,
+                                &mut prefetched_ready,
+                                &mut prefetch_error,
+                            );
+                            active = None;
+                            stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
+                            if buffering_reported {
+                                buffering_reported = false;
+                                emit(PlayerEvent::Buffering(false));
+                            }
+                            emit(PlayerEvent::EndFile {
+                                reason: EndReason::Error,
+                                error: Some(e.to_string()),
+                            });
+                            continue 'worker;
                         }
                     }
                 }
@@ -925,16 +949,19 @@ fn worker_loop<S: AudioSink>(
                     && !shared.drain_eof.load(Ordering::Acquire)
                     && prefetch.is_none()
                 {
-                    if let Some(next) = prefetched_ready.as_ref()
+                    if let Some(next) = prefetched_ready.as_mut()
                         && next.sample_rate == track.sample_rate
                     {
-                        if prod.len() <= 16_384 && prod.available_write() >= next.predecoded.len() {
-                            let boundary = shared.track_start_consumed.load(Ordering::Acquire)
-                                + track.pushed_frames;
-                            shared
-                                .next_boundary_frame
-                                .store(boundary, Ordering::Release);
-                            let _ = prod.push(&next.predecoded);
+                        if prod.len() <= 16_384 {
+                            let to_push = next.predecoded.len().min(prod.available_write()) & !1;
+                            if to_push > 0 || next.predecoded.is_empty() {
+                                let boundary = shared.track_start_consumed.load(Ordering::Acquire)
+                                    + track.pushed_frames;
+                                shared
+                                    .next_boundary_frame
+                                    .store(boundary, Ordering::Release);
+                                next.pushed_at_boundary = prod.push(&next.predecoded[..to_push]);
+                            }
                         }
                     } else {
                         shared.drain_eof.store(true, Ordering::Release);
@@ -1025,10 +1052,14 @@ fn worker_loop<S: AudioSink>(
                 } else if let Some(err) = prefetch_error.take()
                     && upcoming_url.take().is_some()
                 {
+                    stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
                     emit(PlayerEvent::EndFile {
                         reason: EndReason::Error,
                         error: Some(err),
                     });
+                } else {
+                    // Queue finished with no next track: release exclusive ASIO ownership.
+                    stop_sink_idle(&mut sink, &shared, &mut producer, &mut sink_rate);
                 }
             }
 
@@ -1039,7 +1070,8 @@ fn worker_loop<S: AudioSink>(
                     buffering_reported = true;
                     emit(PlayerEvent::Buffering(true));
                 } else if buffering_reported && !awaiting_prefetch {
-                    let min_resume = usize::try_from(track.sample_rate).unwrap_or(44_100) / 2; // 250ms stereo samples
+                    let min_resume = (usize::try_from(track.sample_rate).unwrap_or(44_100) / 2)
+                        .min(RING_SAMPLES / 2); // 250ms stereo samples, capped to ring
                     let buffered = producer.as_ref().map_or(0, SpscProducer::len);
                     if buffered >= min_resume || track.eof_decoded {
                         buffering_reported = false;
@@ -1090,6 +1122,28 @@ fn wait_ring_reset(shared: &SharedState, epoch: u64, timeout: Duration) -> bool 
         }
         thread::sleep(Duration::from_millis(1));
     }
+}
+
+fn stop_sink_idle<S: AudioSink>(
+    sink: &mut S,
+    shared: &Arc<SharedState>,
+    producer: &mut Option<SpscProducer>,
+    sink_rate: &mut Option<u32>,
+) {
+    shared.seeking.store(true, Ordering::Release);
+    sink.stop();
+    *producer = None;
+    *sink_rate = None;
+    shared.reset_requested.store(0, Ordering::Release);
+    shared.reset_acked.store(0, Ordering::Release);
+    shared.drain_eof.store(false, Ordering::Release);
+    shared.drained_eof_frame.store(u64::MAX, Ordering::Release);
+    shared
+        .next_boundary_frame
+        .store(u64::MAX, Ordering::Release);
+    shared.boundary_crossed.store(false, Ordering::Release);
+    shared.underrun.store(false, Ordering::Release);
+    shared.seeking.store(false, Ordering::Release);
 }
 
 fn start_fresh_sink<S: AudioSink>(
@@ -1454,5 +1508,130 @@ mod tests {
         assert_eq!(stopped.len(), 2);
         assert!(matches!(stopped[0], Cmd::OpenControlPanel(_)));
         assert!(matches!(stopped[1], Cmd::Stop));
+    }
+
+    #[test]
+    fn queue_end_releases_sink_and_high_rate_gapless_does_not_deadlock() {
+        // Use 768 kHz WAV tracks (1 second = 1,536,000 stereo samples > RING_SAMPLES)
+        // to prove gapless handoff works without deadlocking and releases the sink on EOF.
+        let wav_a = make_wav(768_000, 16_384, 10_000);
+        let wav_b = make_wav(768_000, 16_384, 5_000);
+        let files = HashMap::from([("/a.wav", wav_a), ("/b.wav", wav_b)]);
+        let (_release, wait) = mpsc::channel();
+        let (base, shutdown) = spawn_http_files(files, wait);
+
+        let log = Arc::new(FakeSinkLog::default());
+        let sink = FakeSink(log.clone());
+        let (tx, rx) = mpsc::channel();
+        let player = AsioPlayer::new(sink, 100.0, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+
+        let url_a = format!("{base}/a.wav");
+        let url_b = format!("{base}/b.wav");
+        let wait_for = |pred: &dyn Fn(&PlayerEvent) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "timed out waiting for event");
+                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(ev) if pred(&ev) => return ev,
+                    Ok(_) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => log.render_buffer(),
+                    Err(e) => panic!("channel closed: {e}"),
+                }
+            }
+        };
+
+        player.load(&url_a).unwrap();
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_a));
+        player.append(&url_b).unwrap();
+        wait_for(&|e| {
+            matches!(
+                e,
+                PlayerEvent::EndFile {
+                    reason: EndReason::Eof,
+                    ..
+                }
+            )
+        });
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_b));
+        wait_for(&|e| {
+            matches!(
+                e,
+                PlayerEvent::EndFile {
+                    reason: EndReason::Eof,
+                    ..
+                }
+            )
+        });
+        // Wait briefly for worker loop to stop sink after queue end.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while log.render.lock().unwrap().is_some() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            log.render.lock().unwrap().is_none(),
+            "sink must be stopped when queue finishes idle"
+        );
+        shutdown.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn mid_track_stream_truncation_emits_error_and_stops_sink() {
+        // Advertise a huge WAV file (200k frames) without Accept-Ranges and close after
+        // ~1.5s of audio so open_and_predecode succeeds (1s) and mid-playback decode fails.
+        let full = make_wav(44_100, 200_000, 12_000);
+        let truncated_len = 44 + 60_000 * 4;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    full.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&full[..truncated_len]);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let log = Arc::new(FakeSinkLog::default());
+        let sink = FakeSink(log.clone());
+        let (tx, rx) = mpsc::channel();
+        let player = AsioPlayer::new(sink, 100.0, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+
+        let url = format!("http://{addr}/trunc.wav");
+        player.load(&url).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut saw_error = false;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(5)) {
+                Ok(PlayerEvent::EndFile { reason, .. }) => {
+                    assert_eq!(reason, EndReason::Error);
+                    saw_error = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => log.render_buffer(),
+                Err(e) => panic!("channel closed: {e}"),
+            }
+        }
+        assert!(
+            saw_error,
+            "expected EndReason::Error on mid-track truncation"
+        );
+        assert!(
+            log.render.lock().unwrap().is_none(),
+            "sink must be stopped after decode error"
+        );
+        let _ = srv.join();
     }
 }
