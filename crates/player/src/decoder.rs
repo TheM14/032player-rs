@@ -72,7 +72,12 @@ impl TrackDecoder {
                 },
                 &MetadataOptions::default(),
             )
-            .map_err(|e| DecodeError::Other(e.to_string()))?;
+            .map_err(|e| match e {
+                SymphoniaError::IoError(io_e) if io_e.kind() == io::ErrorKind::Interrupted => {
+                    DecodeError::Cancelled
+                }
+                other => DecodeError::Other(other.to_string()),
+            })?;
 
         let format = probed.format;
         let track = format
@@ -187,6 +192,9 @@ impl TrackDecoder {
             },
         ) {
             Ok(s) => s,
+            Err(SymphoniaError::IoError(io_e)) if io_e.kind() == io::ErrorKind::Interrupted => {
+                return Err(DecodeError::Cancelled);
+            }
             Err(_) => self
                 .format
                 .seek(
@@ -196,7 +204,12 @@ impl TrackDecoder {
                         track_id: Some(self.track_id),
                     },
                 )
-                .map_err(|e| DecodeError::Other(e.to_string()))?,
+                .map_err(|e| match e {
+                    SymphoniaError::IoError(io_e) if io_e.kind() == io::ErrorKind::Interrupted => {
+                        DecodeError::Cancelled
+                    }
+                    other => DecodeError::Other(other.to_string()),
+                })?,
         };
         self.decoder.reset();
         let actual = if let Some(tb) = self.time_base {

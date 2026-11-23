@@ -3,6 +3,7 @@
 //! Matches `Player` (`libmpv`) semantics (`PlayerEvent`, gapless `append`,
 //! software volume + fade gain, HTTP proxy, reconnect, seek, buffering).
 
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use asio::{SpscConsumer, SpscProducer, spsc_ring};
 
 use crate::decoder::{DecodeError, TrackDecoder};
-use crate::http_source::{HttpMediaSource, build_http_client};
+use crate::http_source::{CancelToken, HttpMediaSource, build_http_client};
 use crate::{EndReason, PlayerError, PlayerEvent, Result};
 
 /// Ring capacity in stereo `f32` samples (524,288 frames ≈ 11.8 s @ 44.1 kHz).
@@ -163,7 +164,7 @@ impl SharedState {
 }
 
 enum Cmd {
-    Load(String),
+    Load(String, u64),
     Append(String),
     ClearUpcoming,
     Stop,
@@ -173,11 +174,41 @@ enum Cmd {
     Shutdown,
 }
 
+fn coalesce_commands(cmds: Vec<Cmd>) -> Vec<Cmd> {
+    if cmds.iter().any(|c| matches!(c, Cmd::Shutdown)) {
+        return vec![Cmd::Shutdown];
+    }
+    let mut out = Vec::with_capacity(cmds.len());
+    for cmd in cmds {
+        match cmd {
+            Cmd::Load(_, _) | Cmd::Stop => {
+                out.retain(|prev| matches!(prev, Cmd::OpenControlPanel(_)));
+                out.push(cmd);
+            }
+            Cmd::Append(_) | Cmd::ClearUpcoming => {
+                out.retain(|prev| !matches!(prev, Cmd::Append(_) | Cmd::ClearUpcoming));
+                out.push(cmd);
+            }
+            Cmd::Seek(_) => {
+                out.retain(|prev| !matches!(prev, Cmd::Seek(_)));
+                out.push(cmd);
+            }
+            Cmd::SetPaused(_) => {
+                out.retain(|prev| !matches!(prev, Cmd::SetPaused(_)));
+                out.push(cmd);
+            }
+            Cmd::OpenControlPanel(_) | Cmd::Shutdown => out.push(cmd),
+        }
+    }
+    out
+}
+
 pub struct AsioPlayer {
     cmd_tx: mpsc::Sender<Cmd>,
     shared: Arc<SharedState>,
     proxy: Arc<Mutex<Option<String>>>,
-    cancel_load: Arc<Mutex<Arc<AtomicBool>>>,
+    cancel_load: Arc<Mutex<CancelToken>>,
+    load_gen: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -189,12 +220,14 @@ impl AsioPlayer {
     ) -> Result<Self> {
         let shared = Arc::new(SharedState::new(volume));
         let proxy = Arc::new(Mutex::new(None));
-        let cancel_load = Arc::new(Mutex::new(Arc::new(AtomicBool::new(false))));
+        let cancel_load = Arc::new(Mutex::new(CancelToken::new()));
+        let load_gen = Arc::new(AtomicU64::new(0));
         let (cmd_tx, cmd_rx) = mpsc::channel();
 
         let shared_w = shared.clone();
         let proxy_w = proxy.clone();
         let cancel_w = cancel_load.clone();
+        let gen_w = load_gen.clone();
         let thread = thread::Builder::new()
             .name("asio-player".into())
             .spawn(move || {
@@ -203,6 +236,7 @@ impl AsioPlayer {
                     shared_w,
                     proxy_w,
                     cancel_w,
+                    gen_w,
                     cmd_rx,
                     Box::new(on_event),
                 );
@@ -214,14 +248,16 @@ impl AsioPlayer {
             shared,
             proxy,
             cancel_load,
+            load_gen,
             thread: Some(thread),
         })
     }
 
     pub fn load(&self, url: &str) -> Result<()> {
+        let generation = self.load_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.abort_active_io();
         self.cmd_tx
-            .send(Cmd::Load(url.to_owned()))
+            .send(Cmd::Load(url.to_owned(), generation))
             .map_err(|_| PlayerError::Mpv("ASIO worker stopped".into()))
     }
 
@@ -238,6 +274,7 @@ impl AsioPlayer {
     }
 
     pub fn stop(&self) -> Result<()> {
+        self.load_gen.fetch_add(1, Ordering::AcqRel);
         self.abort_active_io();
         self.cmd_tx
             .send(Cmd::Stop)
@@ -286,15 +323,13 @@ impl AsioPlayer {
     }
 
     fn abort_active_io(&self) {
-        self.cancel_load
-            .lock()
-            .expect("cancel lock")
-            .store(true, Ordering::Release);
+        self.cancel_load.lock().expect("cancel lock").cancel();
     }
 }
 
 impl Drop for AsioPlayer {
     fn drop(&mut self) {
+        self.load_gen.fetch_add(1, Ordering::AcqRel);
         self.abort_active_io();
         let _ = self.cmd_tx.send(Cmd::Shutdown);
         if let Some(t) = self.thread.take() {
@@ -313,7 +348,7 @@ struct PrefetchedTrack {
 }
 
 struct PrefetchHandle {
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
     rx: mpsc::Receiver<std::result::Result<PrefetchedTrack, DecodeError>>,
 }
 
@@ -334,7 +369,7 @@ fn spawn_prefetch(
     proxy: Option<String>,
     rt: tokio::runtime::Handle,
 ) -> PrefetchHandle {
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = CancelToken::new();
     let cancel_w = cancel.clone();
     let (tx, rx) = mpsc::sync_channel(1);
     thread::Builder::new()
@@ -351,12 +386,17 @@ fn open_and_predecode(
     url: &str,
     proxy: Option<&str>,
     rt: tokio::runtime::Handle,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 ) -> std::result::Result<PrefetchedTrack, DecodeError> {
     let client =
         build_http_client(proxy).map_err(|e| DecodeError::Other(e.without_url().to_string()))?;
-    let source = HttpMediaSource::open(client, url, rt, cancel)
-        .map_err(|e| DecodeError::Other(e.to_string()))?;
+    let source = HttpMediaSource::open(client, url, rt, cancel).map_err(|e| {
+        if e.kind() == io::ErrorKind::Interrupted {
+            DecodeError::Cancelled
+        } else {
+            DecodeError::Other(e.to_string())
+        }
+    })?;
     let mime = source.content_type().map(ToOwned::to_owned);
     let mut decoder = TrackDecoder::open(Box::new(source), Some(url), mime.as_deref())?;
     let sample_rate = decoder.sample_rate();
@@ -452,7 +492,8 @@ fn worker_loop<S: AudioSink>(
     mut sink: S,
     shared: Arc<SharedState>,
     proxy: Arc<Mutex<Option<String>>>,
-    cancel_load: Arc<Mutex<Arc<AtomicBool>>>,
+    cancel_load: Arc<Mutex<CancelToken>>,
+    load_gen: Arc<AtomicU64>,
     cmd_rx: mpsc::Receiver<Cmd>,
     mut emit: Box<dyn FnMut(PlayerEvent) + Send + 'static>,
 ) {
@@ -488,14 +529,18 @@ fn worker_loop<S: AudioSink>(
                           prefetch_error: &mut Option<String>| {
         *upcoming_url = None;
         if let Some(p) = prefetch.take() {
-            p.cancel.store(true, Ordering::Release);
+            p.cancel.cancel();
         }
         *prefetched_ready = None;
         *prefetch_error = None;
     };
 
-    loop {
+    'worker: loop {
+        let mut raw_cmds = Vec::new();
         while let Ok(cmd) = cmd_rx.try_recv() {
+            raw_cmds.push(cmd);
+        }
+        for cmd in coalesce_commands(raw_cmds) {
             match cmd {
                 Cmd::Shutdown => {
                     clear_upcoming(
@@ -617,6 +662,7 @@ fn worker_loop<S: AudioSink>(
                             }
                             Err(DecodeError::Cancelled) => {
                                 shared.seeking.store(false, Ordering::Release);
+                                continue 'worker;
                             }
                             Err(e) => {
                                 shared.seeking.store(false, Ordering::Release);
@@ -625,7 +671,10 @@ fn worker_loop<S: AudioSink>(
                         }
                     }
                 }
-                Cmd::Load(url) => {
+                Cmd::Load(url, generation) => {
+                    if load_gen.load(Ordering::Acquire) != generation {
+                        continue 'worker;
+                    }
                     clear_upcoming(
                         &mut upcoming_url,
                         &mut prefetch,
@@ -650,14 +699,27 @@ fn worker_loop<S: AudioSink>(
                         });
                     }
 
-                    let cancel = Arc::new(AtomicBool::new(false));
+                    let cancel = CancelToken::new();
                     *cancel_load.lock().expect("cancel lock") = cancel.clone();
+                    if load_gen.load(Ordering::Acquire) != generation {
+                        cancel.cancel();
+                        shared.seeking.store(false, Ordering::Release);
+                        continue 'worker;
+                    }
                     let p = proxy.lock().expect("proxy lock").clone();
                     emit(PlayerEvent::Buffering(true));
                     buffering_reported = true;
 
                     match open_and_predecode(&url, p.as_deref(), rt.handle().clone(), cancel) {
                         Ok(opened) => {
+                            if load_gen.load(Ordering::Acquire) != generation {
+                                shared.seeking.store(false, Ordering::Release);
+                                if buffering_reported {
+                                    buffering_reported = false;
+                                    emit(PlayerEvent::Buffering(false));
+                                }
+                                continue 'worker;
+                            }
                             let target_rate = opened.sample_rate;
                             let sink_res = match sink_rate {
                                 None => {
@@ -846,8 +908,7 @@ fn worker_loop<S: AudioSink>(
                             break;
                         }
                         Err(DecodeError::Cancelled) => {
-                            track.eof_decoded = true;
-                            break;
+                            continue 'worker;
                         }
                         Err(e) => {
                             tracing::warn!("ASIO decode error: {e}");
@@ -1070,7 +1131,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{AsioPlayer, AudioSink, RenderFn};
+    use super::{AsioPlayer, AudioSink, Cmd, RenderFn, coalesce_commands};
     use crate::{EndReason, PlayerEvent, Result};
 
     struct FakeSink(Arc<FakeSinkLog>);
@@ -1360,5 +1421,38 @@ mod tests {
 
         player.stop().unwrap();
         shutdown.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn coalesce_commands_drops_superseded_loads_and_preserves_control_panel() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let cmds = vec![
+            Cmd::Load("http://example/1.flac".into(), 1),
+            Cmd::Seek(10.0),
+            Cmd::Append("http://example/next.flac".into()),
+            Cmd::SetPaused(true),
+            Cmd::OpenControlPanel(tx),
+            Cmd::Load("http://example/2.flac".into(), 2),
+            Cmd::Load("http://example/3.flac".into(), 3),
+            Cmd::Seek(20.0),
+            Cmd::Seek(30.0),
+            Cmd::SetPaused(false),
+        ];
+        let out = coalesce_commands(cmds);
+        assert_eq!(out.len(), 4);
+        assert!(matches!(out[0], Cmd::OpenControlPanel(_)));
+        assert!(matches!(&out[1], Cmd::Load(u, 3) if u == "http://example/3.flac"));
+        assert!(matches!(out[2], Cmd::Seek(s) if (s - 30.0).abs() < f64::EPSILON));
+        assert!(matches!(out[3], Cmd::SetPaused(false)));
+
+        let (tx2, _rx2) = mpsc::sync_channel(1);
+        let stopped = coalesce_commands(vec![
+            Cmd::Load("http://example/1.flac".into(), 1),
+            Cmd::OpenControlPanel(tx2),
+            Cmd::Stop,
+        ]);
+        assert_eq!(stopped.len(), 2);
+        assert!(matches!(stopped[0], Cmd::OpenControlPanel(_)));
+        assert!(matches!(stopped[1], Cmd::Stop));
     }
 }
