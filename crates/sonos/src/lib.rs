@@ -58,6 +58,7 @@ impl Error {
 
 /// HTTP client for speakers: LAN only, so never through the system proxy.
 pub fn http_client() -> reqwest::Client {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(4))

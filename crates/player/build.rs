@@ -13,12 +13,15 @@
 
 use std::env;
 use std::fs;
+#[cfg(windows)]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use sha2::{Digest, Sha256};
 
 const BUILD: &str = "20261018-git-01e2533f31";
+#[cfg(windows)]
 const BASE_URL: &str = "https://sourceforge.net/projects/mpv-player-windows/files/libmpv";
 
 /// (target arch, archive arch, sha256)
@@ -49,10 +52,41 @@ fn main() {
 
     let lib_dir = match env::var_os("MPV_LIB_DIR") {
         Some(dir) => PathBuf::from(dir),
-        None => fetch().unwrap_or_else(|e| panic!("libmpv download failed: {e}")),
+        None => {
+            #[cfg(windows)]
+            {
+                fetch().unwrap_or_else(|e| panic!("libmpv download failed: {e}"))
+            }
+            #[cfg(not(windows))]
+            {
+                let Some(dir) = existing_libmpv_dir() else {
+                    println!(
+                        "cargo:warning=libmpv auto-download runs on Windows hosts; set MPV_LIB_DIR when cross-linking"
+                    );
+                    return;
+                };
+                dir
+            }
+        }
     };
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     copy_dll(&lib_dir);
+}
+
+#[cfg(not(windows))]
+fn existing_libmpv_dir() -> Option<PathBuf> {
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").ok()?;
+    let (_, archive_arch, sha) = ARCHIVES.iter().find(|(a, _, _)| *a == arch)?;
+    let (target_dir, _) = target_dirs();
+    let dir = target_dir
+        .join("libmpv")
+        .join(format!("{archive_arch}-{BUILD}"));
+    let marker = dir.join(".sha256");
+    if fs::read_to_string(&marker).is_ok_and(|s| s.trim() == *sha) && dir.join(DLL).exists() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 /// `target/` (or `$CARGO_TARGET_DIR`) and `target/<triple?>/<profile>/`,
@@ -86,6 +120,7 @@ fn target_dirs() -> (PathBuf, PathBuf) {
     (target_dir, profile_dir)
 }
 
+#[cfg(windows)]
 fn fetch() -> Result<PathBuf, String> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let (url, sha256, name) = match (env::var("MPV_DEV_URL"), env::var("MPV_DEV_SHA256")) {
@@ -154,6 +189,7 @@ fn fetch() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+#[cfg(windows)]
 fn download(url: &str) -> Result<Vec<u8>, String> {
     let mut response = ureq::get(url).call().map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
@@ -167,6 +203,7 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+#[cfg(windows)]
 fn find(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
@@ -209,6 +246,7 @@ fn copy_dll(lib_dir: &Path) {
     }
 }
 
+#[cfg(windows)]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -21,3 +21,8 @@ pub use reqwest::Method;
 pub use types::*;
 pub use update::{GITHUB_API, RELEASE_REPO, Release, is_newer, latest_release};
 pub use url::Url;
+
+/// Installs the `ring` crypto provider for `reqwest` (`rustls-no-provider`).
+pub(crate) fn ensure_tls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}

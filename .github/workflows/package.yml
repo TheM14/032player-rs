@@ -12,20 +12,28 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Static CRT: runs without the VC++ redistributable.
-  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
 
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # Static CRT: runs without the VC++ redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Exclude build paths from Windows Defender
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$env:USERPROFILE\.cargo", "$env:TEMP" -ErrorAction SilentlyContinue
+          } catch {}
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: package
+          shared-key: windows-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Cache libmpv
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:

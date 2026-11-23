@@ -243,6 +243,7 @@ impl Client {
         api_token: impl Into<String>,
         media_token: impl Into<String>,
     ) -> Result<Self, ApiError> {
+        crate::ensure_tls_provider();
         let http = reqwest::Client::builder()
             .user_agent(concat!("032player-rs/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)

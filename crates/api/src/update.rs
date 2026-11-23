@@ -29,6 +29,7 @@ struct LatestRelease {
 /// release that is neither a draft nor a prerelease (the rolling `preview`
 /// package is a prerelease).
 pub async fn latest_release(api_root: &str, repo: &str) -> Result<Release, ApiError> {
+    crate::ensure_tls_provider();
     let http = reqwest::Client::builder()
         .user_agent(concat!("032player-rs/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(15))

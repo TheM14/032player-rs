@@ -50,6 +50,7 @@ impl CancelToken {
 }
 
 pub fn build_http_client(proxy: Option<&str>) -> Result<reqwest::Client, reqwest::Error> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut builder = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
@@ -500,6 +501,7 @@ mod tests {
     }
 
     fn test_client() -> reqwest::Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::builder().no_proxy().build().unwrap()
     }
 
