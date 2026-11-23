@@ -21,11 +21,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: clippy, rustfmt
+      - name: Restore system libraries cache
+        id: apt-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/apt-debs
+          key: apt-ubuntu-24.04-${{ env.ImageVersion }}-libmpv-fontconfig-v1
       - name: System libraries
         run: |
-          sudo find /etc/apt/sources.list.d -type f ! -name '*ubuntu*' -delete
-          sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20
-          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=20 libmpv-dev libfontconfig1-dev pkg-config
+          if [ "${{ steps.apt-cache.outputs.cache-hit }}" = "true" ] && compgen -G "/tmp/apt-debs/*.deb" >/dev/null; then
+            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l dpkg --force-unsafe-io -i /tmp/apt-debs/*.deb || {
+              sudo find /etc/apt/sources.list.d -type f ! -name '*ubuntu*' -delete
+              sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20
+              sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y -f --no-install-recommends \
+                -o DPkg::Options::="--force-unsafe-io" \
+                -o Acquire::Retries=3 -o Acquire::http::Timeout=20
+            }
+          else
+            mkdir -p /tmp/apt-debs
+            sudo find /etc/apt/sources.list.d -type f ! -name '*ubuntu*' -delete
+            sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20
+            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends \
+              -o Dir::Cache::archives=/tmp/apt-debs \
+              -o APT::Keep-Downloaded-Packages=true \
+              -o DPkg::Options::="--force-unsafe-io" \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+              libmpv-dev libfontconfig1-dev pkg-config
+            sudo rm -rf /tmp/apt-debs/partial /tmp/apt-debs/lock
+            sudo chown -R "$(id -u):$(id -g)" /tmp/apt-debs
+          fi
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux
@@ -79,8 +103,8 @@ jobs:
           shared-key: windows
           # Tag-scoped caches cannot be read by subsequent tags; reuse main's warm cache.
           save-if: false
-      - name: Cache libmpv
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore libmpv cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/libmpv
           key: libmpv-${{ hashFiles('crates/player/build.rs') }}

@@ -70,5 +70,12 @@ debug = "line-tables-only"
 # Skip debuginfo for third-party dependencies in dev/test builds.
 debug = false
 
+[profile.dev.build-override]
+# Optimize slint-build (14k+ lines of .slint) and proc-macros; cached across builds.
+opt-level = 2
+
 [profile.release]
 strip = "debuginfo"
+
+[profile.release.build-override]
+opt-level = 2

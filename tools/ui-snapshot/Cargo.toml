@@ -17,3 +17,7 @@ ttf-parser = "0.25"
 
 [profile.dev]
 debug = false
+
+[profile.dev.package."*"]
+# Optimize Slint software rasterizer and PNG encoder while keeping ui-snapshot fast to rebuild.
+opt-level = 2
