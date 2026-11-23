@@ -2,6 +2,8 @@
 //! playback history) and their labels, mapped from the API types. Labels
 //! follow `features/home/music032/lib/format.ts` and the zh-Hans strings.
 
+use std::collections::{HashMap, HashSet};
+
 use api::{
     AlbumWork, AlbumWorkLink, DailyMix, DailyMixDetail, Home, HomeAlbumPane, HomeSeriesPane,
     HomeSongRow, HomeWorkCard, PlaybackRecord, RoleCount, RotationPage, Series, SeriesAlbumEntry,
@@ -199,7 +201,11 @@ pub fn album_works(
     links: &[AlbumWorkLink],
     per_work: &[(Option<WorkDetail>, Vec<AlbumWork>, Vec<WorkTrack>)],
 ) -> Vec<AlbumWorkEntry> {
-    let order = |id: i64| album_tracks.iter().position(|t| t.id == id).unwrap_or(0);
+    let track_order: HashMap<i64, usize> = album_tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id, i))
+        .collect();
     links
         .iter()
         .zip(per_work)
@@ -209,27 +215,30 @@ pub fn album_works(
                 .find(|a| a.album_id == album_id)
                 .map(|a| {
                     if a.album_role.is_empty() {
-                        a.role.clone()
+                        a.role.as_str()
                     } else {
-                        a.album_role.clone()
+                        a.album_role.as_str()
                     }
                 })
-                .unwrap_or_default();
+                .unwrap_or("");
             // source=album rows are the whole-album link, not a track use.
             let uses: Vec<&WorkTrack> = tracks
                 .iter()
                 .filter(|t| t.track.album_id == album_id && t.source != "album")
                 .collect();
-            let mut by_track: Vec<(i64, String, Vec<&str>)> = Vec::new();
+            let mut by_track: Vec<(i64, &str, Vec<&str>)> = Vec::new();
+            let mut by_track_idx: HashMap<i64, usize> = HashMap::new();
             for u in &uses {
-                match by_track.iter_mut().find(|(id, ..)| *id == u.track.id) {
-                    Some((_, _, roles)) => roles.push(&u.role),
-                    None => by_track.push((u.track.id, u.track.title.clone(), vec![&u.role])),
+                if let Some(&idx) = by_track_idx.get(&u.track.id) {
+                    by_track[idx].2.push(&u.role);
+                } else {
+                    by_track_idx.insert(u.track.id, by_track.len());
+                    by_track.push((u.track.id, u.track.title.as_str(), vec![&u.role]));
                 }
             }
-            by_track.sort_by_key(|(id, ..)| order(*id));
+            by_track.sort_by_key(|(id, ..)| track_order.get(id).copied().unwrap_or(0));
             let usage = usage_label(
-                &album_role,
+                album_role,
                 &uses.iter().map(|u| u.role.as_str()).collect::<Vec<_>>(),
             );
             let ost = album_role == "ost";
@@ -287,7 +296,7 @@ pub fn album_works(
                             } else {
                                 label
                             },
-                            title,
+                            title: title.to_owned(),
                         }
                     })
                     .collect(),
@@ -300,11 +309,14 @@ pub fn album_works(
 /// works, for the track list (web `TrackTieups`).
 pub fn track_tieups(works: &[AlbumWorkEntry]) -> Vec<(i64, String, usize)> {
     let mut out: Vec<(i64, String, usize)> = Vec::new();
+    let mut index: HashMap<i64, usize> = HashMap::new();
     for work in works {
         for u in &work.tracks {
-            match out.iter_mut().find(|(id, ..)| *id == u.track_id) {
-                Some((_, _, n)) => *n += 1,
-                None => out.push((u.track_id, u.label.clone(), 1)),
+            if let Some(&i) = index.get(&u.track_id) {
+                out[i].2 += 1;
+            } else {
+                index.insert(u.track_id, out.len());
+                out.push((u.track_id, u.label.clone(), 1));
             }
         }
     }
@@ -964,7 +976,13 @@ pub fn work_view(
     albums: &[AlbumWork],
     tracks: &[WorkTrack],
 ) -> (WorkView, Vec<Track>, Vec<String>) {
-    let linked: std::collections::HashSet<i64> = albums.iter().map(|a| a.album_id).collect();
+    let linked: HashSet<i64> = albums.iter().map(|a| a.album_id).collect();
+    let mut by_album: HashMap<i64, Vec<&WorkTrack>> = HashMap::new();
+    for t in tracks {
+        if t.source != "album" && linked.contains(&t.track.album_id) {
+            by_album.entry(t.track.album_id).or_default().push(t);
+        }
+    }
     let views = albums
         .iter()
         .map(|a| {
@@ -981,21 +999,24 @@ pub fn work_view(
                 artwork: a.artwork_url.clone(),
                 meta: meta.join(" · "),
                 relation: album_relation_label(a),
-                usage: tracks
-                    .iter()
-                    .filter(|t| t.track.album_id == a.album_id && t.source != "album")
-                    .map(|t| {
-                        (
-                            t.track.title.clone(),
-                            role_sequence_label(&t.role, t.sequence),
-                            source_label(&t.source).to_owned(),
-                        )
+                usage: by_album
+                    .get(&a.album_id)
+                    .map(|list| {
+                        list.iter()
+                            .map(|t| {
+                                (
+                                    t.track.title.clone(),
+                                    role_sequence_label(&t.role, t.sequence),
+                                    source_label(&t.source).to_owned(),
+                                )
+                            })
+                            .collect()
                     })
-                    .collect(),
+                    .unwrap_or_default(),
             }
         })
         .collect();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let collected: Vec<&WorkTrack> = tracks
         .iter()
         .filter(|t| !linked.contains(&t.track.album_id) && seen.insert(t.track.id))

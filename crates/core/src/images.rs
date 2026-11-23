@@ -4,12 +4,13 @@
 //! keeps the compressed bytes (tens of KB each) rather than decoded pixels,
 //! so it can be large; the UI only receives ready RGBA pixels.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use api::{Client, Url};
 use lru::LruCache;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 
 /// How an artwork image is fitted into its display box.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,19 +83,93 @@ pub fn server_size(px: u32) -> Option<u32> {
     SERVER_SIZES.iter().copied().find(|s| *s >= want)
 }
 
+/// Maximum entries retained in the compressed artwork cache.
+const MAX_CACHE_ENTRIES: usize = 400;
+/// Maximum total compressed bytes retained in RAM (64 MiB), preventing
+/// full-screen original images from bloating memory.
+const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+type InFlightRx = watch::Receiver<Option<Result<bytes::Bytes, String>>>;
+
+struct ByteBudgetCache {
+    entries: LruCache<Url, bytes::Bytes>,
+    total_bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+}
+
+impl ByteBudgetCache {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            entries: LruCache::new(NonZeroUsize::new(max_entries.max(1)).expect("non-zero")),
+            total_bytes: 0,
+            max_entries: max_entries.max(1),
+            max_bytes,
+        }
+    }
+
+    fn get(&mut self, url: &Url) -> Option<bytes::Bytes> {
+        self.entries.get(url).cloned()
+    }
+
+    fn put(&mut self, url: Url, bytes: bytes::Bytes) {
+        let len = bytes.len();
+        if len > self.max_bytes {
+            return;
+        }
+        if let Some(prev) = self.entries.pop(&url) {
+            self.total_bytes = self.total_bytes.saturating_sub(prev.len());
+        }
+        while self.entries.len() >= self.max_entries
+            || self.total_bytes.saturating_add(len) > self.max_bytes
+        {
+            let Some((_, evicted)) = self.entries.pop_lru() else {
+                break;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(evicted.len());
+        }
+        self.entries.put(url, bytes);
+        self.total_bytes = self.total_bytes.saturating_add(len);
+    }
+}
+
+struct InFlightGuard<'a> {
+    map: &'a Mutex<HashMap<Url, InFlightRx>>,
+    url: Url,
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.url);
+    }
+}
+
+fn decode_concurrency() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 4))
+}
+
 pub(crate) struct Images {
     client: Client,
-    /// Compressed artwork by URL.
-    cache: Mutex<LruCache<Url, bytes::Bytes>>,
+    /// Byte-budgeted compressed artwork LRU cache by URL.
+    cache: Mutex<ByteBudgetCache>,
+    /// Singleflight map coalescing concurrent downloads of the same URL.
+    in_flight: Mutex<HashMap<Url, InFlightRx>>,
     permits: Semaphore,
+    /// Caps concurrent CPU-heavy Lanczos3 / CatmullRom decode tasks.
+    decode_permits: Semaphore,
 }
 
 impl Images {
     pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(400).expect("non-zero"))),
+            cache: Mutex::new(ByteBudgetCache::new(MAX_CACHE_ENTRIES, MAX_CACHE_BYTES)),
+            in_flight: Mutex::new(HashMap::new()),
             permits: Semaphore::new(6),
+            decode_permits: Semaphore::new(decode_concurrency()),
         }
     }
 
@@ -108,13 +183,49 @@ impl Images {
         self.client.image_url(path, None)
     }
 
-    /// Fetches (or reuses) the compressed artwork bytes at `url`.
+    /// Fetches (or reuses) the compressed artwork bytes at `url`, coalescing
+    /// concurrent requests for the same URL into a single HTTP transfer.
     pub(crate) async fn fetch_bytes(&self, url: Url) -> Result<bytes::Bytes, String> {
-        if let Some(bytes) = self.lock().get(&url).cloned() {
-            return Ok(bytes);
+        loop {
+            if let Some(bytes) = self.lock().get(&url) {
+                return Ok(bytes);
+            }
+            let leader = {
+                let mut map = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(rx) = map.get(&url) {
+                    Err(rx.clone())
+                } else {
+                    let (tx, rx) = watch::channel(None);
+                    map.insert(url.clone(), rx);
+                    Ok(tx)
+                }
+            };
+            match leader {
+                Err(mut rx) => {
+                    // Wait for the leader; if it was cancelled before publishing,
+                    // loop around and take over the fetch.
+                    if let Ok(guard) = rx.wait_for(Option::is_some).await
+                        && let Some(result) = guard.as_ref()
+                    {
+                        return result.clone();
+                    }
+                }
+                Ok(tx) => {
+                    let _guard = InFlightGuard {
+                        map: &self.in_flight,
+                        url: url.clone(),
+                    };
+                    let result = self.fetch_uncached(&url).await;
+                    let _ = tx.send(Some(result.clone()));
+                    return result;
+                }
+            }
         }
+    }
+
+    async fn fetch_uncached(&self, url: &Url) -> Result<bytes::Bytes, String> {
         let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
-        if let Some(bytes) = self.lock().get(&url).cloned() {
+        if let Some(bytes) = self.lock().get(url) {
             return Ok(bytes);
         }
         let res = self
@@ -126,7 +237,7 @@ impl Images {
             return Err(format!("HTTP {}", res.status().as_u16()));
         }
         let bytes = res.bytes().await.map_err(|e| e.without_url().to_string())?;
-        self.lock().put(url, bytes.clone());
+        self.lock().put(url.clone(), bytes.clone());
         Ok(bytes)
     }
 
@@ -140,12 +251,17 @@ impl Images {
         fit: ArtworkFit,
     ) -> Result<Rgba, String> {
         let bytes = self.fetch_bytes(url).await?;
+        let _permit = self
+            .decode_permits
+            .acquire()
+            .await
+            .map_err(|e| e.to_string())?;
         tokio::task::spawn_blocking(move || decode_fit(&bytes, width, height, fit))
             .await
             .map_err(|e| e.to_string())?
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, LruCache<Url, bytes::Bytes>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ByteBudgetCache> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -244,5 +360,77 @@ mod tests {
         // Extreme ratios clamp to 1:2 and 2:1.
         assert_eq!(fitted_size(100, 500, 300, 300), (150, 300));
         assert_eq!(fitted_size(500, 100, 300, 300), (300, 150));
+    }
+
+    #[test]
+    fn byte_budget_evicts_oldest_entries_within_cap() {
+        let mut cache = ByteBudgetCache::new(10, 10);
+        let u = |n: u32| Url::parse(&format!("http://example.invalid/{n}")).unwrap();
+        cache.put(u(1), bytes::Bytes::from_static(b"1234"));
+        cache.put(u(2), bytes::Bytes::from_static(b"5678"));
+        assert_eq!(cache.total_bytes, 8);
+        // Oversized single entry is ignored without wiping existing cache.
+        cache.put(u(99), bytes::Bytes::from(vec![0u8; 20]));
+        assert_eq!(cache.total_bytes, 8);
+        assert!(cache.get(&u(1)).is_some());
+        // Adding 5 bytes evicts u(2) (now LRU after touching u(1)).
+        cache.put(u(3), bytes::Bytes::from_static(b"abcde"));
+        assert_eq!(cache.total_bytes, 9);
+        assert!(cache.get(&u(1)).is_some());
+        assert!(cache.get(&u(2)).is_none());
+        assert!(cache.get(&u(3)).is_some());
+    }
+
+    #[tokio::test]
+    async fn singleflight_coalesces_concurrent_fetches() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_srv = hits.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                hits_srv.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut req = [0u8; 1024];
+                    let _ = sock.read(&mut req).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                    let body = b"fake-img-bytes";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.write_all(body).await;
+                });
+            }
+        });
+
+        let client = Client::new(&format!("http://{addr}"), "api", "media").unwrap();
+        let images = Arc::new(Images::new(client));
+        let url = images.url("/api/v1/artwork/1", 256, 256).unwrap();
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let images = images.clone();
+            let url = url.clone();
+            tasks.push(tokio::spawn(async move { images.fetch_bytes(url).await }));
+        }
+        for task in tasks {
+            let bytes = task.await.unwrap().unwrap();
+            assert_eq!(bytes.as_ref(), b"fake-img-bytes");
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "concurrent requests for the same URL must coalesce into one HTTP fetch"
+        );
+        server.abort();
     }
 }

@@ -159,7 +159,7 @@ impl Core {
         if favorites {
             self.favorite_albums = Some(filter.clone());
             let seq = self.next_seq(Target::FavoriteAlbums);
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let result = async {
                     let all = client.favorite_albums().await?;
                     let artist_albums = match filter.artist_id {
@@ -191,6 +191,7 @@ impl Core {
                 };
                 let _ = tx.send(msg);
             });
+            self.track_task(Target::FavoriteAlbums, handle.abort_handle());
             return;
         }
         let seq = self.next_seq(Target::Albums);
@@ -245,7 +246,7 @@ impl Core {
         if favorites {
             self.favorite_tracks = Some(filter.clone());
             let seq = self.next_seq(Target::FavoriteTracks);
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 // The favorites page always shows the server's current set.
                 let msg = match favorite_tracks(&client, &cache, false).await {
                     Ok(all) => {
@@ -261,6 +262,7 @@ impl Core {
                 };
                 let _ = tx.send(msg);
             });
+            self.track_task(Target::FavoriteTracks, handle.abort_handle());
             return;
         }
         self.track_filter = filter.clone();
@@ -435,7 +437,7 @@ impl Core {
             .as_ref()
             .is_some_and(|l| l.capabilities.has(api::Feature::Browse));
         let mixes_known = self.home.as_ref().and_then(|h| h.fresh_mixes()).cloned();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut artist_credits_data = None;
             let result: Result<(DetailView, Vec<Track>, Vec<String>), ApiError> = async {
                 Ok(match key {
@@ -675,6 +677,7 @@ impl Core {
                 }
             }
         });
+        self.track_task(Target::Detail, handle.abort_handle());
     }
 
     pub(super) fn search(&mut self, query: String) {
@@ -684,10 +687,11 @@ impl Core {
         };
         let seq = self.next_seq(Target::Search);
         if query.is_empty() {
+            self.abort_task(Target::Search);
             self.loaded(Loaded::SearchPreview(Box::default()));
             return;
         }
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let msg = match client.search(&query, None, 0, 0).await {
                 Ok(res) => Internal::Loaded(
                     Target::Search,
@@ -713,6 +717,7 @@ impl Core {
             };
             let _ = tx.send(msg);
         });
+        self.track_task(Target::Search, handle.abort_handle());
     }
 
     pub(super) fn search_category(&mut self, query: String, category: SearchCategory) {
@@ -732,6 +737,7 @@ impl Core {
         }
         self.emit(Event::SearchCategoryReset { category });
         if query.is_empty() {
+            self.abort_task(Target::Search);
             self.emit(Event::SearchCategoryAppended {
                 category,
                 artists: Vec::new(),

@@ -4,7 +4,7 @@
 //! controller: `/favorites/*` and `/playlists` only page).
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use api::{Album, AlbumSort, Artist, ArtistSort, Playlist, SortOrder, Track, TrackSort};
 
@@ -548,24 +548,28 @@ pub(crate) fn annotate_credit_albums(
     if credit_tracks.is_empty() {
         return;
     }
+    let mut by_album: HashMap<i64, Vec<&Track>> = HashMap::new();
+    for t in credit_tracks {
+        by_album.entry(t.album_id).or_default().push(t);
+    }
     for album in releases.iter_mut().filter(|a| a.relation == "credit") {
+        let Some(tracks) = by_album.get(&album.id) else {
+            continue;
+        };
         let mut role_labels: Vec<&'static str> = Vec::new();
-        let mut count = 0usize;
-        for t in credit_tracks.iter().filter(|t| t.album_id == album.id) {
-            count += 1;
+        for t in tracks {
             for label in track_roles_for_artist(t, artist_id) {
                 if !role_labels.contains(&label) {
                     role_labels.push(label);
                 }
             }
         }
-        if count > 0 {
-            album.note = if role_labels.is_empty() {
-                format!("{count} 首")
-            } else {
-                format!("{} · {count} 首", role_labels.join(" · "))
-            };
-        }
+        let count = tracks.len();
+        album.note = if role_labels.is_empty() {
+            format!("{count} 首")
+        } else {
+            format!("{} · {count} 首", role_labels.join(" · "))
+        };
     }
 }
 
@@ -744,26 +748,25 @@ pub fn album_people(tracks: &[Track]) -> Vec<AlbumPerson> {
         name: String,
         roles: Vec<&'static str>,
         performer: bool,
-        tracks: std::collections::HashSet<i64>,
+        tracks: HashSet<i64>,
     }
     let mut entries: Vec<Entry> = Vec::new();
+    let mut index: HashMap<i64, usize> = HashMap::new();
     let mut add = |id: i64, name: &str, role: &'static str, track: i64| {
         if id == 0 || name.trim().is_empty() {
             return;
         }
-        let i = match entries.iter().position(|e| e.id == id) {
-            Some(i) => i,
-            None => {
-                entries.push(Entry {
-                    id,
-                    name: name.to_owned(),
-                    roles: Vec::new(),
-                    performer: false,
-                    tracks: std::collections::HashSet::new(),
-                });
-                entries.len() - 1
-            }
-        };
+        let i = *index.entry(id).or_insert_with(|| {
+            let i = entries.len();
+            entries.push(Entry {
+                id,
+                name: name.to_owned(),
+                roles: Vec::new(),
+                performer: false,
+                tracks: HashSet::new(),
+            });
+            i
+        });
         let e = &mut entries[i];
         if role == "演唱" {
             e.performer = true;
@@ -987,9 +990,8 @@ pub fn playlist_view(playlist: &Playlist) -> PlaylistView {
 
 // ---------------------------------------------------------------- sorting
 
-fn matches_text(needle: &str, haystack: &[&str]) -> bool {
-    let needle = needle.trim().to_lowercase();
-    needle.is_empty() || haystack.iter().any(|h| h.to_lowercase().contains(&needle))
+fn matches_needle(needle: &str, haystack: &[&str]) -> bool {
+    needle.is_empty() || haystack.iter().any(|h| h.to_lowercase().contains(needle))
 }
 
 fn in_year_range(year: i32, from: Option<i32>, to: Option<i32>) -> bool {
@@ -1003,16 +1005,30 @@ fn in_year_range(year: i32, from: Option<i32>, to: Option<i32>) -> bool {
 
 /// Compares two keys; "missing" keys (empty, 0, never played) sort last in
 /// both directions, like the server's browse lists.
-fn by_key<K: Ord>(a: Option<K>, b: Option<K>, order: SortOrder) -> Ordering {
+fn by_key<K: Ord>(a: Option<&K>, b: Option<&K>, order: SortOrder) -> Ordering {
     match (a, b) {
         (Some(a), Some(b)) => match order {
-            SortOrder::Asc => a.cmp(&b),
-            SortOrder::Desc => b.cmp(&a),
+            SortOrder::Asc => a.cmp(b),
+            SortOrder::Desc => b.cmp(a),
         },
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
+}
+
+/// Sorts `items` using a precomputed optional key per element (`O(N)` key
+/// allocations instead of `O(N log N)`), preserving missing-last semantics.
+fn sort_by_opt_key<T, K: Ord>(items: &mut Vec<T>, order: SortOrder, key: impl Fn(&T) -> Option<K>) {
+    let mut keyed: Vec<(Option<K>, T)> = items
+        .drain(..)
+        .map(|item| {
+            let k = key(&item);
+            (k, item)
+        })
+        .collect();
+    keyed.sort_by(|(a, _), (b, _)| by_key(a.as_ref(), b.as_ref(), order));
+    items.extend(keyed.into_iter().map(|(_, item)| item));
 }
 
 fn text(s: &str) -> Option<String> {
@@ -1044,35 +1060,35 @@ pub fn favorite_albums(
     artist_albums: Option<&HashSet<i64>>,
     seed: u64,
 ) -> Vec<Album> {
+    let needle = filter.search.trim().to_lowercase();
     items.retain(|a| {
         artist_albums.is_none_or(|ids| ids.contains(&a.id))
             && in_year_range(a.year, filter.year_from, filter.year_to)
-            && matches_text(&filter.search, &[&a.title, &a.artist])
+            && matches_needle(&needle, &[&a.title, &a.artist])
     });
     let order = filter.order;
     match filter.sort {
         AlbumSort::Random => shuffle(&mut items, seed),
-        AlbumSort::Title => items.sort_by(|a, b| by_key(text(&a.title), text(&b.title), order)),
-        AlbumSort::Added => {
-            items.sort_by(|a, b| by_key(text(&a.added_at), text(&b.added_at), order))
+        AlbumSort::Title => sort_by_opt_key(&mut items, order, |a| text(&a.title)),
+        AlbumSort::Added => sort_by_opt_key(&mut items, order, |a| text(&a.added_at)),
+        AlbumSort::RecentlyPlayed => {
+            sort_by_opt_key(&mut items, order, |a| {
+                a.last_played_at.as_deref().and_then(text)
+            });
         }
-        AlbumSort::RecentlyPlayed => items.sort_by(|a, b| {
-            by_key(
-                a.last_played_at.as_deref().and_then(text),
-                b.last_played_at.as_deref().and_then(text),
-                order,
-            )
-        }),
-        AlbumSort::Date => {
-            items.sort_by(|a, b| by_key(text(&a.release_date), text(&b.release_date), order))
+        AlbumSort::Date => sort_by_opt_key(&mut items, order, |a| text(&a.release_date)),
+        AlbumSort::Year => {
+            items.sort_by(|a, b| {
+                by_key(positive(a.year).as_ref(), positive(b.year).as_ref(), order)
+            });
         }
-        AlbumSort::Year => items.sort_by(|a, b| by_key(positive(a.year), positive(b.year), order)),
     }
     items
 }
 
 /// Favorite tracks filtered and sorted on the client.
 pub fn favorite_tracks(mut items: Vec<Track>, filter: &TrackFilter, seed: u64) -> Vec<Track> {
+    let needle = filter.search.trim().to_lowercase();
     items.retain(|t| {
         filter.artist_id.is_none_or(|id| {
             t.artists
@@ -1081,65 +1097,71 @@ pub fn favorite_tracks(mut items: Vec<Track>, filter: &TrackFilter, seed: u64) -
                 .chain(t.credits.iter().flat_map(|c| &c.artists))
                 .any(|a| a.id == id)
         }) && in_year_range(t.year, filter.year_from, filter.year_to)
-            && matches_text(&filter.search, &[&t.title, &t.album, &t.artist])
+            && matches_needle(&needle, &[&t.title, &t.album, &t.artist])
     });
     let order = filter.order;
     match filter.sort {
         TrackSort::Random => shuffle(&mut items, seed),
-        TrackSort::Title => items.sort_by(|a, b| by_key(text(&a.title), text(&b.title), order)),
-        TrackSort::Album => items.sort_by(|a, b| {
-            by_key(text(&a.album), text(&b.album), order)
-                .then(a.disc_number.cmp(&b.disc_number))
-                .then(a.track_number.cmp(&b.track_number))
-        }),
+        TrackSort::Title => sort_by_opt_key(&mut items, order, |t| text(&t.title)),
+        TrackSort::Album => {
+            let mut keyed: Vec<(Option<String>, Track)> =
+                items.drain(..).map(|t| (text(&t.album), t)).collect();
+            keyed.sort_by(|(ka, a), (kb, b)| {
+                by_key(ka.as_ref(), kb.as_ref(), order)
+                    .then(a.disc_number.cmp(&b.disc_number))
+                    .then(a.track_number.cmp(&b.track_number))
+            });
+            items.extend(keyed.into_iter().map(|(_, t)| t));
+        }
         TrackSort::Plays => items.sort_by(|a, b| {
             by_key(
-                (a.play_count > 0).then_some(a.play_count),
-                (b.play_count > 0).then_some(b.play_count),
+                (a.play_count > 0).then_some(a.play_count).as_ref(),
+                (b.play_count > 0).then_some(b.play_count).as_ref(),
                 order,
             )
         }),
-        TrackSort::RecentlyPlayed => items.sort_by(|a, b| {
-            by_key(
-                a.last_played_at.as_deref().and_then(text),
-                b.last_played_at.as_deref().and_then(text),
-                order,
-            )
-        }),
+        TrackSort::RecentlyPlayed => {
+            sort_by_opt_key(&mut items, order, |t| {
+                t.last_played_at.as_deref().and_then(text)
+            });
+        }
         TrackSort::Date | TrackSort::Year => {
-            items.sort_by(|a, b| by_key(positive(a.year), positive(b.year), order));
+            items.sort_by(|a, b| {
+                by_key(positive(a.year).as_ref(), positive(b.year).as_ref(), order)
+            });
         }
         TrackSort::Duration => items.sort_by(|a, b| {
             by_key(
-                (a.duration_millis > 0).then_some(a.duration_millis),
-                (b.duration_millis > 0).then_some(b.duration_millis),
+                (a.duration_millis > 0)
+                    .then_some(a.duration_millis)
+                    .as_ref(),
+                (b.duration_millis > 0)
+                    .then_some(b.duration_millis)
+                    .as_ref(),
                 order,
             )
         }),
-        TrackSort::Added => {
-            items.sort_by(|a, b| by_key(text(&a.added_at), text(&b.added_at), order))
-        }
+        TrackSort::Added => sort_by_opt_key(&mut items, order, |t| text(&t.added_at)),
     }
     items
 }
 
 /// Playlists searched by name and sorted (`sortPlaylists`).
 pub fn sort_playlists(mut items: Vec<Playlist>, filter: &PlaylistFilter) -> Vec<Playlist> {
-    items.retain(|p| matches_text(&filter.search, &[&p.name]));
+    let needle = filter.search.trim().to_lowercase();
+    items.retain(|p| matches_needle(&needle, &[&p.name]));
     let order = filter.order;
-    items.sort_by(|a, b| match filter.sort {
-        PlaylistSort::Name => by_key(
-            Some(a.name.to_lowercase()),
-            Some(b.name.to_lowercase()),
-            order,
-        ),
-        PlaylistSort::Duration => by_key(
-            Some(a.duration_millis.unwrap_or(0)),
-            Some(b.duration_millis.unwrap_or(0)),
-            order,
-        ),
-        PlaylistSort::TrackCount => by_key(Some(a.item_count), Some(b.item_count), order),
-    });
+    match filter.sort {
+        PlaylistSort::Name => sort_by_opt_key(&mut items, order, |p| Some(p.name.to_lowercase())),
+        PlaylistSort::Duration => items.sort_by(|a, b| {
+            let da = a.duration_millis.unwrap_or(0);
+            let db = b.duration_millis.unwrap_or(0);
+            by_key(Some(&da), Some(&db), order)
+        }),
+        PlaylistSort::TrackCount => {
+            items.sort_by(|a, b| by_key(Some(&a.item_count), Some(&b.item_count), order));
+        }
+    }
     items
 }
 

@@ -1486,6 +1486,12 @@ impl Core {
         }
     }
 
+    pub(super) fn abort_task(&mut self, target: Target) {
+        if let Some(prev) = self.target_tasks.remove(&target) {
+            prev.abort();
+        }
+    }
+
     fn abort_all_tasks(&mut self) {
         for (_, handle) in self.target_tasks.drain() {
             handle.abort();
