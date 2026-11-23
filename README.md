@@ -4,11 +4,11 @@
 
 给已经搭好 032 Music Server、想在桌面上浏览曲库并听歌的人。只连接这一套服务端。Jellyfin、Navidrome、Subsonic、Plex 不在范围内。界面是简体中文。
 
-当前版本 **0.2.15**。日常听歌可以用。代码签名、多语言和最小化到托盘等还没做完，所以没有标成 1.0。
+当前版本 **0.2.26**。日常听歌可以用。代码签名、多语言和最小化到托盘等还没做完，所以没有标成 1.0。
 
 ## 下载
 
-Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032player-rs/releases)。最新是 [v0.2.15](https://github.com/lux032/032player-rs/releases/tag/v0.2.15)。
+Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032player-rs/releases)。最新是 [v0.2.26](https://github.com/lux032/032player-rs/releases/tag/v0.2.26)。
 
 主力平台是 Windows。Linux 可以按下面的方式从源码构建。macOS 尽力而为，没有作为正式发布平台验证。
 
@@ -56,7 +56,7 @@ cargo run -p app                                         # 需要 libmpv
 
 Windows 首次构建会自动下载 libmpv（约 30 MB，sha256 校验，缓存在 `target/libmpv/`）。
 已有 libmpv 时设置 `MPV_LIB_DIR` 指向含 `mpv.lib` / `libmpv-2.dll` 的目录即可跳过下载。
-Linux 需要系统 libmpv 和 fontconfig 开发包（如 `libmpv-dev`、`libfontconfig1-dev`）。
+Linux 需要系统 libmpv、fontconfig 开发包和 `pkg-config`（如 `libmpv-dev`、`libfontconfig1-dev`、`pkg-config`）。
 
 API Token 和媒体凭据在正常使用时保存在操作系统凭据库。开发时可以用环境变量预填登录页，三项都有时自动登录；不设也可以在界面里填写。
 

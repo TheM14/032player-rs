@@ -30,7 +30,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 url = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 lru = "0.16"
-# Japanese segmentation for furigana / romaji (IPADIC embedded, about 48 MB).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 bytes = "1"
 tracing = "0.1"
@@ -44,9 +43,9 @@ keyring = "4.2"
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 tray-icon = { version = "0.26", default-features = false }
 raw-window-handle = "0.6"
-# Native file dialogs; the portal backend keeps Linux free of GTK.
 # Opens 032 web console pages in the default browser.
 open = "5"
+# Native file dialogs; the portal backend keeps Linux free of GTK.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
 # Sonos control (UPnP SOAP replies, DIDL-Lite) and the SSDP interfaces.
 roxmltree = "0.21"

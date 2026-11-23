@@ -34,6 +34,11 @@
   - 亮色主题全屏播放器页签与歌词悬停高亮清晰可见；`+N` 艺人弹层与 `◆ OP` 作品卡弹层在外部点击关闭后仍可悬停重开且贴边不裁切；
   - 弹窗 1-5 按 `Esc` 关闭、右键菜单打开时不误触全局快捷键、设置页输入 Sonos 地址不误触快捷键；Alt+Tab 离开拖动中的进度条/队列不卡死；
   - 关闭窗口前最后 1 秒调整的窗口大小/位置重启后保持；同专辑连播底栏封面不闪白；SMTC 切歌无上一首残留进度；>1h 曲目时长显示与拖动预览（`H:MM:SS`）正常；高 DPI 切换后全屏封面与 032 页面图片清晰重解码。
+- [x] P3 [api / sonos / os / player / core / app / docs / packaging / ci] 清理死代码与残余字段（移除 `core::backdrop`、全屏相关歌曲残余状态、`InfoDialog.title`，修复 `WorksPage`/`SeriesDetailPage` 空态文案、`views.slint` 睡眠菜单隐藏高度与 `lyrics.rs` 长破折号）；补强边缘鲁棒性与平台体验（`sonos::soap::parse_duration` 防 NaN/溢出、`volume`/`set_volume` 网络错误不误降级、SSDP `LOCATION` 校验与 512 KiB 描述体上限；`api::update::is_newer` 支持 SemVer 预发布、`Client::page_size()` 遵循 `capabilities.page_size()`；`os::proxy` 协议名大小写无关、接入 `MediaCommand::SetVolume`；`player` 多声道 ITU-R BS.775 下混与 ASIO 按立体声帧步进音量 + 暂停/恢复微淡化；`core` `album_works` 6 并发限流、损坏 `settings.json` 备份与 `layout_version` 一次性迁移、快捷键默认补齐不覆盖清空项）；同步 `Cargo.toml`/`README.md`/`PLAN.md`/`ARCHITECTURE.md`/`FEATURES.md` 文档并在 Windows 安装包/便携包补齐 SIL OFL 1.1 字体许可及 `package.yml` `LICENSE.txt`。
+- [ ] **[Win]** 验证 P3 改动：
+  - ASIO 播放多声道（5.1/7.1）曲目能完整下混人声中置与环绕声道，音量调节与暂停/恢复切换无爆音；
+  - 睡眠定时未开启时定时菜单顶部无空白占位行；作品页无数据与无搜索结果提示区分正常，空成员系列提示正确；
+  - Windows 安装包与便携 zip 包含 `LICENSE.txt` 及 `licenses/OFL-NotoSansSC.txt`、`licenses/OFL-SourceSerif4.txt`、`licenses/FONTS.md`，卸载后清理干净。
 
 ### 2026-11-21
 

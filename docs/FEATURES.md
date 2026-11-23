@@ -17,7 +17,7 @@
 | 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [x] |
 | 登录态持久化：两个凭据存系统凭据库，启动自动登录；表单留空沿用已保存值；退出登录清空两者 | `auth.store.ts` `logout`、`edit-server-form.tsx` | M1 | [x] |
 | 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [x] |
-| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / series，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [ ] |
+| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / `artistCreditRoles` / series，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [x] |
 
 ## 播放
 
@@ -25,8 +25,8 @@
 |------|------|--------|------|
 | 原始文件流 `/api/v1/tracks/{id}/stream`（bit-perfect 前提） | `ctrl` `getStreamUrl` | M0 | [x] |
 | 可选转码 `/api/v1/tracks/{id}/transcode.{format}` | 同上 | M2 | [x] 有损格式拖动进度时带 `offsetMs` 重新请求 |
-| mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [ ] |
-| 输出设备选择、独占模式（播放中可切换） | `main/features/core/player/audio-exclusive.ts` | M0 | [x] 设置页 |
+| mpv：播放 / 暂停 / seek / 音量 / 静音 | `main/features/core/player/index.ts` | M0 | [x] |
+| 输出设备选择、独占模式（WASAPI / Windows 原生 ASIO，播放中可切换，Opus 自动回退） | `main/features/core/player/audio-exclusive.ts` | M0 / M4 | [x] 设置页 + 播放条切换 |
 | 设置持久化：音量、输出设备、独占模式、歌词面板开关（`settings.json`） | `renderer/store/settings.store.ts` | M1 | [x] |
 | 缓冲状态（`paused-for-cache`）、载入失败（`end-file` reason=error） | `main/features/core/player/index.ts` `createMpv` | M1 | [x] |
 | 无缝播放（预加载下一首） | `renderer/features/player/audio-player/mpv-player.tsx` | M1 | [x] mpv `append` |
@@ -38,7 +38,7 @@
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [x] 100 首 |
 | Auto DJ | `features/player/auto-dj/` | - | - 不做 |
 | 均衡器 / 压缩器、ReplayGain | `settings/components/playback/eq-settings.tsx`、`mpv-settings.tsx` | - | - 不做（2026-11-06） |
-| 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [ ] |
+| 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [x] |
 | 全屏播放器（原图封面不带 `size`，`size=0` 会被拒；宽屏三栏显示封面、歌词和队列，窄屏在接下来播放 / 歌词之间切换，不做可视化和配置弹窗） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [x] |
 
 ## 播放上报（apiRevision 3）
@@ -107,7 +107,7 @@
 | 显示方式：bilingual / translated | `features/lyrics/utils/translation-display-modes.ts` | M3 | [x] 另有自动翻译、目标语言 |
 | 偏移（仅当前会话） | - | M3 | [x] 按曲目 |
 | 假名注音、罗马音（原在主进程 kuromoji） | `main/features/core/lyrics/furigana.ts` | - | 删除（M4；去掉 lindera 词典，包更小） |
-| 中文行用中文字体 | 提交 ec619cb0 | M3 | [ ] |
+| 中文行用中文字体 | 提交 ec619cb0 | M3 | [x] `Fonts.family` 按假名区分 Noto Sans JP / SC |
 
 ## 系统集成
 

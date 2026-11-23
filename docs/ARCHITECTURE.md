@@ -14,14 +14,15 @@
     core/               # 包名 client-core（`core` 与标准库冲突）。队列、设置、登录态、图片缓存，
                         # 串起 api + session；播放器通过 trait 注入
     sonos/              # Sonos 控制：SSDP 发现、拓扑、AVTransport 队列（无 032 知识，可 cargo test）
-    player/             # libmpv 封装（只有这里依赖 libmpv）
-    os/                 # SMTC / MPRIS / 托盘 / 单实例 / 更新
+    asio/               # Windows ASIO 驱动 COM 封装与无锁 SPSC 环形缓冲（零 UI / libmpv 依赖）
+    player/             # libmpv 封装 + ASIO 播放后端（只有这里依赖 libmpv / asio）
+    os/                 # SMTC / MPRIS / 托盘 / 单实例 / 代理 / 文件对话框
     app/                # Slint UI，二进制入口
 ```
 
-依赖方向：`app -> {core, player, os}`，`core -> {api, session, lyrics, sonos}`。
-`core` 不依赖 `player` / `os`：播放器和系统集成以 trait 形式在 `core` 定义，由 `app` 注入实现。
-这样 `api` / `session` / `lyrics` / `core` 都能在无 libmpv、无显示的机器上 `cargo test`。
+依赖方向：`app -> {core, player, os}`，`player -> {asio}`，`core -> {api, session, lyrics, sonos}`。
+`core` 不依赖 `player` / `asio` / `os`：播放器和系统集成以 trait 形式在 `core` 定义，由 `app` 注入实现。
+这样 `api` / `session` / `lyrics` / `sonos` / `core` 都能在无 libmpv、无显示的机器上 `cargo test`。
 
 ## 选型（暂定）
 
@@ -32,21 +33,18 @@
 | HTTP | `reqwest`（rustls） | |
 | 序列化 | `serde`、`serde_json` | 类型对照 `music032-types.ts` 和服务端 `internal/storage` |
 | 错误 | `thiserror`（库）、`anyhow`（app） | |
-| 播放 | `libmpv2` | Windows 随包带 `libmpv-2.dll` |
+| 播放 | `libmpv2`、`symphonia`、`asio` | Windows 随包带 `libmpv-2.dll`，独占模式可选 WASAPI 或 ASIO |
 | 媒体控制 | `souvlaki` | SMTC / MPRIS / macOS 一套 API |
 | 托盘 | `tray-icon` | |
-| 文件对话框 | `rfd`（Linux 走 xdg-portal，不依赖 GTK） | 歌单封面 |
+| 文件对话框 | `rfd`（Linux 走 xdg-portal，不依赖 GTK） | 歌单封面（异步非阻塞） |
 | 凭据存储 | `keyring` | API Token、媒体凭据 |
-| 设置 / 状态 | `serde` + TOML / JSON 文件，`directories` 定位 | |
-| 缓存 | 磁盘图片缓存 + 内存 LRU（`lru` 或 `moka`） | |
-| 图片解码 | `image`（后台线程，按显示尺寸缩放） | |
-| 日语分词 | `lindera`（替代 kuromoji），内嵌 IPADIC | M3，exe 增加约 48 MB（zip 约 11 MB） |
-| 罗马音 | `wana_kana` | M3 |
+| 设置 / 状态 | `serde` + JSON 文件，`directories` 定位 | |
+| 缓存 | 内存压缩字节 LRU（`lru`，400 项）+ UI 解码 LRU（96 项） | |
+| 图片解码 | `image`（后台线程，按显示尺寸 Lanczos3 缩放） | |
 | 时间 | `chrono` | M3（相对时间、本地时间） |
 | 打开网页 | `open` | M3 |
-| i18n | `slint` 内置 `@tr()` + gettext，或 `fluent` | M4 决定 |
 | 日志 | `tracing` + `tracing-subscriber`（滚动文件） | |
-| 更新 | 待定（`self_update` / velopack） | M4 |
+| 更新 | `api::update`（读取 GitHub Releases，只提示不自动安装） | M4 |
 
 ## 关键设计
 
@@ -107,7 +105,7 @@
 - 字体：`app/src/fonts.rs` 把内嵌的 Inter + Noto Sans JP（与 Electron 版同一套）+ Noto Sans SC（简体缺字回退，`assets/fonts`）注册到 Slint 共享的 fontique 集合，
   艺人页和主页的中文区块标题显式指定 Noto Sans SC，避免 JP 覆盖不全导致同一标题混排；日文内容仍优先 JP。
   设为 sans-serif / system-ui 的字体栈（需要 slint 的 `unstable-fontique-011` 特性；先 `BackendSelector::select()`，再注册，再建窗口）。ui-snapshot 用同一个文件。
-- 主页聚焦卡背景：`core::backdrop` 把封面缩小、模糊、提饱和度成小图，Slint 拉伸铺底（Slint 没有模糊滤镜）。
+- 主页聚焦卡背景：v3 改版采用中性横向渐变色带，不再对封面做离线模糊。
 
 ### Sonos 投放
 
@@ -164,7 +162,7 @@
 - `paused-for-cache` 变化写入应用日志；mpv 原生警告写入 `logs/mpv.log`（每次启动截断），用于区分网络缓存与音频输出 underrun。
   原生日志可能含带 `mediaToken` 的 URL，分享前必须脱敏。断音根因未确认前不叠加全局缓存参数。
 - 无缝播放用 mpv playlist 预追加下一首（`loadfile ... append`）或 `--prefetch-playlist`，M1 实测决定。
-- 独占：Windows `audio-exclusive=yes` + WASAPI；设备列表来自 `audio-device-list`。
+- 独占：Windows 支持 WASAPI 独占（mpv `audio-exclusive=yes`）以及原生 ASIO 后端（`crates/asio` + `symphonia` 解码，Opus 自动回退 mpv / WASAPI）；设备列表来自 `audio-device-list` 与 ASIO 驱动探测。
 - libmpv 来源：Windows 由 `crates/player/build.rs` 下载固定版本的 shinchiro mpv-dev 包
   （SourceForge `mpv-player-windows/libmpv` 永久保留，sha256 校验），解压到 `target/libmpv/`，
   `libmpv.dll.a` 复制为 `mpv.lib` 供 MSVC 链接，`libmpv-2.dll` 复制到输出目录。
@@ -173,4 +171,4 @@
 ### 图片
 
 - 按显示尺寸向服务端请求（`size` 参数，原图不带参数）。
-- 后台下载 + 解码 + 磁盘缓存，UI 只拿 `slint::Image`。列表滚动时取消不可见项的请求。
+- 后台下载 + 内存压缩字节 LRU（400 项）+ 解码缩放到显示盒，UI 侧按 96 项上限缓存 `slint::Image`。
