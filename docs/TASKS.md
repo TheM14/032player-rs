@@ -23,6 +23,17 @@
   - 切换服务器重新登录后旧封面 / 队列 / 历史 / 歌词无残留；返回相似歌曲 / 其他版本及滚动位置恢复不与手动滚动对抗；
   - 作品页曲目时长列无裁切；首页编年切年份与作品漫游切类型 / 换一批时横滑卡片回到最左；收藏专辑不再影响同 ID 艺人卡片；
   - `cargo test -p app`、`cargo test -p player`、`ui-snapshot` 回归及 NSIS 安装 / 覆盖升级 / 运行中卸载提示正常。
+- [x] P2-1 ~ P2-4 [api / session / sonos] `warm_media` 大响应仅读首块避免整首缓冲进内存；`post_playback_event` 透传响应体网络错误不再吞为 `Value::Null`；`PlaybackAdapter` 在 `on_error` / `Stopped` / 单曲循环时重置 `buffering`；Sonos 跳过纯隐身组、`static_location` 规范化路径与端口、`soap::escape` 过滤 XML 1.0 非法控制字符、`discover()` 合并多 Household 拓扑。
+- [x] P2-5 ~ P2-9 [asio / player / os / app] 32 位 x86 Windows `IAsioVtbl` 使用 `extern "thiscall"` 且 `buffer_frames` 按驱动 `[min, max]` 与步长钳制；ASIO 播放中解码/网络错误改为 `EndReason::Error` 并停流、超高采样率无缝衔接按半环上限推进防止死锁、`OpenControlPanel` 改为非阻塞调用且不持有 `HybridEngine::asio` 锁、独立面板按窗口生命周期维护 COM 线程、队列结束与加载失败释放声卡、`HttpMediaSource::is_seekable()` 仅信任 Range 能力且 seek 末尾 HTTP 416 返回干净 EOF；`Player::clear_upcoming()` 改为原子命令 `playlist-clear`；`player/build.rs` 从 `OUT_DIR` 推导绝对 `target_dir` 并采用唯一暂存目录；歌单封面选择改为 `rfd::AsyncFileDialog` 并在后台线程读取文件。
+- [x] P2-10 ~ P2-14 [core] 播放中切转码记录已打开流转码类型，修复 `seek()`、`opus_fallback_tracks` 误拉入与 `SetTranscode` 预加载清理；修复淡出中关闭 `fade_on_pause`、`set_fade_gain` 失败漏暂停、多路径遗漏 `Buffering(false)` / 取消淡化、`loading` 期间过早 `seek()`、`ClearQueue` 清歌词/来源/上报器，以及 Sonos 单曲循环与 `Step::Stop` 下的睡眠定时边界；串行化登录 / 登出凭据读写并加入 `auth_seq` 互斥；修复 Sonos 接管被并发 `Op::Room`/`Volume` 中断、接管后清除硬件 `SHUFFLE` 及超 2000 首长队列复用本地曲目窗口；修复随机分页共享 seed 与取消/首屏失败态、`m032::album_works` 纯 OST 关系文案、每日推荐轮询代数与失败恢复、歌词状态登出清理与搜词/预览失败重置、艺人页幕后专辑走 `/browse/albums` 与旧服务端兼容、`favorite_set` 同步首页缓存、`in_year_range` 排除 `year == 0`、每日推荐入队过滤 `missing` 与 `move_playlist_item` `409 playlist_conflict` 重试。
+- [x] P2-15 ~ P2-17 [app] 修复亮色主题全屏硬编码白色半透明高亮；`ArtistLinks` 与 `TieupCards` 弹层改用 `PopupWindow.is-open` 并按窗口边界钳制；修复 `ListToolbar` 单向绑定与页 3/24 状态隔离、弹窗 1-5 `Esc` 关闭、右键菜单屏蔽全局快捷键、设置页 Sonos 地址 `editor-scope` 与防抖，以及进度条 / 歌单 / 队列拖动 `PointerEventKind.cancel`；关闭退出前先记录窗口几何、同专辑连播切歌判重 `now_cover_key` 消除闪白、SMTC 切歌先重置进度、删歌单清理返回历史、同类型详情互跳重置局部展开态、DPI 变化重解码全屏封面与 `m032` 绑定图片、修复 >1h 播放条时间裁切与拖动预览格式、`MixPage` 右栏按钮溢出、编年相邻年份标签重叠，以及 `WorkPage` / `SeriesDetailPage` 卡片 `lazy: true`。
+- [ ] **[Win]** 验证 P2 改动：
+  - ASIO 打开控制面板（播放中与空闲态）不卡顿且不断音，关闭面板后再启播正常；播完整个队列或加载失败后系统其他软件可恢复出声；
+  - 歌单上传自定义封面时文件选择框位于窗口前方、主窗口不假死，选择 >10 MB 文件弹出提示；
+  - 播放无损曲目时切换转码后拖动进度仍正常原生 seek，淡出中关闭「暂停淡入淡出」可正常暂停；
+  - 亮色主题全屏播放器页签与歌词悬停高亮清晰可见；`+N` 艺人弹层与 `◆ OP` 作品卡弹层在外部点击关闭后仍可悬停重开且贴边不裁切；
+  - 弹窗 1-5 按 `Esc` 关闭、右键菜单打开时不误触全局快捷键、设置页输入 Sonos 地址不误触快捷键；Alt+Tab 离开拖动中的进度条/队列不卡死；
+  - 关闭窗口前最后 1 秒调整的窗口大小/位置重启后保持；同专辑连播底栏封面不闪白；SMTC 切歌无上一首残留进度；>1h 曲目时长显示与拖动预览（`H:MM:SS`）正常；高 DPI 切换后全屏封面与 032 页面图片清晰重解码。
 
 ### 2026-11-21
 
