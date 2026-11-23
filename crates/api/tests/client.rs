@@ -601,3 +601,40 @@ async fn post_playback_event_propagates_truncated_body_as_network_error() {
         "expected network error on truncated body, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn client_honors_capabilities_max_page_size() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "v1",
+            "apiRevision": 3,
+            "features": { "browse": true },
+            "limits": { "maxPageSize": 120 },
+        })))
+        .mount(&server)
+        .await;
+    mock_first_track(&server, json!([])).await;
+
+    let (client, caps) = authenticate(&server.uri(), API, MEDIA).await.unwrap();
+    assert_eq!(caps.page_size(), 120);
+    assert_eq!(client.page_size(), 120);
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/tracks"))
+        .and(query_param("limit", "120"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [track_json(1)],
+            "limit": 120,
+            "offset": 0,
+            "total": 1,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let all: Vec<api::Track> = client.get_all("/tracks", &api::Query::new()).await.unwrap();
+    assert_eq!(all.len(), 1);
+}

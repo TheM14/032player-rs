@@ -107,6 +107,7 @@ pub struct Client {
     base_url: String,
     api_token: String,
     media_token: String,
+    page_size: u32,
 }
 
 impl std::fmt::Debug for Client {
@@ -253,7 +254,19 @@ impl Client {
             base_url: normalize_base_url(base_url)?,
             api_token: api_token.into(),
             media_token: media_token.into(),
+            page_size: MAX_PAGE_SIZE,
         })
+    }
+
+    /// Limits paged list requests to the server's advertised `maxPageSize`.
+    #[must_use]
+    pub fn with_page_size(mut self, page_size: u32) -> Self {
+        self.page_size = page_size.clamp(1, MAX_PAGE_SIZE);
+        self
+    }
+
+    pub fn page_size(&self) -> u32 {
+        self.page_size
     }
 
     pub fn base_url(&self) -> &str {
@@ -350,7 +363,7 @@ impl Client {
         let mut out = Vec::new();
         loop {
             let mut q = query.clone();
-            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), MAX_PAGE_SIZE);
+            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), self.page_size);
             let page: Page<T> = self.get(path, &q).await?;
             let n = page.items.len();
             out.extend(page.items);
@@ -508,7 +521,7 @@ impl Client {
             if let Some(role) = role.filter(|r| !r.is_empty()) {
                 q.push("role", role);
             }
-            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), MAX_PAGE_SIZE);
+            q.page(u32::try_from(out.len()).unwrap_or(u32::MAX), self.page_size);
             let page: ArtistCreditsPage = self.get(&path, &q).await?;
             if roles.is_empty() && !page.roles.is_empty() {
                 roles = page.roles;
@@ -987,6 +1000,7 @@ pub async fn authenticate_client(client: Client) -> Result<(Client, Capabilities
     if capabilities.api_revision != API_REVISION {
         return Err(AuthError::UnsupportedRevision(capabilities.api_revision));
     }
+    let client = client.with_page_size(capabilities.page_size());
     client.verify_media_token().await?;
     Ok((client, capabilities))
 }

@@ -60,21 +60,51 @@ pub async fn latest_release(api_root: &str, repo: &str) -> Result<Release, ApiEr
     })
 }
 
-/// `tag` (`v1.2.3`, `1.2`) is a newer version than `current` (`1.2.2`).
-/// Unparsable tags are never newer.
+/// `tag` (`v1.2.3`, `1.2`) is a newer version than `current` (`1.2.2`, `1.2.3-rc1`).
+/// Follows SemVer 2.0.0 pre-release precedence; unparsable tags are never newer.
 pub fn is_newer(tag: &str, current: &str) -> bool {
-    fn parse(v: &str) -> Option<Vec<u64>> {
+    fn parse(v: &str) -> Option<(Vec<u64>, Option<Vec<&str>>)> {
         let v = v.trim().trim_start_matches(['v', 'V']);
-        // Ignore build / pre-release suffixes ("1.2.3-rc1").
-        let core = v.split(['-', '+']).next()?;
-        core.split('.').map(|p| p.parse().ok()).collect()
+        let without_build = v.split('+').next()?;
+        let (core, pre) = match without_build.split_once('-') {
+            Some((c, p)) if !p.is_empty() => (c, Some(p.split('.').collect())),
+            Some((c, _)) => (c, None),
+            None => (without_build, None),
+        };
+        let nums: Option<Vec<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
+        Some((nums?, pre))
     }
+
+    fn cmp_pre(a: &[&str], b: &[&str]) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        for (sa, sb) in a.iter().zip(b.iter()) {
+            let ord = match (sa.parse::<u64>(), sb.parse::<u64>()) {
+                (Ok(na), Ok(nb)) => na.cmp(&nb),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => sa.cmp(sb),
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        a.len().cmp(&b.len())
+    }
+
     match (parse(tag), parse(current)) {
-        (Some(mut a), Some(mut b)) => {
+        (Some((mut a, pre_a)), Some((mut b, pre_b))) => {
             let n = a.len().max(b.len());
             a.resize(n, 0);
             b.resize(n, 0);
-            a > b
+            match a.cmp(&b) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => match (pre_a, pre_b) {
+                    (None, Some(_)) => true,
+                    (Some(pa), Some(pb)) => cmp_pre(&pa, &pb) == std::cmp::Ordering::Greater,
+                    _ => false,
+                },
+            }
         }
         _ => false,
     }
@@ -93,5 +123,9 @@ mod tests {
         assert!(!is_newer("v0.1.5", "0.1.6"));
         assert!(!is_newer("preview", "0.1.6"));
         assert!(!is_newer("v0.1.6-rc1", "0.1.6"));
+        assert!(is_newer("v0.2.26", "0.2.26-rc1"));
+        assert!(is_newer("v0.2.26-rc.2", "0.2.26-rc.1"));
+        assert!(is_newer("v0.2.26-beta", "0.2.26-alpha"));
+        assert!(!is_newer("v0.2.26-rc.1", "0.2.26-rc.2"));
     }
 }
