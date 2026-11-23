@@ -4019,6 +4019,7 @@ dependencies = [
  "hyper-util",
  "keyring",
  "open",
+ "raw-window-handle",
  "rfd",
  "souvlaki",
  "tracing",
