@@ -621,6 +621,7 @@ impl PlaybackSession {
                 if self.is_current(key) {
                     self.cancel_heartbeat();
                 }
+                return;
             }
             if json.get("applied").is_some_and(truthy) {
                 if self.is_current(key) && !self.sess(key).ended {
@@ -676,9 +677,21 @@ impl PlaybackSession {
 
     /// resume_invalid must never degrade into a silent high-position new start.
     fn block_resume_invalid(&mut self, key: SessKey) {
-        self.blocked = true;
         let track_id = self.sess(key).track_id;
-        self.write_block_marker(track_id);
+        let affects_current = self.is_current(key)
+            || self.session.is_some_and(|cur| {
+                let s = self.sess(cur);
+                s.superseded && s.ended && s.track_id == track_id
+            });
+        if affects_current {
+            self.blocked = true;
+            self.write_block_marker(track_id);
+            if !self.is_current(key) {
+                self.session = None;
+                self.cancel_heartbeat();
+                self.clear_snapshot();
+            }
+        }
         self.finalize_locally(key, "resume_invalid");
     }
 
@@ -721,10 +734,10 @@ impl PlaybackSession {
             }
             return;
         }
-        if self.sess(key).missing_recovery_done {
+        if self.sess(key).superseded || self.sess(key).ended {
             return;
         }
-        if job.recovery_depth >= 2 {
+        if self.sess(key).missing_recovery_done || job.recovery_depth >= 2 {
             return self.finalize_locally(key, "missing_recovery_failed");
         }
         self.sess_mut(key).missing_recovery_done = true;
@@ -733,6 +746,7 @@ impl PlaybackSession {
             key,
             EventType::Start,
             JobExtra {
+                recovery_depth: job.recovery_depth + 1,
                 state: Some(state),
                 ..JobExtra::default()
             },
@@ -796,7 +810,6 @@ impl PlaybackSession {
         self.queue.push_front(start);
         if !is_end && self.is_current(key) {
             self.session = Some(recovery);
-            self.persist_snapshot(recovery);
             self.schedule_heartbeat();
         }
     }
@@ -895,7 +908,13 @@ impl PlaybackSession {
 
     pub fn dispose(&mut self) {
         self.cancel_heartbeat();
+        if let Some(inflight) = self.inflight.take()
+            && let Phase::WaitingRetry(timer) = inflight.phase
+        {
+            self.scheduler.clear_timeout(timer);
+        }
         self.queue.clear();
+        self.keepalive_out.clear();
         self.session = None;
         self.gc();
     }

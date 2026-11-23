@@ -758,3 +758,210 @@ fn network_errors_retry_with_the_configured_delays_and_the_same_body() {
     s.handle_outcome(second.id, TransportOutcome::response(502, json!(null)));
     assert!(timers.lock().unwrap().values().any(|ms| *ms == 3000));
 }
+
+#[test]
+fn late_resume_invalid_for_old_track_does_not_block_new_track() {
+    use session::{PlayOptions, PlaybackSession};
+
+    let timers: Timers = Arc::default();
+    let mut seq = 0u64;
+    let mut options = SessionOptions::new(
+        Box::new(FakeScheduler {
+            timers: timers.clone(),
+            next: 0,
+        }),
+        Box::new(move || {
+            seq += 1;
+            format!("00000000-0000-4000-8000-{seq:012}")
+        }),
+    );
+    options.retry_delays_millis = vec![];
+    options.storage = Some(Box::new(MemoryStorage::new()));
+    let mut s = PlaybackSession::new(options);
+
+    // Start track 1 and confirm it.
+    s.play(
+        1,
+        PlayOptions {
+            initial_state: Some(PlaybackState::Playing),
+            duration_millis: Some(200_000),
+            ..PlayOptions::default()
+        },
+    );
+    let tx_start_1 = s.poll_transmit().unwrap();
+    s.handle_outcome(
+        tx_start_1.id,
+        TransportOutcome::response(200, json!({ "applied": true, "state": "playing" })),
+    );
+
+    // Switch to track 2; End(1) is now inflight while Start(2) is queued behind it.
+    s.play(
+        2,
+        PlayOptions {
+            initial_state: Some(PlaybackState::Playing),
+            duration_millis: Some(180_000),
+            ..PlayOptions::default()
+        },
+    );
+    let tx_end_1 = s.poll_transmit().unwrap();
+    assert_eq!(tx_end_1.body.kind, EventType::End);
+    assert_eq!(tx_end_1.body.track_id, 1);
+
+    // Server says track 1 expired, triggering recovery Start(resumeFrom=1) + End(1).
+    s.handle_outcome(tx_end_1.id, error_response(409, "session_expired"));
+    let tx_rec_start_1 = s.poll_transmit().unwrap();
+    assert_eq!(tx_rec_start_1.body.kind, EventType::Start);
+    assert_eq!(tx_rec_start_1.body.track_id, 1);
+    assert!(tx_rec_start_1.body.resumed_from_session_id.is_some());
+
+    // Server rejects old track 1's recovery with 409 resume_invalid.
+    s.handle_outcome(tx_rec_start_1.id, error_response(409, "resume_invalid"));
+
+    // Track 2 must NOT be blocked; its Start and subsequent Pause must still transmit.
+    assert!(!s.is_blocked());
+    let tx_start_2 = s.poll_transmit().unwrap();
+    assert_eq!(tx_start_2.body.kind, EventType::Start);
+    assert_eq!(tx_start_2.body.track_id, 2);
+    s.handle_outcome(
+        tx_start_2.id,
+        TransportOutcome::response(200, json!({ "applied": true, "state": "playing" })),
+    );
+    s.notify_paused(Some(10_000));
+    let tx_pause_2 = s.poll_transmit().unwrap();
+    assert_eq!(tx_pause_2.body.kind, EventType::Pause);
+    assert_eq!(tx_pause_2.body.track_id, 2);
+}
+
+#[test]
+fn idempotent_end_response_preserves_error_snapshot_and_does_not_block() {
+    let mut h = Harness::with(Opts {
+        respond: Some(Box::new(|body, _| {
+            (body.kind == EventType::End).then(|| {
+                TransportOutcome::response(200, json!({ "applied": false, "state": "ended" }))
+            })
+        })),
+        ..Opts::default()
+    });
+    h.play_to(track_a(), 50);
+    let original_id = h.sent[0].session_id.clone();
+    h.adapter.on_error();
+    h.idle();
+    assert!(!h.adapter.session().is_blocked());
+    assert!(h.adapter.session_mut().poll_protocol_error().is_none());
+
+    // Retrying the same track still resumes the persisted chain.
+    h.act(|a| a.on_status(AdapterStatus::Paused));
+    h.act(|a| a.on_status(AdapterStatus::Playing));
+    assert_eq!(h.last().kind, EventType::Start);
+    assert_eq!(
+        h.last().resumed_from_session_id.as_deref(),
+        Some(original_id.as_str())
+    );
+}
+
+#[test]
+fn expired_recovery_does_not_persist_unconfirmed_session_and_missing_recovery_stops_heartbeat() {
+    use session::{KeyValueStorage, PlayOptions, PlaybackSession};
+
+    let storage = MemoryStorage::new();
+    let timers: Timers = Arc::default();
+    let mut seq = 0u64;
+    let mut options = SessionOptions::new(
+        Box::new(FakeScheduler {
+            timers: timers.clone(),
+            next: 0,
+        }),
+        Box::new(move || {
+            seq += 1;
+            format!("00000000-0000-4000-8000-{seq:012}")
+        }),
+    );
+    options.retry_delays_millis = vec![1000];
+    options.storage = Some(Box::new(storage.clone()));
+    let mut s = PlaybackSession::new(options);
+
+    s.play(
+        1,
+        PlayOptions {
+            initial_state: Some(PlaybackState::Playing),
+            ..PlayOptions::default()
+        },
+    );
+    let tx_start = s.poll_transmit().unwrap();
+    let initial_session_id = tx_start.body.session_id.clone();
+    s.handle_outcome(
+        tx_start.id,
+        TransportOutcome::response(200, json!({ "applied": true, "state": "playing" })),
+    );
+    assert!(
+        storage
+            .get("032_playback_session_v1")
+            .unwrap()
+            .contains(&initial_session_id)
+    );
+
+    // Pause triggers 409 session_expired: snapshot must stay on initial_session_id until
+    // the recovery Start is actually confirmed by the server.
+    s.notify_paused(Some(10_000));
+    let tx_pause = s.poll_transmit().unwrap();
+    s.handle_outcome(tx_pause.id, error_response(409, "session_expired"));
+    assert!(
+        storage
+            .get("032_playback_session_v1")
+            .unwrap()
+            .contains(&initial_session_id),
+        "unconfirmed recovery session must not overwrite snapshot"
+    );
+
+    let tx_rec_start = s.poll_transmit().unwrap();
+    assert_eq!(tx_rec_start.body.kind, EventType::Start);
+    assert_ne!(tx_rec_start.body.session_id, initial_session_id);
+    s.handle_outcome(
+        tx_rec_start.id,
+        TransportOutcome::response(200, json!({ "applied": true, "state": "paused" })),
+    );
+    assert!(
+        storage
+            .get("032_playback_session_v1")
+            .unwrap()
+            .contains(&tx_rec_start.body.session_id),
+        "confirmed recovery session must now be persisted"
+    );
+
+    // Replayed pause gets 404 session_not_found -> pushes Start(depth+1); if that also
+    // fails with 404 session_not_found, session finalizes locally and cancels heartbeat.
+    let tx_pause_retry = s.poll_transmit().unwrap();
+    s.handle_outcome(tx_pause_retry.id, error_response(404, "session_not_found"));
+    let tx_missing_start = s.poll_transmit().unwrap();
+    assert_eq!(tx_missing_start.body.kind, EventType::Start);
+    s.handle_outcome(
+        tx_missing_start.id,
+        error_response(404, "session_not_found"),
+    );
+    assert!(s.is_blocked());
+    assert!(timers.lock().unwrap().is_empty(), "heartbeat must stop");
+    assert_eq!(
+        s.poll_protocol_error().unwrap().reason,
+        "missing_recovery_failed"
+    );
+
+    // dispose() cancels pending WaitingRetry timers and clears inflight + keepalive.
+    s.play(
+        2,
+        PlayOptions {
+            initial_state: Some(PlaybackState::Playing),
+            ..PlayOptions::default()
+        },
+    );
+    let tx2 = s.poll_transmit().unwrap();
+    s.handle_outcome(tx2.id, TransportOutcome::NetworkError);
+    assert!(
+        timers.lock().unwrap().values().any(|&ms| ms == 1000),
+        "retry timer scheduled"
+    );
+    s.suspend(session::EventPosition::default());
+    s.dispose();
+    assert!(timers.lock().unwrap().is_empty(), "all timers cancelled");
+    assert!(s.is_idle());
+    assert!(s.poll_transmit().is_none());
+}
