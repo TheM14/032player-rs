@@ -55,6 +55,7 @@ export component SettingsView inherits Rectangle {
     // 0 off, 1 WASAPI exclusive, 2 ASIO.
     in-out property <int> exclusive-mode;
     in property <bool> asio-available;
+    in property <bool> asio-configured;
     in property <bool> asio-fallback;
     in property <[string]> asio-drivers;
     in-out property <int> asio-driver-index;
@@ -239,7 +240,7 @@ export component SettingsView inherits Rectangle {
                 title: "ASIO 驱动";
                 description: root.asio-status != ""
                     ? root.asio-status
-                    : "从系统已安装的 ASIO 驱动中选择输出设备。";
+                    : "从系统已安装的 ASIO 驱动中选择输出设备；设为「不使用 ASIO」时播放条保持简单独占开关。";
                 VerticalLayout {
                     y: (parent.height - self.height) / 2;
                     spacing: 8px;
@@ -264,7 +265,7 @@ export component SettingsView inherits Rectangle {
                         }
                         GhostButton {
                             text: "控制面板";
-                            enabled: !root.output-busy;
+                            enabled: !root.output-busy && root.asio-configured;
                             clicked => {
                                 root.open-asio-control-panel();
                             }

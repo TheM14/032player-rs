@@ -47,6 +47,175 @@ component BarButton inherits Rectangle {
     }
 }
 
+// Split exclusive pill used when an ASIO driver is configured: left area is a
+// one-click toggle (off <-> preferred backend); right caret or right-click
+// opens the output mode picker.
+component ExclusiveSplitButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> chip;
+    in property <bool> enabled: true;
+    in property <bool> tight;
+    in property <bool> menu-open;
+    callback clicked();
+    callback open-menu();
+    height: 36px;
+    width: split-row.preferred-width;
+    border-radius: 10px;
+    clip: true;
+    background: root.chip ? Theme.accent-dim : transparent;
+    opacity: root.enabled ? 1 : 0.5;
+    split-row := HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            width: max(32px, main-row.preferred-width);
+            background: main-area.has-hover
+                ? (root.chip ? Theme.accent-dim.with-alpha(0.3) : Theme.surface-hover)
+                : transparent;
+            main-row := HorizontalLayout {
+                padding-left: root.tight ? 7px : 9px;
+                padding-right: root.tight ? 6px : 8px;
+                spacing: 6px;
+                alignment: center;
+                Icon {
+                    kind: IconKind.speaker;
+                    width: root.chip ? 17px : 19px;
+                    height: root.chip ? 17px : 19px;
+                    y: (parent.height - self.height) / 2;
+                    color: root.chip ? Theme.accent-text : main-area.has-hover ? Theme.text : Theme.text-dim;
+                }
+                if root.text != "": Text {
+                    text: root.text;
+                    font-family: Fonts.family(self.text);
+                    color: root.chip ? Theme.accent-text : Theme.text-dim;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+            main-area := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.clicked();
+                }
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        root.open-menu();
+                    }
+                }
+            }
+        }
+        Rectangle {
+            width: 1px;
+            Rectangle {
+                y: 7px;
+                height: parent.height - 14px;
+                background: root.chip ? Theme.accent.with-alpha(0.35) : Theme.border;
+            }
+        }
+        Rectangle {
+            width: root.tight ? 20px : 24px;
+            background: (caret-area.has-hover || root.menu-open)
+                ? (root.chip ? Theme.accent-dim.with-alpha(0.3) : Theme.surface-hover)
+                : transparent;
+            Icon {
+                kind: root.menu-open ? IconKind.chevron-down : IconKind.chevron-up;
+                width: 12px;
+                height: 12px;
+                color: root.chip ? Theme.accent-text : (caret-area.has-hover || root.menu-open) ? Theme.text : Theme.text-faint;
+            }
+            caret-area := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.open-menu();
+                }
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        root.open-menu();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A row of the exclusive output mode menu.
+component ExclusiveMenuRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> active;
+    in property <string> badge;
+    in property <bool> badge-warn;
+    in property <bool> badge-danger;
+    callback clicked();
+    height: 46px;
+    border-radius: 7px;
+    background: row-area.has-hover ? Theme.surface-hover : transparent;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Text {
+                    text: root.name;
+                    font-family: Fonts.family(self.text);
+                    color: root.active ? Theme.accent-text : Theme.text;
+                    font-size: 13px;
+                    font-weight: root.active ? 600 : 500;
+                    vertical-alignment: center;
+                }
+                if root.badge != "": Rectangle {
+                    height: 18px;
+                    width: badge-text.preferred-width + 12px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 9px;
+                    background: root.badge-danger ? Theme.danger.with-alpha(0.16)
+                        : root.badge-warn ? Theme.ok.with-alpha(0.15)
+                        : Theme.accent-dim;
+                    badge-text := Text {
+                        text: root.badge;
+                        font-family: Fonts.family(self.text);
+                        color: root.badge-danger ? Theme.danger
+                            : root.badge-warn ? Theme.ok
+                            : Theme.accent-text;
+                        font-size: 10.5px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.detail != "": Text {
+                text: root.detail;
+                font-family: Fonts.family(self.text);
+                color: Theme.text-faint;
+                font-size: 11.5px;
+                overflow: elide;
+            }
+        }
+        if root.active: Icon {
+            y: (parent.height - self.height) / 2;
+            kind: IconKind.check;
+            width: 15px;
+            height: 15px;
+            color: Theme.accent-text;
+        }
+    }
+    row-area := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 // A row of the 投放 menu: this computer or a Sonos room.
 component CastMenuRow inherits Rectangle {
     in property <string> name;
@@ -141,11 +310,16 @@ export component PlayerBar inherits Rectangle {
     // while a change is applied.
     in property <bool> exclusive;
     in property <int> exclusive-mode;
-    in property <bool> asio-available;
+    in property <int> preferred-exclusive-mode: 1;
+    in property <bool> asio-configured;
     in property <bool> asio-fallback;
     in property <bool> exclusive-busy;
-    callback toggle-exclusive(bool);
+    in property <string> wasapi-device-label: "系统默认";
+    in property <string> asio-driver-label;
+    in property <bool> asio-error;
+    callback toggle-exclusive();
     callback select-exclusive-mode(int);
+    callback open-audio-settings();
     in property <bool> sleep-active;
     // Remaining time or the mode, next to the button.
     in property <string> sleep-label;
@@ -440,17 +614,36 @@ export component PlayerBar inherits Rectangle {
         min-width: root.side-w;
         alignment: end;
         spacing: 4px;
-        exclusive-button := BarButton {
+        exclusive-anchor := Rectangle {
             y: (parent.height - self.height) / 2;
-            icon: IconKind.speaker;
-            text: root.tight ? "" : root.exclusive-busy ? "切换中…" : root.exclusive-mode == 2 ? (root.asio-fallback ? "WASAPI" : "ASIO") : "独占";
-            chip: root.exclusive || root.exclusive-mode != 0;
-            enabled: !root.exclusive-busy;
-            clicked => {
-                if root.asio-available {
-                    exclusive-menu.show();
-                } else {
-                    root.toggle-exclusive(!root.exclusive);
+            height: 36px;
+            width: exclusive-slot.preferred-width;
+            exclusive-slot := HorizontalLayout {
+                if !root.asio-configured: BarButton {
+                    icon: IconKind.speaker;
+                    text: root.tight ? "" : root.exclusive-busy ? "切换中…" : "独占";
+                    chip: root.exclusive || root.exclusive-mode != 0;
+                    enabled: !root.exclusive-busy;
+                    clicked => {
+                        root.toggle-exclusive();
+                    }
+                }
+                if root.asio-configured: ExclusiveSplitButton {
+                    text: root.tight ? "" : root.exclusive-busy ? "切换中…" : root.exclusive-mode == 2 ? (root.asio-fallback ? "WASAPI" : "ASIO") : root.exclusive-mode == 1 ? "WASAPI" : "独占";
+                    chip: root.exclusive || root.exclusive-mode != 0;
+                    enabled: !root.exclusive-busy;
+                    tight: root.tight;
+                    menu-open: exclusive-menu.is-open;
+                    clicked => {
+                        root.toggle-exclusive();
+                    }
+                    open-menu => {
+                        if exclusive-menu.is-open {
+                            exclusive-menu.close();
+                        } else {
+                            exclusive-menu.show();
+                        }
+                    }
                 }
             }
         }
@@ -529,9 +722,9 @@ export component PlayerBar inherits Rectangle {
     } // bar layout
 
     exclusive-menu := PopupWindow {
-        x: min(exclusive-button.absolute-position.x - root.absolute-position.x, root.width - 210px);
+        x: max(8px, min(exclusive-anchor.absolute-position.x - root.absolute-position.x + exclusive-anchor.width - self.width, root.width - self.width - 10px));
         y: -self.height - 10px;
-        width: 200px;
+        width: 276px;
         close-policy: close-on-click-outside;
         Rectangle {
             background: Theme.raised;
@@ -540,48 +733,102 @@ export component PlayerBar inherits Rectangle {
             border-color: Theme.border;
             VerticalLayout {
                 padding: 6px;
-                Text {
-                    text: "独占输出";
-                    color: Theme.text-faint;
-                    font-size: 12px;
-                    height: 24px;
-                    vertical-alignment: center;
-                    x: 10px;
+                spacing: 2px;
+                HorizontalLayout {
+                    height: 26px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text {
+                        text: "独占输出模式";
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: "热切换";
+                        color: Theme.text-faint;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
                 }
-                for option in [
-                    { label: "关闭", mode: 0 },
-                    { label: "WASAPI 独占", mode: 1 },
-                    { label: "ASIO 独占", mode: 2 },
-                ]: Rectangle {
-                    height: 30px;
-                    border-radius: 6px;
-                    background: exclusive-item-area.has-hover ? Theme.surface-hover : transparent;
+                ExclusiveMenuRow {
+                    name: "关闭（系统混音）";
+                    detail: root.wasapi-device-label;
+                    active: root.exclusive-mode == 0;
+                    clicked => {
+                        if root.exclusive-mode != 0 {
+                            root.select-exclusive-mode(0);
+                        }
+                        exclusive-menu.close();
+                    }
+                }
+                ExclusiveMenuRow {
+                    name: "WASAPI 独占";
+                    detail: root.wasapi-device-label;
+                    active: root.exclusive-mode == 1;
+                    badge: root.exclusive-mode == 0 && root.preferred-exclusive-mode == 1 ? "左键默认" : "";
+                    clicked => {
+                        if root.exclusive-mode != 1 {
+                            root.select-exclusive-mode(1);
+                        }
+                        exclusive-menu.close();
+                    }
+                }
+                ExclusiveMenuRow {
+                    name: "ASIO 独占";
+                    detail: root.asio-driver-label != "" ? root.asio-driver-label : "已选 ASIO 驱动";
+                    active: root.exclusive-mode == 2;
+                    badge: root.asio-error ? "未就绪"
+                        : root.exclusive-mode == 2 && root.asio-fallback ? "Opus 回落"
+                        : root.exclusive-mode == 0 && root.preferred-exclusive-mode == 2 ? "左键默认"
+                        : "";
+                    badge-danger: root.asio-error;
+                    badge-warn: !root.asio-error && root.exclusive-mode == 2 && root.asio-fallback;
+                    clicked => {
+                        if root.exclusive-mode != 2 {
+                            root.select-exclusive-mode(2);
+                        }
+                        exclusive-menu.close();
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        x: 6px;
+                        y: 4px;
+                        width: parent.width - 12px;
+                        height: 1px;
+                        background: Theme.border;
+                    }
+                }
+                Rectangle {
+                    height: 32px;
+                    border-radius: 7px;
+                    background: audio-settings-area.has-hover ? Theme.surface-hover : transparent;
                     HorizontalLayout {
                         padding-left: 10px;
                         padding-right: 10px;
                         Text {
-                            text: option.label;
-                            font-family: Fonts.family(self.text);
-                            color: root.exclusive-mode == option.mode ? Theme.accent-text : Theme.text;
-                            font-weight: root.exclusive-mode == option.mode ? 600 : 400;
+                            text: "音频设备与 ASIO 设置…";
+                            color: audio-settings-area.has-hover ? Theme.text : Theme.text-dim;
+                            font-size: 12px;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                         }
-                        if root.exclusive-mode == option.mode: Icon {
+                        Icon {
                             y: (parent.height - self.height) / 2;
-                            kind: IconKind.check;
+                            kind: IconKind.chevron-right;
                             width: 14px;
                             height: 14px;
-                            color: Theme.accent-text;
+                            color: audio-settings-area.has-hover ? Theme.text : Theme.text-faint;
                         }
                     }
-                    exclusive-item-area := TouchArea {
+                    audio-settings-area := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
+                            root.open-audio-settings();
                             exclusive-menu.close();
-                            if option.mode != root.exclusive-mode {
-                                root.select-exclusive-mode(option.mode);
-                            }
                         }
                     }
                 }

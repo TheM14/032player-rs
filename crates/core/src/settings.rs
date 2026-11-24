@@ -337,12 +337,22 @@ impl Settings {
         }
     }
 
+    /// Preferred exclusive backend remembered across on/off toggles.
+    #[must_use]
+    pub fn preferred_exclusive_mode(&self) -> ExclusiveMode {
+        if self.asio {
+            ExclusiveMode::Asio
+        } else {
+            ExclusiveMode::Wasapi
+        }
+    }
+
     /// Updates `exclusive` and `asio` flags from `mode`.
+    /// Turning exclusive off preserves `asio` as the preferred backend.
     pub fn set_exclusive_mode(&mut self, mode: ExclusiveMode) {
         match mode {
             ExclusiveMode::Off => {
                 self.exclusive = false;
-                self.asio = false;
             }
             ExclusiveMode::Wasapi => {
                 self.exclusive = true;
@@ -644,6 +654,23 @@ mod tests {
             mixed.asio_channel_pair("{D323B478-A475-B063-6A36-197FAF1D0689}"),
             (4, 5)
         );
+
+        // Turning exclusive off remembers the preferred backend (WASAPI or ASIO).
+        let mut pref = Settings::default();
+        assert_eq!(pref.preferred_exclusive_mode(), ExclusiveMode::Wasapi);
+        pref.set_exclusive_mode(ExclusiveMode::Asio);
+        assert_eq!(pref.exclusive_mode(), ExclusiveMode::Asio);
+        assert_eq!(pref.preferred_exclusive_mode(), ExclusiveMode::Asio);
+        pref.set_exclusive_mode(ExclusiveMode::Off);
+        assert_eq!(pref.exclusive_mode(), ExclusiveMode::Off);
+        assert_eq!(pref.preferred_exclusive_mode(), ExclusiveMode::Asio);
+        pref.set_exclusive_mode(ExclusiveMode::Wasapi);
+        assert_eq!(pref.exclusive_mode(), ExclusiveMode::Wasapi);
+        assert_eq!(pref.preferred_exclusive_mode(), ExclusiveMode::Wasapi);
+        pref.set_exclusive_mode(ExclusiveMode::Off);
+        assert_eq!(pref.exclusive_mode(), ExclusiveMode::Off);
+        assert_eq!(pref.preferred_exclusive_mode(), ExclusiveMode::Wasapi);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

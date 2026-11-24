@@ -2083,13 +2083,21 @@ fn main() {
     set(&inst, "audio-device-index", Value::Number(2.0));
     set(&inst, "exclusive", Value::Bool(true));
     set(&inst, "exclusive-mode", Value::Number(2.0));
+    set(&inst, "preferred-exclusive-mode", Value::Number(2.0));
     set(&inst, "asio-available", Value::Bool(true));
+    set(&inst, "asio-configured", Value::Bool(true));
+    set(&inst, "wasapi-device-label", s("Topping E30 II"));
+    set(&inst, "asio-driver-label", s("MiniFuse ASIO Driver"));
     set(
         &inst,
         "asio-drivers",
-        strings(&["MiniFuse ASIO Driver", "Topping USB Audio Device"]),
+        strings(&[
+            "不使用 ASIO（仅用 WASAPI）",
+            "MiniFuse ASIO Driver",
+            "Topping USB Audio Device",
+        ]),
     );
-    set(&inst, "asio-driver-index", Value::Number(0.0));
+    set(&inst, "asio-driver-index", Value::Number(1.0));
     set(
         &inst,
         "asio-status",

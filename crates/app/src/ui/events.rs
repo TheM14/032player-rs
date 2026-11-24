@@ -1274,6 +1274,7 @@ pub fn apply(event: Event) {
         Event::AudioDevice(device) => {
             *ui.selected_device.borrow_mut() = device;
             w.set_audio_device_index(ui.device_index());
+            ui.sync_device_label(w);
             w.set_output_busy(false);
         }
         Event::Exclusive(enabled) => {
@@ -1282,12 +1283,16 @@ pub fn apply(event: Event) {
         }
         Event::OutputMode {
             mode,
+            preferred_mode,
             asio_available,
+            asio_configured,
             asio_fallback,
         } => {
             w.set_exclusive(mode != ExclusiveMode::Off);
             w.set_exclusive_mode(exclusive_mode_index(mode));
+            w.set_preferred_exclusive_mode(exclusive_mode_index(preferred_mode));
             w.set_asio_available(asio_available);
+            w.set_asio_configured(asio_configured);
             w.set_asio_fallback(asio_fallback);
             w.set_output_busy(false);
         }

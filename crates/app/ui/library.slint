@@ -995,29 +995,29 @@ export component ArtistHeader inherits Rectangle {
                                     MenuRow {
                                         text: "随机播放";
                                         clicked => {
-                                            play-menu.close();
                                             root.action("shuffle", 0);
+                                            play-menu.close();
                                         }
                                     }
                                     MenuRow {
                                         text: "下一首播放";
                                         clicked => {
-                                            play-menu.close();
                                             root.action("next", 0);
+                                            play-menu.close();
                                         }
                                     }
                                     MenuRow {
                                         text: "添加到队列末尾";
                                         clicked => {
-                                            play-menu.close();
                                             root.action("last", 0);
+                                            play-menu.close();
                                         }
                                     }
                                     if root.favorite-count > 0: MenuRow {
                                         text: "播放收藏";
                                         clicked => {
-                                            play-menu.close();
                                             root.action("play-favorites", 0);
+                                            play-menu.close();
                                         }
                                     }
                                 }
@@ -1062,8 +1062,8 @@ export component ArtistHeader inherits Rectangle {
                                     MenuRow {
                                         text: "新建歌单…";
                                         clicked => {
-                                            more-menu.close();
                                             root.action("new-playlist", 0);
+                                            more-menu.close();
                                         }
                                     }
                                     Flickable {
@@ -1073,8 +1073,8 @@ export component ArtistHeader inherits Rectangle {
                                             for p in root.playlists: MenuRow {
                                                 text: p.name;
                                                 clicked => {
-                                                    more-menu.close();
                                                     root.action("add", p.id);
+                                                    more-menu.close();
                                                 }
                                             }
                                         }

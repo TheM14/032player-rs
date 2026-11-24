@@ -319,7 +319,7 @@ async fn generic_asio_selection_port_switch_and_opus_fallback() {
     );
 
     // User selects MiniFuse ASIO Driver -> probes on demand and discovers 2 stereo ports.
-    core.send(Command::SetAsioDriver(CLSID_MINIFUSE.into()));
+    core.send(Command::SetAsioDriver(Some(CLSID_MINIFUSE.into())));
     wait(&rx, "minifuse probed", |e| {
         matches!(
             e,
@@ -395,7 +395,7 @@ async fn generic_asio_selection_port_switch_and_opus_fallback() {
     });
 
     // Hot-switch to a completely different ASIO driver (Topping) while playing.
-    core.send(Command::SetAsioDriver(CLSID_TOPPING.into()));
+    core.send(Command::SetAsioDriver(Some(CLSID_TOPPING.into())));
     wait_call(&engine, &format!("load asio {CLSID_TOPPING}[0:1] {url1}")).await;
     core.engine_event(EngineEvent::FileLoaded {
         path: Some(url1.clone()),
@@ -421,7 +421,9 @@ async fn generic_asio_selection_port_switch_and_opus_fallback() {
             e,
             Event::OutputMode {
                 mode: ExclusiveMode::Asio,
+                preferred_mode: ExclusiveMode::Asio,
                 asio_available: true,
+                asio_configured: true,
                 asio_fallback: true,
             }
         )
@@ -450,7 +452,9 @@ async fn generic_asio_selection_port_switch_and_opus_fallback() {
             e,
             Event::OutputMode {
                 mode: ExclusiveMode::Asio,
+                preferred_mode: ExclusiveMode::Asio,
                 asio_available: true,
+                asio_configured: true,
                 asio_fallback: false,
             }
         )
@@ -522,7 +526,9 @@ async fn refresh_audio_devices_hands_over_when_saved_asio_driver_appears() {
             e,
             Event::OutputMode {
                 mode: ExclusiveMode::Asio,
+                preferred_mode: ExclusiveMode::Asio,
                 asio_available: true,
+                asio_configured: true,
                 asio_fallback: false,
             }
         )
@@ -653,7 +659,7 @@ async fn failed_driver_switch_while_playing_rolls_back_and_preserves_ports() {
 
     // Attempt to switch to a disconnected Topping DAC while MiniFuse is actively streaming.
     engine.topping_ready.store(false, Ordering::Relaxed);
-    core.send(Command::SetAsioDriver(CLSID_TOPPING.into()));
+    core.send(Command::SetAsioDriver(Some(CLSID_TOPPING.into())));
     wait(
         &rx,
         "switch failure notice",
@@ -798,6 +804,164 @@ async fn legacy_asio_migrates_sole_driver_and_idle_switch_probes_once() {
     );
 
     tokio::task::spawn_blocking(move || core2.shutdown())
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quick_toggle_remembers_backend_and_clearing_driver_reverts_to_wasapi() {
+    let server = setup_server().await;
+    let engine = Arc::new(AsioFakeEngine::default());
+    engine.drivers_installed.store(true, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("032player-asio-toggle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (tx, rx) = mpsc::channel();
+    let core = client_core::start(
+        engine.clone(),
+        CoreConfig {
+            data_dir: dir.clone(),
+            secrets: Arc::new(MemorySecrets::default()),
+            settings: Settings::default(),
+        },
+        move |e| {
+            let _ = tx.send(e);
+        },
+    );
+
+    // Installed ASIO drivers without user selection keep asio_configured=false,
+    // so quick toggle switches Off <-> WASAPI only.
+    core.send(Command::RefreshAudioDevices);
+    wait(&rx, "unconfigured asio", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Off,
+                preferred_mode: ExclusiveMode::Wasapi,
+                asio_available: true,
+                asio_configured: false,
+                asio_fallback: false,
+            }
+        )
+    });
+
+    core.send(Command::ToggleExclusive);
+    wait(&rx, "quick toggle to wasapi", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Wasapi,
+                preferred_mode: ExclusiveMode::Wasapi,
+                asio_configured: false,
+                ..
+            }
+        )
+    });
+    core.send(Command::ToggleExclusive);
+    wait(&rx, "quick toggle back off", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Off,
+                preferred_mode: ExclusiveMode::Wasapi,
+                asio_configured: false,
+                ..
+            }
+        )
+    });
+
+    // Configure an ASIO driver -> asio_configured becomes true.
+    core.send(Command::SetAsioDriver(Some(CLSID_MINIFUSE.into())));
+    wait(&rx, "asio configured", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                asio_available: true,
+                asio_configured: true,
+                ..
+            }
+        )
+    });
+    wait(
+        &rx,
+        "minifuse ready",
+        |e| matches!(e, Event::AsioState(s) if s.ready && s.selected_clsid.as_deref() == Some(CLSID_MINIFUSE)),
+    );
+
+    // Switch to ASIO, then toggle off -> preferred_mode stays ASIO.
+    core.send(Command::SetExclusiveMode(ExclusiveMode::Asio));
+    wait(&rx, "asio active", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Asio,
+                preferred_mode: ExclusiveMode::Asio,
+                asio_configured: true,
+                ..
+            }
+        )
+    });
+    core.send(Command::ToggleExclusive);
+    wait(&rx, "toggle off remembers asio", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Off,
+                preferred_mode: ExclusiveMode::Asio,
+                asio_configured: true,
+                ..
+            }
+        )
+    });
+
+    // Toggle on again -> directly restores ASIO in one step.
+    core.send(Command::ToggleExclusive);
+    wait(&rx, "toggle on restores asio", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Asio,
+                preferred_mode: ExclusiveMode::Asio,
+                asio_configured: true,
+                ..
+            }
+        )
+    });
+
+    // Start playback on ASIO, then clear ASIO driver -> hands over to WASAPI and hides ASIO split button.
+    core.send(Command::Login {
+        server_url: server.uri(),
+        api_token: "api".into(),
+        media_token: "media".into(),
+    });
+    wait(
+        &rx,
+        "tracks loaded",
+        |e| matches!(e, Event::TracksAppended { items, .. } if items.len() == 3),
+    );
+    let url1 = format!("{}/api/v1/tracks/1/stream?mediaToken=media", server.uri());
+    core.send(Command::Play(TrackSource::Track(TrackList::Library, 0)));
+    wait_call(&engine, &format!("load asio {CLSID_MINIFUSE}[0:1] {url1}")).await;
+    core.engine_event(EngineEvent::FileLoaded {
+        path: Some(url1.clone()),
+    });
+
+    core.send(Command::SetAsioDriver(None));
+    wait(&rx, "cleared asio driver reverts to wasapi", |e| {
+        matches!(
+            e,
+            Event::OutputMode {
+                mode: ExclusiveMode::Wasapi,
+                preferred_mode: ExclusiveMode::Wasapi,
+                asio_available: true,
+                asio_configured: false,
+                asio_fallback: false,
+            }
+        )
+    });
+    wait_call(&engine, &format!("load wasapi {url1}")).await;
+
+    tokio::task::spawn_blocking(move || core.shutdown())
         .await
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);

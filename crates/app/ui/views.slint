@@ -225,8 +225,8 @@ export component ArtistLinks inherits Rectangle {
                             hover-open.running = false;
                             hover-close.running = false;
                             chip.panel-hovered = false;
-                            artists-popup.close();
                             root.open(id);
+                            artists-popup.close();
                         }
                     }
                 }
@@ -1104,8 +1104,8 @@ export component TrackRowView inherits Rectangle {
                                 hover-open.running = false;
                                 hover-close.running = false;
                                 tieup-badge.card-hovered = false;
-                                tieup-popup.close();
                                 root.action("work", id);
+                                tieup-popup.close();
                             }
                         }
                     }

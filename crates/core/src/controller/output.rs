@@ -135,6 +135,15 @@ impl Core {
         );
     }
 
+    pub(super) fn toggle_exclusive(&mut self) {
+        let target = if self.effective_exclusive_mode() != ExclusiveMode::Off {
+            ExclusiveMode::Off
+        } else {
+            self.preferred_exclusive_mode()
+        };
+        self.set_exclusive_mode(target);
+    }
+
     pub(super) fn set_exclusive_mode(&mut self, mode: ExclusiveMode) {
         if self.output.busy {
             self.emit_output_mode();
@@ -207,11 +216,30 @@ impl Core {
         });
     }
 
-    pub(super) fn set_asio_driver(&mut self, clsid: String) {
+    pub(super) fn set_asio_driver(&mut self, clsid: Option<String>) {
         if self.output.busy {
             self.emit_asio_state();
             return;
         }
+        let Some(clsid) = clsid.filter(|s| !s.trim().is_empty()) else {
+            if self.settings.asio_driver.is_none() && !self.settings.asio {
+                self.emit_output_mode();
+                self.emit_asio_state();
+                return;
+            }
+            self.output.asio_probe_seq = self.output.asio_probe_seq.wrapping_add(1);
+            self.update_settings(|s| {
+                s.asio_driver = None;
+                s.asio = false;
+            });
+            self.output.asio_ready = false;
+            self.refresh_asio_status_without_probe();
+            self.maybe_handover_backend();
+            self.sync_engine_asio_target();
+            self.emit_output_mode();
+            self.emit_asio_state();
+            return;
+        };
         let canonical = self
             .output
             .asio_drivers
@@ -330,13 +358,22 @@ impl Core {
         let _ = self.engine.set_asio_target(self.selected_asio_target());
     }
 
+    pub(super) fn asio_configured(&self) -> bool {
+        self.output.asio_available && self.selected_asio_target().is_some()
+    }
+
+    pub(super) fn preferred_exclusive_mode(&self) -> ExclusiveMode {
+        if self.settings.asio && self.asio_configured() {
+            ExclusiveMode::Asio
+        } else {
+            ExclusiveMode::Wasapi
+        }
+    }
+
     pub(super) fn effective_exclusive_mode(&self) -> ExclusiveMode {
         if !self.settings.exclusive {
             ExclusiveMode::Off
-        } else if self.settings.asio
-            && self.output.asio_available
-            && self.selected_asio_target().is_some()
-        {
+        } else if self.settings.asio && self.asio_configured() {
             ExclusiveMode::Asio
         } else {
             ExclusiveMode::Wasapi
@@ -346,7 +383,9 @@ impl Core {
     pub(super) fn emit_output_mode(&self) {
         self.emit(Event::OutputMode {
             mode: self.effective_exclusive_mode(),
+            preferred_mode: self.preferred_exclusive_mode(),
             asio_available: self.output.asio_available,
+            asio_configured: self.asio_configured(),
             asio_fallback: self.output.asio_fallback,
         });
     }
@@ -401,7 +440,7 @@ impl Core {
             self.output.asio_status = if self.output.asio_drivers.is_empty() {
                 "未检测到已安装的 ASIO 驱动".into()
             } else {
-                "请选择要使用的 ASIO 驱动".into()
+                "当前仅使用 WASAPI；选定驱动后将在播放条启用 ASIO 快捷切换".into()
             };
             return;
         };
@@ -455,7 +494,7 @@ impl Core {
             self.output.asio_status = if self.output.asio_drivers.is_empty() {
                 "未检测到已安装的 ASIO 驱动".into()
             } else {
-                "请选择要使用的 ASIO 驱动".into()
+                "当前仅使用 WASAPI；选定驱动后将在播放条启用 ASIO 快捷切换".into()
             };
             self.emit_asio_state();
             return;

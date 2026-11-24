@@ -903,6 +903,9 @@ fn shell(inst: &ComponentInstance) {
     set(inst, "np-cover-large", Value::Image(art("dekai")));
     set(inst, "full-cover", Value::Image(art("dekai")));
     set(inst, "exclusive", Value::Bool(true));
+    set(inst, "exclusive-mode", Value::Number(1.0));
+    set(inst, "preferred-exclusive-mode", Value::Number(1.0));
+    set(inst, "asio-configured", Value::Bool(false));
     set(inst, "sleep-active", Value::Bool(true));
     set(inst, "sleep-label", s("29:41"));
     set(inst, "repeat", n(2.0));

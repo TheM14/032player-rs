@@ -47,8 +47,13 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     });
     window.set_exclusive(settings.exclusive);
     window.set_exclusive_mode(exclusive_mode_index(settings.exclusive_mode()));
+    window.set_preferred_exclusive_mode(exclusive_mode_index(settings.preferred_exclusive_mode()));
     window.set_asio_available(false);
+    window.set_asio_configured(false);
     window.set_asio_fallback(false);
+    window.set_wasapi_device_label("系统默认".into());
+    window.set_asio_driver_label(SharedString::new());
+    window.set_asio_error(false);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_fade_on_pause(settings.fade_on_pause);
     window.set_theme_mode(match settings.theme {
@@ -132,6 +137,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         window_state: Cell::new(settings.window),
         update_url: RefCell::default(),
         device_names: RefCell::new(vec![None]),
+        device_labels: RefCell::new(vec!["系统默认".into()]),
         selected_device: RefCell::new(settings.audio_device.clone()),
         asio_driver_clsids: RefCell::new(Vec::new()),
         asio_channel_pairs: RefCell::new(Vec::new()),
@@ -517,6 +523,10 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
         }));
     });
     let c = commander.clone();
+    window.on_exclusive_quick_toggled(move || {
+        c.send(Command::ToggleExclusive);
+    });
+    let c = commander.clone();
     window.on_exclusive_mode_selected(move |index| {
         let mode = match index {
             1 => ExclusiveMode::Wasapi,
@@ -533,7 +543,6 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
             usize::try_from(index)
                 .ok()
                 .and_then(|i| clsids.get(i).cloned())
-                .flatten()
         });
         if let Some(clsid) = clsid {
             c.send(Command::SetAsioDriver(clsid));

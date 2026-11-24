@@ -442,8 +442,10 @@ struct Ui {
     /// Engine names behind the device combo box; index 0 (`None`) is the
     /// system default.
     device_names: RefCell<Vec<Option<String>>>,
+    /// Display labels aligned with `device_names`.
+    device_labels: RefCell<Vec<SharedString>>,
     selected_device: RefCell<Option<String>>,
-    /// CLSIDs behind the ASIO driver combo box (`None` = placeholder).
+    /// CLSIDs behind the ASIO driver combo box (`None` = ASIO disabled).
     asio_driver_clsids: RefCell<Vec<Option<String>>>,
     /// `(left, right)` channel indices behind the ASIO output port combo box.
     asio_channel_pairs: RefCell<Vec<(usize, usize)>>,
@@ -462,6 +464,17 @@ impl Ui {
             .position(|n| *n == *selected)
             .and_then(|i| i32::try_from(i).ok())
             .unwrap_or(0)
+    }
+
+    fn sync_device_label(&self, w: &AppWindow) {
+        let index = usize::try_from(self.device_index()).unwrap_or(0);
+        let label = self
+            .device_labels
+            .borrow()
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| "系统默认".into());
+        w.set_wasapi_device_label(label);
     }
 
     /// Fills the device combo box; a saved device that is not connected
@@ -485,17 +498,15 @@ impl Ui {
             names.push(Some(selected));
         }
         *self.device_names.borrow_mut() = names;
+        *self.device_labels.borrow_mut() = labels.clone();
         w.set_audio_devices(ModelRc::new(VecModel::from(labels)));
         w.set_audio_device_index(self.device_index());
+        self.sync_device_label(w);
     }
 
     fn set_asio_state(&self, w: &AppWindow, state: AsioStateView) {
-        let mut clsids: Vec<Option<String>> = Vec::new();
-        let mut labels: Vec<SharedString> = Vec::new();
-        if state.selected_clsid.is_none() {
-            clsids.push(None);
-            labels.push("请选择 ASIO 驱动".into());
-        }
+        let mut clsids: Vec<Option<String>> = vec![None];
+        let mut labels: Vec<SharedString> = vec!["不使用 ASIO（仅用 WASAPI）".into()];
         for d in &state.drivers {
             clsids.push(Some(d.clsid.clone()));
             labels.push(d.name.clone().into());
@@ -519,10 +530,24 @@ impl Ui {
             })
             .and_then(|i| i32::try_from(i).ok())
             .unwrap_or(0);
+        let selected_driver_label = state
+            .selected_clsid
+            .as_deref()
+            .and_then(|sel| {
+                state
+                    .drivers
+                    .iter()
+                    .find(|d| d.clsid.eq_ignore_ascii_case(sel))
+                    .map(|d| d.name.clone())
+            })
+            .unwrap_or_default();
+        let asio_error = state.status.starts_with("设备未就绪") || state.status.contains("未安装");
         *self.asio_driver_clsids.borrow_mut() = clsids;
         w.set_asio_drivers(ModelRc::new(VecModel::from(labels)));
         w.set_asio_driver_index(driver_index);
         w.set_asio_status(state.status.into());
+        w.set_asio_driver_label(selected_driver_label.into());
+        w.set_asio_error(asio_error);
 
         let mut pair_coords = Vec::with_capacity(state.channel_pairs.len());
         let mut pair_labels: Vec<SharedString> = Vec::with_capacity(state.channel_pairs.len());

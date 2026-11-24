@@ -220,10 +220,13 @@ pub enum Command {
     SetAudioDevice(Option<String>),
     /// Answered with [`Event::Exclusive`] (the old value on failure).
     SetExclusive(bool),
+    /// Toggles exclusive output on/off using the remembered preferred backend.
+    ToggleExclusive,
     /// Answered with [`Event::OutputMode`] (old state on failure).
     SetExclusiveMode(ExclusiveMode),
-    /// Selects an installed ASIO driver by CLSID and probes its ports.
-    SetAsioDriver(String),
+    /// Selects an installed ASIO driver by CLSID (`None` disables ASIO and
+    /// reverts to WASAPI-only mode) and probes its ports when selected.
+    SetAsioDriver(Option<String>),
     /// Selects a stereo output channel pair `(left, right)` for the active ASIO driver.
     SetAsioChannelPair(usize, usize),
     /// Refreshes installed ASIO drivers and re-probes the selected driver.
@@ -706,10 +709,13 @@ pub enum Event {
     /// Selected output device (`None` = system default).
     AudioDevice(Option<String>),
     Exclusive(bool),
-    /// Effective output mode, ASIO device availability, and Opus fallback state.
+    /// Effective output mode, remembered preferred backend, ASIO driver
+    /// availability/configuration, and Opus fallback state.
     OutputMode {
         mode: ExclusiveMode,
+        preferred_mode: ExclusiveMode,
         asio_available: bool,
+        asio_configured: bool,
         asio_fallback: bool,
     },
     /// Snapshot of discovered ASIO drivers, selected target, and probed capabilities.
@@ -1722,6 +1728,7 @@ impl Core {
             Command::RefreshAudioSettings => self.refresh_audio_devices(true),
             Command::SetAudioDevice(device) => self.set_audio_device(device),
             Command::SetExclusive(enabled) => self.set_exclusive(enabled),
+            Command::ToggleExclusive => self.toggle_exclusive(),
             Command::SetExclusiveMode(mode) => self.set_exclusive_mode(mode),
             Command::SetAsioDriver(clsid) => self.set_asio_driver(clsid),
             Command::SetAsioChannelPair(left, right) => self.set_asio_channel_pair(left, right),

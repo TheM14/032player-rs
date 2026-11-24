@@ -684,8 +684,13 @@ export component AppWindow inherits Window {
     in-out property <int> audio-device-index;
     in-out property <bool> exclusive;
     in-out property <int> exclusive-mode;
+    in property <int> preferred-exclusive-mode: 1;
     in property <bool> asio-available;
+    in property <bool> asio-configured;
     in property <bool> asio-fallback;
+    in property <string> wasapi-device-label: "系统默认";
+    in property <string> asio-driver-label;
+    in property <bool> asio-error;
     in property <[string]> asio-drivers;
     in-out property <int> asio-driver-index;
     in property <string> asio-status;
@@ -695,6 +700,7 @@ export component AppWindow inherits Window {
     callback settings-opened();
     callback audio-device-selected(int);
     callback exclusive-toggled(bool);
+    callback exclusive-quick-toggled();
     callback exclusive-mode-selected(int);
     callback asio-driver-selected(int);
     callback asio-channel-pair-selected(int);
@@ -2221,6 +2227,7 @@ export component AppWindow inherits Window {
                     exclusive <=> root.exclusive;
                     exclusive-mode <=> root.exclusive-mode;
                     asio-available: root.asio-available;
+                    asio-configured: root.asio-configured;
                     asio-fallback: root.asio-fallback;
                     asio-drivers: root.asio-drivers;
                     asio-driver-index <=> root.asio-driver-index;
@@ -2340,16 +2347,23 @@ export component AppWindow inherits Window {
             tier: root.tier;
             exclusive: root.exclusive;
             exclusive-mode: root.exclusive-mode;
-            asio-available: root.asio-available;
+            preferred-exclusive-mode: root.preferred-exclusive-mode;
+            asio-configured: root.asio-configured;
             asio-fallback: root.asio-fallback;
             exclusive-busy: root.output-busy;
-            toggle-exclusive(on) => {
+            wasapi-device-label: root.wasapi-device-label;
+            asio-driver-label: root.asio-driver-label;
+            asio-error: root.asio-error;
+            toggle-exclusive => {
                 root.output-busy = true;
-                root.exclusive-toggled(on);
+                root.exclusive-quick-toggled();
             }
             select-exclusive-mode(m) => {
                 root.output-busy = true;
                 root.exclusive-mode-selected(m);
+            }
+            open-audio-settings => {
+                root.navigate(2, 0);
             }
             has-track: root.has-track;
             show-cover: !root.panel-shown || root.full-open;

@@ -94,7 +94,7 @@ export component PlayingBars inherits Rectangle {
     }
 }
 
-export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check, cast, versions, radio, infinity, refresh }
+export enum IconKind { play, pause, next, previous, lyrics, shuffle, repeat, repeat-one, queue, close, sleep, heart, heart-outline, back, search, plus, arrow-up, arrow-down, more, locate, trash, playlist-add, home, disc, note, person, people, work, layers, history, gear, list, logout, chevron-up, chevron-down, chevron-right, minus, volume, info, speaker, lang, expand, sliders, list-plus, sort-desc, check, cast, versions, radio, infinity, refresh }
 
 export struct CastRoomRow {
     id: string,
@@ -203,6 +203,7 @@ export component Icon inherits Path {
         : root.kind == IconKind.gear ? "M 12.22 2 L 11.78 2 A 2 2 0 0 0 9.78 4 L 9.78 4.18 A 2 2 0 0 1 8.78 5.91 L 8.35 6.16 A 2 2 0 0 1 6.35 6.16 L 6.2 6.08 A 2 2 0 0 0 3.47 6.81 L 3.25 7.19 A 2 2 0 0 0 3.98 9.92 L 4.13 10.02 A 2 2 0 0 1 5.13 11.74 L 5.13 12.25 A 2 2 0 0 1 4.13 13.99 L 3.98 14.08 A 2 2 0 0 0 3.25 16.81 L 3.47 17.19 A 2 2 0 0 0 6.2 17.92 L 6.35 17.84 A 2 2 0 0 1 8.35 17.84 L 8.78 18.09 A 2 2 0 0 1 9.78 19.82 L 9.78 20 A 2 2 0 0 0 11.78 22 L 12.22 22 A 2 2 0 0 0 14.22 20 L 14.22 19.82 A 2 2 0 0 1 15.22 18.09 L 15.65 17.84 A 2 2 0 0 1 17.65 17.84 L 17.8 17.92 A 2 2 0 0 0 20.53 17.19 L 20.75 16.8 A 2 2 0 0 0 20.02 14.07 L 19.87 13.99 A 2 2 0 0 1 18.87 12.25 L 18.87 11.75 A 2 2 0 0 1 19.87 10.01 L 20.02 9.92 A 2 2 0 0 0 20.75 7.19 L 20.53 6.81 A 2 2 0 0 0 17.8 6.08 L 17.65 6.16 A 2 2 0 0 1 15.65 6.16 L 15.22 5.91 A 2 2 0 0 1 14.22 4.18 L 14.22 4 A 2 2 0 0 0 12.22 2 Z M 9 12 A 3 3 0 1 0 15 12 A 3 3 0 1 0 9 12 Z"
         : root.kind == IconKind.list ? "M 8 6 L 20 6 M 8 12 L 20 12 M 8 18 L 20 18 M 4 6 L 4.01 6 M 4 12 L 4.01 12 M 4 18 L 4.01 18"
         : root.kind == IconKind.logout ? "M 14 4 L 19 4 L 19 20 L 14 20 M 10 8 L 6 12 L 10 16 M 6 12 L 15 12"
+        : root.kind == IconKind.chevron-up ? "M 6 15 L 12 9 L 18 15"
         : root.kind == IconKind.chevron-down ? "M 6 9 L 12 15 L 18 9"
         : root.kind == IconKind.chevron-right ? "M 9 18 L 15 12 L 9 6"
         : root.kind == IconKind.minus ? "M 5 12 L 19 12"
