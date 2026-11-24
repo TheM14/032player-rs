@@ -5,6 +5,9 @@
 
 ## 当前状态（2026-11-24）
 
+- **v0.2.30 正式版构建已安排**：优化相似歌曲电台与队列自动续播的理由展示与候选多样性，将结构化关联标签（同作品 / 同作者 / 共现歌单 / 同艺人）优先级置于「听感相似」之前，并在客户端兜底筛选中加入纯声学/结构关联穿插保护，配合 032 服务端混合权重调整避免队列清一色只出现听感相似曲目。正式安装包由 `v0.2.30` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.30 。
+- [x] 相似续播理由优先级与候选穿插优化 [core]：`primary_reason_label` 按 `sameWork > sharedCredit > coPlaylist > sameArtist > soundsSimilar > genre > era` 选取主标签；`filter_and_diversify` 在保留去重与同艺人限流的同时避免连续超过 2 首纯声学近邻霸榜（仅穿插分数达标的结构关联曲目），并补齐单元测试。
+
 - **v0.2.29 正式版构建已安排**：修复播放条独占弹出菜单在 Slint 1.18 下因先 `close()` 后发回调导致切换失效的 bug（并同步修复艺人页添加到歌单等同款弹窗调用顺序）；重构播放条独占按钮交互：未在设置中选定 ASIO 驱动（含仅装有虚拟/残留驱动）时保持简单单体一键开关，选定 ASIO 驱动后自动升级为分裂按钮（左键一键开/关并记忆 WASAPI/ASIO 偏好，右侧箭头或右键展开含设备/驱动副标题与设置入口的输出模式选单），设置页 ASIO 驱动下拉框新增「不使用 ASIO（仅用 WASAPI）」选项。正式安装包由 `v0.2.29` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.29 。
 - [x] 播放条独占按钮修复与 ASIO 分裂按钮改造 [core / app]：`Settings::set_exclusive_mode(Off)` 保留 `asio` 偏好，`Command::ToggleExclusive` 一键切换开关并恢复偏好后端，`Event::OutputMode` 增加 `preferred_mode` 与 `asio_configured`；`Command::SetAsioDriver(Option<String>)` 支持切回「不使用 ASIO（仅用 WASAPI）」并热交接回 WASAPI；播放条未配置 ASIO 时为单体开关，配置 ASIO 后升级为 `ExclusiveSplitButton`（左键一键切换、右侧箭头/右键打开 `ExclusiveMenuRow` 选单并先触发回调再 `close()`）；同步修复 `library.slint` / `views.slint` 中 `PopupWindow.close()` 调用顺序并补齐 `asio_mode.rs` 回归测试与 `ui-snapshot`。
 - [ ] **[Win]** 验证播放条独占切换与分裂按钮：
