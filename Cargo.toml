@@ -17,6 +17,7 @@ player = { path = "crates/player" }
 os = { path = "crates/os" }
 sonos = { path = "crates/sonos" }
 asio = { path = "crates/asio" }
+app-ui = { path = "crates/app-ui" }
 symphonia = { version = "0.5", default-features = false, features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "opt-simd", "pcm", "vorbis", "wav"] }
 
 serde = { version = "1", features = ["derive"] }
@@ -36,7 +37,8 @@ bytes = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 # Skip unused Slint `system-tray` (the app uses `os::tray` / `tray-icon` directly).
-slint = { version = "1.18", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }
+# Keep all app features unified here so `app-ui` and `app` share identical `slint` fingerprints.
+slint = { version = "1.18", default-features = false, features = ["std", "backend-default", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2", "raw-window-handle-06", "unstable-fontique-011", "unstable-winit-030"] }
 slint-build = "1.18"
 directories = "6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -70,5 +72,17 @@ debug = "line-tables-only"
 # Skip debuginfo for third-party dependencies in dev/test builds.
 debug = false
 
+[profile.dev.package.app-ui]
+# Skip debuginfo/PDB for the ~290k-line Slint generated module and parallelize codegen in CI.
+debug = false
+codegen-units = 64
+
 [profile.release]
 strip = "debuginfo"
+
+[profile.release.package.app-ui]
+# Generated Slint UI glue is not CPU-hot (rendering, decoding, and TLS stay at
+# opt-level 3 in their own crates). opt-level 1 + 64 CGUs cuts release build
+# time and avoids aggressive inlining bloat across ~25k generated functions.
+opt-level = 1
+codegen-units = 64

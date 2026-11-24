@@ -19,12 +19,8 @@ use std::time::Instant;
 use client_core::{Command, CoreConfig, Engine, EngineEvent, SecretStore, Settings};
 use slint::{ComponentHandle, Model};
 
-/// Code generated from `ui/*.slint`.
-#[allow(clippy::all, clippy::todo)]
-mod generated {
-    slint::include_modules!();
-}
-pub use generated::*;
+/// Code generated from `ui/*.slint` (compiled in the separate `app-ui` crate).
+pub use app_ui::*;
 
 type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
 

@@ -1,0 +1,24 @@
+[package]
+name = "app-ui"
+# Fixed version so workspace release version bumps do not invalidate the
+# compiled Slint UI crate when `.slint` sources have not changed.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+# Generated Slint bindings have no unit tests or doc-tests; skip building
+# duplicate test harnesses for the ~290k-line generated module.
+test = false
+doctest = false
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true

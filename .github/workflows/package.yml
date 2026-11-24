@@ -18,6 +18,7 @@ jobs:
     runs-on: windows-latest
     env:
       # Static CRT: runs without the VC++ redistributable.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -30,10 +31,56 @@ jobs:
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Ensure lld-link is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command lld-link -ErrorAction SilentlyContinue)) {
+            $candidates = @(
+              "C:\Program Files\LLVM\bin",
+              (Join-Path (rustc --print sysroot) "lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld")
+            )
+            foreach ($dir in $candidates) {
+              if (Test-Path (Join-Path $dir "lld-link.exe")) {
+                $dir >> $env:GITHUB_PATH
+                $env:PATH = "$dir;$env:PATH"
+                break
+              }
+            }
+          }
+          lld-link --version
+      - name: Rust environment fingerprint
+        id: rust-env
+        shell: pwsh
+        run: |
+          $parts = @(
+            (rustc --version --verbose | Out-String),
+            "RUSTFLAGS=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+            "LINKER=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER",
+            ((Select-String -Path Cargo.lock -Pattern '^checksum = ' | ForEach-Object { $_.Line }) -join "`n"),
+            ((Get-Content Cargo.toml | Select-String -Pattern '^(opt-level|debug|codegen-units|strip|\[profile\.)' | ForEach-Object { $_.Line }) -join "`n")
+          ) -join "`n---`n"
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($parts)
+          $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+          $hex = ([System.BitConverter]::ToString($sha) -replace '-', '').ToLowerInvariant().Substring(0, 16)
+          "hash=$hex" >> $env:GITHUB_OUTPUT
+      - id: rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Cache compiled Slint UI (app-ui release)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            target/release/build/app-ui
+            target/x86_64-pc-windows-msvc/release/build/app-ui
+          key: app-ui-win-release-v1-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
+      - name: Normalize app-ui input mtimes
+        shell: pwsh
+        run: |
+          $t = [DateTime]::SpecifyKind([DateTime]'2020-01-01T00:00:00', [DateTimeKind]::Utc)
+          Get-ChildItem -File -Recurse crates/app-ui, crates/app/ui | ForEach-Object { $_.LastWriteTimeUtc = $t }
+          (Get-Item crates/app/assets/icon.png).LastWriteTimeUtc = $t
       - name: Cache libmpv
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -41,7 +88,11 @@ jobs:
           key: libmpv-${{ hashFiles('crates/player/build.rs') }}
 
       - name: Build
-        run: cargo build -p app --release --target x86_64-pc-windows-msvc
+        shell: pwsh
+        run: |
+          $flags = @("--locked")
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*")) { $flags += "--offline" }
+          cargo build @flags -p app --release --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh

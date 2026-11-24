@@ -17,10 +17,11 @@
     asio/               # Windows ASIO 驱动 COM 封装与无锁 SPSC 环形缓冲（零 UI / libmpv 依赖）
     player/             # libmpv 封装 + ASIO 播放后端（只有这里依赖 libmpv / asio）
     os/                 # SMTC / MPRIS / 托盘 / 单实例 / 代理 / 文件对话框
-    app/                # Slint UI，二进制入口
+    app-ui/             # 编译 crates/app/ui/app.slint 的独立叶 crate（隔离生成代码与 profile）
+    app/                # Slint UI 胶水层与二进制入口
 ```
 
-依赖方向：`app -> {core, player, os}`，`player -> {asio}`，`core -> {api, session, lyrics, sonos}`。
+依赖方向：`app -> {app-ui, core, player, os}`，`player -> {asio}`，`core -> {api, session, lyrics, sonos}`。
 `core` 不依赖 `player` / `asio` / `os`：播放器和系统集成以 trait 形式在 `core` 定义，由 `app` 注入实现。
 这样 `api` / `session` / `lyrics` / `sonos` / `core` 都能在无 libmpv、无显示的机器上 `cargo test`。
 

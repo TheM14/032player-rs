@@ -11,18 +11,16 @@ name = "032player"
 path = "src/main.rs"
 
 [dependencies]
+app-ui.workspace = true
 client-core.workspace = true
 player.workspace = true
 os.workspace = true
 directories.workspace = true
-slint = { workspace = true, features = ["raw-window-handle-06", "unstable-fontique-011", "unstable-winit-030"] }
+slint.workspace = true
 raw-window-handle.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ttf-parser.workspace = true
-
-[build-dependencies]
-slint-build.workspace = true
 
 # Exe icon and version info (Windows hosts build Windows binaries here).
 [target.'cfg(windows)'.build-dependencies]

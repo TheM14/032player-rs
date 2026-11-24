@@ -31,7 +31,7 @@
 ## 开发环境说明
 
 - 文档和界面用简体中文。主力平台是 Windows，其次 Linux，macOS 尽力而为。
-- 无界面 crate 必须能在没有 libmpv 和显示器的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app`；
+- 无界面 crate 必须能在没有 libmpv 和显示器的机器上 `cargo test`。依赖 libmpv / UI 的代码只放在 `player` / `os` / `app-ui` / `app`；
   `core`（包名 `client-core`）不依赖它们，需要时在 `core` 定义 trait，由 `app` 注入。
 - `player` 可以只做 `cargo check`（不链接 libmpv）。已安装 `x86_64-pc-windows-msvc` 标准库时，
   `cargo check -p player --target x86_64-pc-windows-msvc` 可检查 Windows 专属代码（不链接）。
@@ -47,5 +47,5 @@
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --exclude player --exclude app
+cargo test --workspace --exclude player --exclude app --exclude app-ui
 ```

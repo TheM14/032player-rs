@@ -1,6 +1,5 @@
 fn main() {
-    let config = slint_build::CompilerConfiguration::new().with_style("fluent".into());
-    slint_build::compile_with_config("ui/app.slint", config).expect("compile ui/app.slint");
+    println!("cargo:rerun-if-changed=build.rs");
     #[cfg(windows)]
     windows_resources();
 }
@@ -12,6 +11,7 @@ fn windows_resources() {
         return;
     }
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
     let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/icon.ico")
         .set("ProductName", "032player")

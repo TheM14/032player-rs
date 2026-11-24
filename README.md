@@ -50,7 +50,7 @@ Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032playe
 ## 构建
 
 ```bash
-cargo test --workspace --exclude player --exclude app   # 无界面 crate
+cargo test --workspace --exclude player --exclude app --exclude app-ui   # 无界面 crate
 cargo run -p app                                         # 需要 libmpv
 ```
 

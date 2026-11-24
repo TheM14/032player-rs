@@ -34,7 +34,9 @@ OutputBaseFilename=032player-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\..\crates\app\assets\icon.ico
 UninstallDisplayIcon={app}\032player.exe
 LicenseFile=..\..\LICENSE
-Compression=lzma2/max
+Compression=lzma2/normal
+LZMANumBlockThreads=2
+LZMAUseSeparateProcess=yes
 SolidCompression=yes
 WizardStyle=modern
 ; The single-instance guard of the app is a named mutex per data dir; ask

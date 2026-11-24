@@ -240,17 +240,25 @@ dependencies = [
 name = "app"
 version = "0.2.29"
 dependencies = [
+ "app-ui",
  "client-core",
  "directories",
  "os",
  "player",
  "raw-window-handle",
  "slint",
- "slint-build",
  "tracing",
  "tracing-subscriber",
  "ttf-parser",
  "winresource",
+]
+
+[[package]]
+name = "app-ui"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]
