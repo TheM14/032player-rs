@@ -5,6 +5,9 @@
 
 ## 当前状态（2026-11-24）
 
+- **v0.2.31 正式版构建已安排**：解决同一首歌多次点击进入时相似续播内容与顺序完全一致的问题。客户端每次请求相似曲目生成独立随机 `seed` 传给服务端（配合 032 服务端 `seed` 有界扰动排序，兼容旧版服务端 400 回退），扩大候选窗口并在本地做有界随机重排与跨会话近期推荐软降权，保持高相关性的同时让每次续播自然轮换。正式安装包由 `v0.2.31` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.31 。
+- [x] 相似续播随机种子扰动与跨会话新鲜度 [api / core]：`SimilarTracksOptions` 新增可选 `seed` 参数；`filter_and_diversify_seeded` 引入 SplitMix64 有界比例扰动与近期已推荐曲目 0.65 软降权（小曲库仍正常回填）；`Core` 跨切歌保留最多 60 首近期已推荐记录（仅登出清理），并同步更新 `library.rs` / `radio.rs` / `radio_flow.rs` 测试。
+
 - **v0.2.30 正式版构建已安排**：优化相似歌曲电台与队列自动续播的理由展示与候选多样性，将结构化关联标签（同作品 / 同作者 / 共现歌单 / 同艺人）优先级置于「听感相似」之前，并在客户端兜底筛选中加入纯声学/结构关联穿插保护，配合 032 服务端混合权重调整避免队列清一色只出现听感相似曲目。正式安装包由 `v0.2.30` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.30 。
 - [x] 相似续播理由优先级与候选穿插优化 [core]：`primary_reason_label` 按 `sameWork > sharedCredit > coPlaylist > sameArtist > soundsSimilar > genre > era` 选取主标签；`filter_and_diversify` 在保留去重与同艺人限流的同时避免连续超过 2 首纯声学近邻霸榜（仅穿插分数达标的结构关联曲目），并补齐单元测试。
 
