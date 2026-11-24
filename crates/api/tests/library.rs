@@ -249,6 +249,7 @@ async fn similar_tracks_detailed_sends_diverse_exclude_and_falls_back_on_400() {
         .and(query_param("limit", "24"))
         .and(query_param("diverse", "1"))
         .and(query_param("exclude", "10,20"))
+        .and(query_param("seed", "98765"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "items": [
             { "track": track(9, 2), "score": 0.91, "distance": 0.09, "reasons": [" soundsSimilar ", ""] },
         ]})))
@@ -262,6 +263,7 @@ async fn similar_tracks_detailed_sends_diverse_exclude_and_falls_back_on_400() {
                 limit: 24,
                 exclude_ids: &[0, -5, 10, 10, 20],
                 diverse: true,
+                seed: Some(98765),
             },
         )
         .await
@@ -295,6 +297,7 @@ async fn similar_tracks_detailed_sends_diverse_exclude_and_falls_back_on_400() {
                 limit: 24,
                 exclude_ids: &[10],
                 diverse: true,
+                seed: Some(42),
             },
         )
         .await
@@ -328,6 +331,7 @@ async fn similar_tracks_detailed_retries_once_on_503() {
                 limit: 12,
                 exclude_ids: &[],
                 diverse: true,
+                seed: None,
             },
         )
         .await

@@ -253,9 +253,15 @@ async fn radio_from_track_dual_zone_edits_refresh_and_persist() {
     let q = h.queue();
     assert_eq!(q[0].track_id, 1);
     assert!(!q[0].is_auto);
-    assert!(q[1].is_auto);
-    assert_eq!(q[1].reason.as_deref(), Some("听感相似"));
-    assert_eq!(q[2].reason.as_deref(), Some("同作品"));
+    assert!(q[1..].iter().all(|i| i.is_auto));
+    let auto_reasons: std::collections::HashMap<i64, Option<&str>> = q[1..]
+        .iter()
+        .map(|i| (i.track_id, i.reason.as_deref()))
+        .collect();
+    assert_eq!(auto_reasons.get(&101), Some(&Some("听感相似")));
+    assert_eq!(auto_reasons.get(&102), Some(&Some("同作品")));
+    assert_eq!(auto_reasons.get(&103), Some(&Some("共现歌单")));
+    assert_eq!(auto_reasons.get(&104), Some(&Some("同作者")));
     let r = h.radio();
     assert!(r.supported);
     assert_eq!(r.similarity_method, SimilarityMethod::Hybrid);
@@ -335,16 +341,17 @@ async fn current_radio_does_not_interrupt_and_rolling_seed_skips_accompaniment()
     // Start radio from current track (2): must NOT reload engine, keeps [1, 2], replaces [3, 4] with similar(2).
     h.send(Command::StartSimilarRadioCurrent);
     h.wait("replaced after current", |e| {
-        matches!(e, Event::Queue { items, .. } if items.len() == 4 && items[2].track_id == 201 && items[2].is_auto)
+        matches!(e, Event::Queue { items, .. } if items.len() == 4 && items[2].is_auto && items[3].is_auto)
     });
     assert!(
         h.engine.loads().is_empty(),
         "current track radio must not interrupt active playback"
     );
-    assert_eq!(
-        h.queue().iter().map(|i| i.track_id).collect::<Vec<_>>(),
-        [1, 2, 201, 202]
-    );
+    let q_ids: Vec<i64> = h.queue().iter().map(|i| i.track_id).collect();
+    assert_eq!(&q_ids[..2], &[1, 2]);
+    let mut auto_ids = q_ids[2..].to_vec();
+    auto_ids.sort_unstable();
+    assert_eq!(auto_ids, [201, 202]);
 
     // Turn off auto-play, queue [track 2, track 3 "(Off Vocal)"] and enable auto-continue:
     // rolling seed must skip track 3 "(Off Vocal)" and query /tracks/2/similar!
@@ -372,7 +379,9 @@ async fn current_radio_does_not_interrupt_and_rolling_seed_skips_accompaniment()
         matches!(e, Event::RadioState(r) if r.last_auto_seed_title.as_deref() == Some("優しい彗星"))
     });
     assert_eq!(h.queue().len(), 5);
-    assert_eq!(h.queue()[3].track_id, 201);
+    let mut rolled_auto: Vec<i64> = h.queue()[3..].iter().map(|i| i.track_id).collect();
+    rolled_auto.sort_unstable();
+    assert_eq!(rolled_auto, [201, 202]);
     assert_eq!(
         h.radio().last_auto_seed_title.as_deref(),
         Some("優しい彗星")
@@ -552,21 +561,34 @@ async fn refresh_load_more_and_queue_item_radio() {
     );
     assert_eq!(h.radio().similarity_method, SimilarityMethod::Metadata);
 
-    // Refresh ("换一批"): 101 & 102 dismissed (so 101 is filtered out client-side), replaced by [103, 104].
+    // Refresh ("换一批"): 101 & 102 dismissed (so 101 is filtered out client-side), replaced by {103, 104}.
     h.send(Command::RefreshSimilarRadio);
     h.wait("refreshed batch", |e| {
-        matches!(e, Event::Queue { items, .. } if items.len() == 3 && items[1].track_id == 103 && items[2].track_id == 104)
+        matches!(e, Event::Queue { items, .. } if items.len() == 3 && items[1].track_id != 101 && items[2].track_id != 101)
     });
+    let mut refreshed_auto: Vec<i64> = h.queue()[1..].iter().map(|i| i.track_id).collect();
+    refreshed_auto.sort_unstable();
+    assert_eq!(refreshed_auto, [103, 104]);
 
-    // Load more ("再加一批"): uses rolling tail seed 104 -> appends 105.
+    // Load more ("再加一批"): uses rolling tail seed (104 -> 105, or 103 -> 201).
+    let expected_more = if h.queue()[2].track_id == 104 {
+        105
+    } else {
+        201
+    };
     h.send(Command::LoadMoreSimilarRadio);
     h.wait(
         "loaded more",
-        |e| matches!(e, Event::Queue { items, .. } if items.len() == 4 && items[3].track_id == 105),
+        |e| matches!(e, Event::Queue { items, .. } if items.len() == 4 && items[3].track_id == expected_more),
     );
 
     // StartSimilarRadioQueueItem on non-current queue item 103 plays 103 and seeds radio -> [103, 201].
-    let uid103 = h.queue()[1].uid;
+    let uid103 = h
+        .queue()
+        .iter()
+        .find(|i| i.track_id == 103)
+        .expect("track 103 in queue")
+        .uid;
     h.send(Command::StartSimilarRadioQueueItem(uid103));
     h.wait("queue item radio", |e| {
         matches!(e, Event::Queue { items, .. } if items.len() == 2 && items[0].track_id == 103 && items[1].track_id == 201)

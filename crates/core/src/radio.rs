@@ -20,6 +20,8 @@ pub const AUTO_CONTINUE_BATCH_SIZE: usize = 12;
 pub const AUTO_CONTINUE_THRESHOLD: usize = 2;
 /// Maximum dismissed auto-similar track IDs remembered per session.
 pub const MAX_DISMISSED_HISTORY: usize = 120;
+/// Maximum recently recommended track IDs remembered across sessions for soft freshness penalty.
+pub const MAX_RECENT_RECOMMENDED: usize = 60;
 /// Maximum cached similarity reason lists per session.
 pub const MAX_CACHED_REASONS: usize = 300;
 
@@ -362,13 +364,45 @@ fn artist_key_for(candidate: &SimilarTrack) -> String {
         .unwrap_or_else(|| format!("unknown:{}", candidate.track.id))
 }
 
+/// Deterministic SplitMix64 jitter in `[-1.0, 1.0)` derived from `(seed, track_id)`.
+pub fn similarity_jitter_factor(seed: i64, track_id: i64) -> f64 {
+    let mut x = (seed as u64) ^ (track_id as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^= x >> 31;
+    #[allow(clippy::cast_precision_loss)]
+    let unit = ((x >> 11) as f64) / ((1u64 << 53) as f64);
+    unit * 2.0 - 1.0
+}
+
 /// Client-side deduplication, two-pass artist cap, and acoustic/structural
-/// interleaving safeguard.
+/// interleaving safeguard (deterministic order).
 pub fn filter_and_diversify(
     candidates: Vec<SimilarTrack>,
     excluded_ids: &HashSet<i64>,
     max_per_artist: usize,
     limit: usize,
+) -> Vec<SimilarTrack> {
+    filter_and_diversify_seeded(
+        candidates,
+        excluded_ids,
+        &HashSet::new(),
+        max_per_artist,
+        limit,
+        None,
+    )
+}
+
+/// Client-side deduplication, optional bounded seeded jitter + cross-session
+/// recent-track soft penalty, two-pass artist cap, and acoustic/structural
+/// interleaving safeguard.
+pub fn filter_and_diversify_seeded(
+    candidates: Vec<SimilarTrack>,
+    excluded_ids: &HashSet<i64>,
+    recent_ids: &HashSet<i64>,
+    max_per_artist: usize,
+    limit: usize,
+    seed: Option<i64>,
 ) -> Vec<SimilarTrack> {
     if candidates.is_empty() || limit == 0 {
         return Vec::new();
@@ -380,7 +414,33 @@ pub fn filter_and_diversify(
             unique.push(candidate);
         }
     }
-    if unique.is_empty() || max_per_artist == 0 {
+    if unique.is_empty() {
+        return Vec::new();
+    }
+
+    let effective_seed = seed.filter(|&s| s != 0);
+    if (effective_seed.is_some() || !recent_ids.is_empty()) && unique.len() > 1 {
+        let mut ranked: Vec<(SimilarTrack, f64, usize)> = unique
+            .into_iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let base_score = candidate.score.max(0.01);
+                let freshness = if recent_ids.contains(&candidate.track.id) {
+                    0.65
+                } else {
+                    1.0
+                };
+                let jitter = effective_seed.map_or(1.0, |s| {
+                    1.0 + 0.25 * similarity_jitter_factor(s, candidate.track.id)
+                });
+                (candidate, base_score * freshness * jitter, index)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+        unique = ranked.into_iter().map(|(c, _, _)| c).collect();
+    }
+
+    if max_per_artist == 0 {
         unique.truncate(limit);
         return unique;
     }
@@ -738,6 +798,56 @@ mod tests {
         let picked = filter_and_diversify(candidates, &HashSet::new(), 2, 6);
         let ids: Vec<i64> = picked.iter().map(|s| s.track.id).collect();
         assert_eq!(ids, [1, 2, 6, 3, 4, 7]);
+    }
+
+    #[test]
+    fn diversify_seeded_jitter_and_recent_soft_penalty_vary_selection() {
+        let candidates = vec![
+            sim_with(1, "A", 1, 0.44, &["sameWork"]),
+            sim_with(2, "B", 2, 0.43, &["soundsSimilar"]),
+            sim_with(3, "C", 3, 0.42, &["sharedCredit"]),
+            sim_with(4, "D", 4, 0.41, &["soundsSimilar"]),
+            sim_with(5, "E", 5, 0.40, &["coPlaylist"]),
+            sim_with(6, "F", 6, 0.39, &["soundsSimilar"]),
+            sim_with(7, "G", 7, 0.38, &["sameArtist"]),
+            sim_with(8, "H", 8, 0.08, &["era"]), // low relevance must stay out
+        ];
+        let empty = HashSet::new();
+        let a: Vec<i64> =
+            filter_and_diversify_seeded(candidates.clone(), &empty, &empty, 2, 5, Some(11111))
+                .into_iter()
+                .map(|s| s.track.id)
+                .collect();
+        let b: Vec<i64> =
+            filter_and_diversify_seeded(candidates.clone(), &empty, &empty, 2, 5, Some(11111))
+                .into_iter()
+                .map(|s| s.track.id)
+                .collect();
+        assert_eq!(a, b);
+        assert!(!a.contains(&8));
+
+        let differed = [22222, 33333, 44444, 55555].into_iter().any(|seed| {
+            let alt: Vec<i64> =
+                filter_and_diversify_seeded(candidates.clone(), &empty, &empty, 2, 5, Some(seed))
+                    .into_iter()
+                    .map(|s| s.track.id)
+                    .collect();
+            assert!(!alt.contains(&8));
+            alt != a
+        });
+        assert!(differed);
+
+        let recent: HashSet<i64> = [1, 2, 3].into_iter().collect();
+        let demoted: Vec<i64> =
+            filter_and_diversify_seeded(candidates[..7].to_vec(), &empty, &recent, 2, 4, None)
+                .into_iter()
+                .map(|s| s.track.id)
+                .collect();
+        assert_eq!(demoted, [4, 5, 6, 7]);
+
+        let small_pool =
+            filter_and_diversify_seeded(candidates[..3].to_vec(), &empty, &recent, 2, 3, None);
+        assert_eq!(small_pool.len(), 3);
     }
 
     #[test]

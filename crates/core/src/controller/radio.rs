@@ -5,6 +5,8 @@
 //! vs. auto-continued queue boundary preservation across local & Sonos playback.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{ApiError, Feature, SimilarTrack, SimilarTracksOptions, Track};
 
@@ -14,11 +16,26 @@ use crate::browse::TrackList;
 use crate::queue::{Repeat, Step};
 use crate::radio::{
     AUTO_CONTINUE_BATCH_SIZE, AUTO_CONTINUE_THRESHOLD, MAX_CACHED_REASONS, MAX_DISMISSED_HISTORY,
-    RADIO_INITIAL_BATCH_SIZE, RadioErrorKind, RadioPauseReason, RadioSeed, RadioSnapshot,
-    RadioStatus, SimilarityMethod, filter_and_diversify, primary_reason_label,
-    remap_manual_count_after_move, remap_manual_count_after_remove, select_rolling_seed,
-    should_trigger_auto_continue,
+    MAX_RECENT_RECOMMENDED, RADIO_INITIAL_BATCH_SIZE, RadioErrorKind, RadioPauseReason, RadioSeed,
+    RadioSnapshot, RadioStatus, SimilarityMethod, filter_and_diversify_seeded,
+    primary_reason_label, remap_manual_count_after_move, remap_manual_count_after_remove,
+    select_rolling_seed, should_trigger_auto_continue,
 };
+
+fn next_radio_seed() -> i64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    #[allow(clippy::cast_possible_truncation)]
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut x = nanos ^ seq.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^= x >> 31;
+    let positive = (x & (i64::MAX as u64)) as i64;
+    if positive == 0 { 1 } else { positive }
+}
 
 /// What kind of radio fetch is in flight.
 #[derive(Clone, Debug)]
@@ -41,6 +58,8 @@ pub(super) struct RadioState {
     reasons_order: VecDeque<i64>,
     dismissed_ids: HashSet<i64>,
     dismissed_order: VecDeque<i64>,
+    recent_recommended_ids: HashSet<i64>,
+    recent_recommended_order: VecDeque<i64>,
     pub(super) is_loading: bool,
     pub(super) error_kind: Option<RadioErrorKind>,
     /// Queue naturally reached end while an auto-continue fetch was running.
@@ -82,6 +101,33 @@ impl RadioState {
         while self.dismissed_order.len() > MAX_DISMISSED_HISTORY {
             if let Some(old) = self.dismissed_order.pop_front() {
                 self.dismissed_ids.remove(&old);
+            }
+        }
+    }
+
+    fn clear_recent_recommended(&mut self) {
+        self.recent_recommended_ids.clear();
+        self.recent_recommended_order.clear();
+    }
+
+    fn remember_recent_recommended(&mut self, ids: impl IntoIterator<Item = i64>) {
+        for id in ids {
+            if id <= 0 {
+                continue;
+            }
+            if !self.recent_recommended_ids.insert(id)
+                && let Some(pos) = self
+                    .recent_recommended_order
+                    .iter()
+                    .position(|&existing| existing == id)
+            {
+                self.recent_recommended_order.remove(pos);
+            }
+            self.recent_recommended_order.push_back(id);
+        }
+        while self.recent_recommended_order.len() > MAX_RECENT_RECOMMENDED {
+            if let Some(old) = self.recent_recommended_order.pop_front() {
+                self.recent_recommended_ids.remove(&old);
             }
         }
     }
@@ -227,6 +273,10 @@ impl Core {
         self.radio.is_loading = false;
         self.radio.error_kind = None;
         self.emit_radio_state();
+    }
+
+    pub(super) fn radio_clear_recent_recommended(&mut self) {
+        self.radio.clear_recent_recommended();
     }
 
     pub(super) fn radio_on_manual_inserted(&mut self, insert_index: usize, count: usize) {
@@ -581,7 +631,8 @@ impl Core {
         excluded_ids.extend(self.radio.dismissed_ids.iter().copied());
         let exclude_vec: Vec<i64> = excluded_ids.iter().copied().collect();
         #[allow(clippy::cast_possible_truncation)]
-        let request_limit = ((limit * 2).clamp(12, 40)) as u32;
+        let request_limit = ((limit * 3).clamp(18, 48)) as u32;
+        let request_seed = next_radio_seed();
 
         let handle = tokio::spawn(async move {
             let result = client
@@ -591,6 +642,7 @@ impl Core {
                         limit: request_limit,
                         exclude_ids: &exclude_vec,
                         diverse: true,
+                        seed: Some(request_seed),
                     },
                 )
                 .await;
@@ -601,6 +653,7 @@ impl Core {
                 kind,
                 excluded_ids,
                 limit,
+                seed: request_seed,
                 result,
             });
         });
@@ -616,6 +669,7 @@ impl Core {
         kind: RadioFetchKind,
         mut excluded_ids: HashSet<i64>,
         limit: usize,
+        seed: i64,
         result: Result<Vec<SimilarTrack>, ApiError>,
     ) {
         if list_gen != self.list_generation || radio_gen != self.radio.generation {
@@ -668,7 +722,14 @@ impl Core {
             }
         }
         excluded_ids.extend(self.radio.dismissed_ids.iter().copied());
-        let picked = filter_and_diversify(raw, &excluded_ids, 2, limit);
+        let picked = filter_and_diversify_seeded(
+            raw,
+            &excluded_ids,
+            &self.radio.recent_recommended_ids,
+            2,
+            limit,
+            Some(seed),
+        );
 
         if picked.is_empty() {
             self.radio.error_kind = Some(RadioErrorKind::Empty);
@@ -710,6 +771,8 @@ impl Core {
                 }
                 self.clear_repeat_and_shuffle_for_radio();
                 let cur_pos = self.queue.position().unwrap_or(cur_pos);
+                self.radio
+                    .remember_recent_recommended(new_tracks.iter().map(|t| t.id));
                 self.queue.replace_after(cur_pos, new_tracks);
                 self.radio.manual_queue_count = cur_pos + 1;
                 self.radio.radio_seed = Some(seed.clone());
@@ -726,6 +789,8 @@ impl Core {
                     self.emit_radio_state();
                     return;
                 }
+                self.radio
+                    .remember_recent_recommended(new_tracks.iter().map(|t| t.id));
                 self.queue.append_ordered(new_tracks);
                 self.queue_changed();
                 self.emit_radio_state();
@@ -746,6 +811,8 @@ impl Core {
                     .saturating_sub(1)
                     .max(cur)
                     .min(self.queue.len() - 1);
+                self.radio
+                    .remember_recent_recommended(new_tracks.iter().map(|t| t.id));
                 self.queue.replace_after(keep_through, new_tracks);
                 self.radio.last_auto_seed_title = Some(seed_title);
                 self.queue_changed();
@@ -761,6 +828,8 @@ impl Core {
                     return;
                 }
                 let first_new = self.queue.len();
+                self.radio
+                    .remember_recent_recommended(new_tracks.iter().map(|t| t.id));
                 self.queue.append_ordered(new_tracks);
                 self.radio.last_auto_seed_title = Some(seed_title);
                 self.queue_changed();

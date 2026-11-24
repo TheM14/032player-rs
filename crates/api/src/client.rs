@@ -19,6 +19,7 @@ pub struct SimilarTracksOptions<'a> {
     pub limit: u32,
     pub exclude_ids: &'a [i64],
     pub diverse: bool,
+    pub seed: Option<i64>,
 }
 
 /// What can be marked as favorite.
@@ -780,9 +781,13 @@ impl Client {
             .take(MAX_EXCLUDE_IDS)
             .map(|id| id.to_string())
             .collect();
-        let has_extended = opts.diverse || !clean_exclude.is_empty();
+        let clean_seed = opts.seed.filter(|&s| s != 0);
+        let has_extended = opts.diverse || !clean_exclude.is_empty() || clean_seed.is_some();
         if !clean_exclude.is_empty() {
             q.push("exclude", clean_exclude.join(","));
+        }
+        if let Some(seed) = clean_seed {
+            q.push("seed", seed);
         }
         let path = format!("/tracks/{track_id}/similar");
         let res = match self.get_similar_with_busy_retry(&path, &q).await {
@@ -835,6 +840,7 @@ impl Client {
                     limit,
                     exclude_ids: &[],
                     diverse: false,
+                    seed: None,
                 },
             )
             .await?;

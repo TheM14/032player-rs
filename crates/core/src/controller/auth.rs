@@ -269,6 +269,7 @@ impl Core {
         let _ = self.engine.stop();
         self.queue.clear();
         self.radio_reset();
+        self.radio_clear_recent_recommended();
         self.reset_transport(TransportReset::full());
         self.sleep.cancel();
         self.pb.play_intent_seq += 1;

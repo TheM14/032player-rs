@@ -988,6 +988,7 @@ enum Internal {
         kind: radio::RadioFetchKind,
         excluded_ids: std::collections::HashSet<i64>,
         limit: usize,
+        seed: i64,
         result: Result<Vec<api::SimilarTrack>, api::ApiError>,
     },
 }
@@ -2127,6 +2128,7 @@ impl Core {
                 kind,
                 excluded_ids,
                 limit,
+                seed,
                 result,
             } => {
                 self.handle_radio_fetched(
@@ -2136,6 +2138,7 @@ impl Core {
                     kind,
                     excluded_ids,
                     limit,
+                    seed,
                     result,
                 );
             }
