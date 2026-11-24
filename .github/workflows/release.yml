@@ -86,26 +86,26 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/debug/build/app-ui
-          key: app-ui-linux-debug-v2-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
+          key: app-ui-linux-debug-v3-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
       - name: Normalize app-ui input mtimes
         run: |
           find crates/app-ui crates/app/ui -type f -exec touch -d '2020-01-01T00:00:00Z' {} +
-          touch -d '2020-01-01T00:00:00Z' crates/app/assets/icon.png
+          touch -d '2020-01-01T00:00:00Z' crates/app/assets/icon.png Cargo.toml
       - run: cargo fmt --all --check
       - name: Clippy
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo clippy --locked $OFFLINE --workspace --exclude app-ui --all-targets -- -D warnings
       - name: Test
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo test --locked $OFFLINE --workspace --exclude app-ui --lib --tests --bins
       - name: UI snapshot regression
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo run --locked $OFFLINE --manifest-path tools/ui-snapshot/Cargo.toml -- /tmp/ui-snapshot
 
   windows-test:
@@ -174,7 +174,7 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo test @flags --workspace --exclude app --exclude app-ui --lib --tests --target x86_64-pc-windows-msvc
 
   windows:
@@ -270,7 +270,7 @@ jobs:
         run: |
           $t = [DateTime]::SpecifyKind([DateTime]'2020-01-01T00:00:00', [DateTimeKind]::Utc)
           Get-ChildItem -File -Recurse crates/app-ui, crates/app/ui | ForEach-Object { $_.LastWriteTimeUtc = $t }
-          (Get-Item crates/app/assets/icon.png).LastWriteTimeUtc = $t
+          Get-Item crates/app/assets/icon.png, Cargo.toml | ForEach-Object { $_.LastWriteTimeUtc = $t }
       - name: Restore libmpv cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -281,7 +281,7 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo build @flags -p app --release --target x86_64-pc-windows-msvc
 
       - name: Inno Setup
