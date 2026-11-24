@@ -3,7 +3,16 @@
 当前里程碑的细粒度任务。完成打勾；需要在 Windows 上验证的标 **[Win]**。
 里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
 
-## 当前状态（2026-11-23）
+## 当前状态（2026-11-24）
+
+- **v0.2.29 正式版构建已安排**：修复播放条独占弹出菜单在 Slint 1.18 下因先 `close()` 后发回调导致切换失效的 bug（并同步修复艺人页添加到歌单等同款弹窗调用顺序）；重构播放条独占按钮交互：未在设置中选定 ASIO 驱动（含仅装有虚拟/残留驱动）时保持简单单体一键开关，选定 ASIO 驱动后自动升级为分裂按钮（左键一键开/关并记忆 WASAPI/ASIO 偏好，右侧箭头或右键展开含设备/驱动副标题与设置入口的输出模式选单），设置页 ASIO 驱动下拉框新增「不使用 ASIO（仅用 WASAPI）」选项。正式安装包由 `v0.2.29` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.29 。
+- [x] 播放条独占按钮修复与 ASIO 分裂按钮改造 [core / app]：`Settings::set_exclusive_mode(Off)` 保留 `asio` 偏好，`Command::ToggleExclusive` 一键切换开关并恢复偏好后端，`Event::OutputMode` 增加 `preferred_mode` 与 `asio_configured`；`Command::SetAsioDriver(Option<String>)` 支持切回「不使用 ASIO（仅用 WASAPI）」并热交接回 WASAPI；播放条未配置 ASIO 时为单体开关，配置 ASIO 后升级为 `ExclusiveSplitButton`（左键一键切换、右侧箭头/右键打开 `ExclusiveMenuRow` 选单并先触发回调再 `close()`）；同步修复 `library.slint` / `views.slint` 中 `PopupWindow.close()` 调用顺序并补齐 `asio_mode.rs` 回归测试与 `ui-snapshot`。
+- [ ] **[Win]** 验证播放条独占切换与分裂按钮：
+  - 未配置 ASIO（或设置为「不使用 ASIO（仅用 WASAPI）」）时，播放条只显示单体「独占」按钮，左键直接一键开关 WASAPI 独占；
+  - 设置页选定 USB DAC 的 ASIO 驱动后，播放条升级为分裂按钮，左键一键开/关并记忆上次使用的 WASAPI 或 ASIO，点右侧箭头或右键可正常热切换关闭 / WASAPI 独占 / ASIO 独占并可跳转设置页；
+  - ASIO 播放中切换 WASAPI 输出设备不打断 ASIO，切到「不使用 ASIO」时平滑回落到 WASAPI 独占，宽/窄屏与深/浅主题显示正常。
+
+### 2026-11-23
 
 - **v0.2.28 正式版构建已安排**：包含相似歌曲电台与队列自动续播，以及通用 Windows ASIO 驱动发现、按需能力探测、多通道立体声输出端口选择与并发/状态机/播放条独占菜单加固（合入 PR #4 及后续修复）。正式安装包由 `v0.2.28` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.28 。
 - [x] 相似歌曲电台与队列自动续播 [api / core / app]：对齐 Android MusicBridge 与 032 服务端 `GET /api/v1/tracks/{id}/similar`（`diverse=1`、`exclude`、503 重试、400 旧服务端回退、`features.similarTracks` 与 `similarity.method`）；移除旧静态「相似歌曲」页，各曲目右键菜单改为「开启相似电台」，并在右侧正在播放栏、全屏播放页及队列行右键菜单提供不中断当前播放的开台/重开入口；侧栏与全屏队列统一支持双分区（「接下来 · 相似续播」分隔条、理由胶囊、换一批、顶部 `∞` 开关、电台种子徽章、尾部全状态卡片与跨分区拖拽晋升/降级）、滚动作种跳过伴奏/Off Vocal、自然播完无缝衔接、`queue.json` 分区持久化、Sonos 同步及设置页开关双向同步。
