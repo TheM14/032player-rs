@@ -1,6 +1,6 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
-import { PlayingBars, Field, PrimaryButton, IconButton, IconKind, Icon, RadioState } from "controls.slint";
+import { PlayingBars, Field, PrimaryButton, IconButton, IconKind, Icon, RadioState, ArtistAvatar } from "controls.slint";
 import { PlaylistChoice, ContextMenuEntry, ContextMenuState, ContextMenuOverlay } from "context_menu.slint";
 import { LyricLine, QueueRow, QueuePanel, LyricsTools, LyricsPanel } from "queue_lyrics.slint";
 
@@ -607,18 +607,31 @@ export component CardView inherits Rectangle {
             width: root.size;
             height: root.art-h;
 
-            Rectangle {
+            if root.kind == 1: ArtistAvatar {
+                x: root.img-x;
+                y: root.img-y;
+                size: root.size;
+                source: root.card.cover;
+
+                Rectangle {
+                    border-radius: root.size / 2;
+                    background: area.has-hover ? #00000040 : transparent;
+                    animate background { duration: 120ms; }
+                }
+            }
+
+            if root.kind != 1: Rectangle {
                 x: root.img-x;
                 y: root.img-y;
                 width: root.img-w;
                 height: root.img-h;
-                // Square album covers (editorial); round artists; posters 6px.
-                border-radius: root.kind == 1 ? root.size / 2 : root.poster ? 6px : 0px;
+                // Square album covers (editorial); posters 6px.
+                border-radius: root.poster ? 6px : 0px;
                 background: root.card.cover.width == 0 ? Theme.raised : transparent;
                 clip: true;
 
-                if (root.kind == 1 || root.poster) && root.card.cover.width == 0: Text {
-                    text: root.poster ? "作" : root.card.title == "" ? "?" : "♪";
+                if root.poster && root.card.cover.width == 0: Text {
+                    text: "作";
                     font-family: Fonts.family(self.text);
                     color: Theme.text-faint;
                     font-size: root.size / 3;

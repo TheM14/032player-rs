@@ -1,7 +1,7 @@
 import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { GridId, TrackListId } from "ids.slint";
 import {
-    GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, RadioState, SearchField, Tab,
+    ArtistAvatar, GhostButton, Icon, IconKind, PlayingBars, PrimaryButton, RadioState, SearchField, Tab,
 } from "controls.slint";
 import {
     AlbumRow, ArtistLayout, ArtistLinks, CardGrid, ContextMenuEntry, ContextMenuState, CreditPart, PlaylistChoice, TrackList, TrackRow,
@@ -17,7 +17,6 @@ export struct SearchBestMatch {
     title: string,
     subtitle: string,
     cover: image,
-    initial: string,
     favorite: bool,
 }
 
@@ -28,7 +27,6 @@ export struct SearchCompactCard {
     subtitle: string,
     meta: string,
     cover: image,
-    initial: string,
     is-avatar: bool,
     favorite: bool,
 }
@@ -183,11 +181,16 @@ component SearchCompactCardView inherits Rectangle {
     HorizontalLayout {
         padding: 10px;
         spacing: 16px;
-        Rectangle {
+        if root.item.is-avatar: ArtistAvatar {
+            size: 72px;
+            y: (parent.height - self.height) / 2;
+            source: root.item.cover;
+        }
+        if !root.item.is-avatar: Rectangle {
             width: 72px;
             height: 72px;
             y: (parent.height - self.height) / 2;
-            border-radius: root.item.is-avatar ? 36px : 6px;
+            border-radius: 6px;
             background: Theme.raised;
             clip: true;
             if root.item.cover.width > 0: Image {
@@ -197,10 +200,10 @@ component SearchCompactCardView inherits Rectangle {
                 image-fit: ImageFit.cover;
             }
             if root.item.cover.width == 0: Text {
-                text: root.item.is-avatar ? root.item.initial : "032";
+                text: "032";
                 font-family: Fonts.family(self.text);
                 color: Theme.text-faint;
-                font-size: root.item.is-avatar ? 22px : 12px;
+                font-size: 12px;
                 font-weight: 600;
             }
         }
@@ -799,11 +802,16 @@ export component SearchPage inherits VerticalLayout {
                 HorizontalLayout {
                     padding: 8px;
                     spacing: root.content-w < 560px ? 20px : 28px;
-                    Rectangle {
+                    if is-person: ArtistAvatar {
+                        size: art-size;
+                        y: (parent.height - self.height) / 2;
+                        source: SearchState.best-match.cover;
+                    }
+                    if !is-person: Rectangle {
                         width: art-size;
                         height: art-size;
                         y: (parent.height - self.height) / 2;
-                        border-radius: is-person ? art-size / 2 : 8px;
+                        border-radius: 8px;
                         background: Theme.raised;
                         clip: true;
                         if SearchState.best-match.cover.width > 0: Image {
@@ -813,10 +821,10 @@ export component SearchPage inherits VerticalLayout {
                             image-fit: ImageFit.cover;
                         }
                         if SearchState.best-match.cover.width == 0: Text {
-                            text: is-person ? SearchState.best-match.initial : "032";
+                            text: "032";
                             font-family: Fonts.family(self.text);
                             color: Theme.text-faint;
-                            font-size: is-person ? 40px : 20px;
+                            font-size: 20px;
                             font-weight: 700;
                         }
                     }

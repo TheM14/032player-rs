@@ -3,7 +3,7 @@ import { ArtFit, Fonts, Shell, Theme } from "theme.slint";
 import { DetailKind, GridId } from "ids.slint";
 import {
     Field, PrimaryButton, IconButton, IconKind, Icon, SearchField, GhostButton, SmallInput, Chip,
-    BigTitle, RoundIconButton,
+    BigTitle, RoundIconButton, ArtistAvatar,
 } from "controls.slint";
 import { ArtistLinks, CreditPart, AlbumRow, PlaylistChoice, CardView } from "views.slint";
 
@@ -834,22 +834,11 @@ export component ArtistHeader inherits Rectangle {
             spacing: root.gap;
             alignment: center;
 
-            Rectangle {
-                width: root.art;
-                height: root.art;
+            ArtistAvatar {
+                size: root.art;
+                source: root.cover;
                 horizontal-stretch: 0;
                 y: (parent.height - self.height) / 2;
-                border-radius: root.art / 2;
-                background: Theme.raised;
-                border-width: 1px;
-                border-color: Theme.dark ? #3a3a46 : #e4e4ea;
-                clip: true;
-                Image {
-                    source: root.cover;
-                    width: 100%;
-                    height: 100%;
-                    image-fit: ImageFit.cover;
-                }
             }
 
             VerticalLayout {
@@ -1591,25 +1580,10 @@ export component AlbumInspector inherits Flickable {
                 HorizontalLayout {
                     padding-left: 2px;
                     spacing: 12px;
-                    Rectangle {
-                        width: 36px;
-                        height: 36px;
+                    ArtistAvatar {
+                        size: 36px;
                         y: 6px;
-                        border-radius: 18px;
-                        background: Theme.raised;
-                        clip: true;
-                        if p.avatar.width == 0: Text {
-                            text: p.name == "" ? "?" : "♪";
-                            font-family: Fonts.family(self.text);
-                            color: Theme.text-faint;
-                            font-size: 13px;
-                        }
-                        Image {
-                            source: p.avatar;
-                            width: 100%;
-                            height: 100%;
-                            image-fit: ImageFit.cover;
-                        }
+                        source: p.avatar;
                     }
                     VerticalLayout {
                         alignment: center;

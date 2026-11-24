@@ -704,3 +704,64 @@ export component RoundIconButton inherits Rectangle {
         }
     }
 }
+
+// Circular artist avatar with a neutral slate gradient and filled bust
+// silhouette when no portrait is loaded (and clean backing for transparent
+// PNG/WebP artwork).
+export component ArtistAvatar inherits Rectangle {
+    in property <image> source;
+    in property <length> size: 64px;
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: root.source.width > 0 ? Theme.avatar-bg-bottom : transparent;
+    clip: true;
+
+    // Draw the gradient disc as a Path so it stays strictly circular on both
+    // GPU (FemtoVG) and software renderers (the software renderer does not
+    // round-clip Rectangle linear gradients).
+    if root.source.width == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fill: @linear-gradient(155deg, Theme.avatar-bg-top 0%, Theme.avatar-bg-bottom 100%);
+        stroke: transparent;
+        commands: "M 0.5 50 A 49.5 49.5 0 1 0 99.5 50 A 49.5 49.5 0 1 0 0.5 50 Z";
+    }
+
+    if root.source.width == 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fill: @linear-gradient(180deg, Theme.avatar-fg-top 0%, Theme.avatar-fg-bottom 100%);
+        stroke: transparent;
+        // Head circle + smooth shoulders bounded along the r=49.5 circle arc so
+        // the silhouette stays cleanly circular in both GPU and software renderers.
+        commands: "M 33.5 37.5 A 16.5 16.5 0 1 0 66.5 37.5 A 16.5 16.5 0 1 0 33.5 37.5 Z M 15 85 C 20 69 33 61.5 50 61.5 C 67 61.5 80 69 85 85 A 49.5 49.5 0 0 1 15 85 Z";
+    }
+
+    if root.source.width > 0: Image {
+        source: root.source;
+        width: 100%;
+        height: 100%;
+        image-fit: ImageFit.cover;
+    }
+
+    @children
+
+    // Subtle 1px inner ring separates the circular avatar from the page surface.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: root.size / 2;
+        border-width: 1px;
+        border-color: root.source.width > 0 ? Theme.avatar-photo-ring : Theme.avatar-ring;
+        background: transparent;
+    }
+}

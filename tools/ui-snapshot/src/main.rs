@@ -1420,8 +1420,7 @@ fn main() {
             ("album-id".into(), Value::Number(0.0)),
             ("title".into(), s("麻枝准")),
             ("subtitle".into(), s("作曲 84 首")),
-            ("cover".into(), Value::Image(cover(5))),
-            ("initial".into(), s("麻")),
+            ("cover".into(), Value::Image(Image::default())),
             ("favorite".into(), Value::Bool(true)),
         ])),
     );
@@ -1429,16 +1428,26 @@ fn main() {
         &inst,
         "SearchState",
         "artists",
-        model(vec![Value::Struct(Struct::from_iter([
-            ("id".into(), Value::Number(7.0)),
-            ("title".into(), s("麻枝准")),
-            ("subtitle".into(), s("12 张专辑 · 42 首演唱")),
-            ("meta".into(), s("")),
-            ("cover".into(), Value::Image(cover(5))),
-            ("initial".into(), s("麻")),
-            ("is-avatar".into(), Value::Bool(true)),
-            ("favorite".into(), Value::Bool(true)),
-        ]))]),
+        model(vec![
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(7.0)),
+                ("title".into(), s("麻枝准")),
+                ("subtitle".into(), s("12 张专辑 · 42 首演唱")),
+                ("meta".into(), s("")),
+                ("cover".into(), Value::Image(Image::default())),
+                ("is-avatar".into(), Value::Bool(true)),
+                ("favorite".into(), Value::Bool(true)),
+            ])),
+            Value::Struct(Struct::from_iter([
+                ("id".into(), Value::Number(8.0)),
+                ("title".into(), s("Lia")),
+                ("subtitle".into(), s("6 张专辑 · 28 首演唱")),
+                ("meta".into(), s("")),
+                ("cover".into(), Value::Image(cover(5))),
+                ("is-avatar".into(), Value::Bool(true)),
+                ("favorite".into(), Value::Bool(false)),
+            ])),
+        ]),
     );
     set_g(&inst, "SearchState", "artists-total", Value::Number(3.0));
     set_g(
@@ -1452,7 +1461,6 @@ fn main() {
                 ("subtitle".into(), s("麻枝准 / 戸越まごめ")),
                 ("meta".into(), s("2004 · 64 首")),
                 ("cover".into(), Value::Image(cover(1))),
-                ("initial".into(), s("032")),
                 ("is-avatar".into(), Value::Bool(false)),
                 ("favorite".into(), Value::Bool(false)),
             ])),
@@ -1462,7 +1470,6 @@ fn main() {
                 ("subtitle".into(), s("Key Sounds Label")),
                 ("meta".into(), s("2002 · 31 首")),
                 ("cover".into(), Value::Image(cover(2))),
-                ("initial".into(), s("032")),
                 ("is-avatar".into(), Value::Bool(false)),
                 ("favorite".into(), Value::Bool(true)),
             ])),
@@ -1514,8 +1521,7 @@ fn main() {
             ("title".into(), s("麻枝准")),
             ("subtitle".into(), s("作曲 84 首")),
             ("meta".into(), s("")),
-            ("cover".into(), Value::Image(cover(5))),
-            ("initial".into(), s("麻")),
+            ("cover".into(), Value::Image(Image::default())),
             ("is-avatar".into(), Value::Bool(true)),
             ("favorite".into(), Value::Bool(true)),
         ]))]),
@@ -1977,12 +1983,21 @@ fn main() {
             ("rows", album_rows_n(5, 2)),
         ])]),
     );
+    set(&inst, "detail-cover", Value::Image(Image::default()));
     set(&inst, "detail", detail(1.0, "畑 亜貴", "", "", "", ""));
     render(
         &window,
         PhysicalSize::new(960, 1000),
         &format!("{out}/artist-credits.png"),
     );
+    set(&inst, "theme-mode", Value::Number(2.0));
+    render(
+        &window,
+        PhysicalSize::new(960, 1000),
+        &format!("{out}/artist-credits-light.png"),
+    );
+    set(&inst, "theme-mode", Value::Number(1.0));
+    set(&inst, "detail-cover", Value::Image(cover(5)));
     if std::env::var("UI_SNAPSHOT_ONLY").as_deref() == Ok("track-pages") {
         use slint::LogicalPosition;
         use slint::platform::{PointerEventButton, WindowEvent};

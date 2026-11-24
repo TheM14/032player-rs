@@ -536,14 +536,6 @@ fn count_i32(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
 
-fn initial_of(name: &str) -> String {
-    name.trim()
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_else(|| "?".to_owned())
-}
-
 fn artist_subtitle(a: &ArtistItem) -> String {
     match (a.album_count > 0, a.track_count > 0) {
         (true, true) => format!("{} 张专辑 · {} 首演唱", a.album_count, a.track_count),
@@ -574,11 +566,11 @@ fn best_match_row(best: Option<&SearchBestMatch>, favorite: bool) -> (SlintBestM
     let Some(best) = best else {
         return (SlintBestMatch::default(), String::new());
     };
-    let (kind, kind_label, initial) = match best.category {
-        SearchCategory::Artists => (0, "歌手", initial_of(&best.title)),
-        SearchCategory::Albums => (1, "专辑", "032".to_owned()),
-        SearchCategory::Tracks => (2, "歌曲", "032".to_owned()),
-        SearchCategory::Composers => (3, "作曲家", initial_of(&best.title)),
+    let (kind, kind_label) = match best.category {
+        SearchCategory::Artists => (0, "歌手"),
+        SearchCategory::Albums => (1, "专辑"),
+        SearchCategory::Tracks => (2, "歌曲"),
+        SearchCategory::Composers => (3, "作曲家"),
     };
     let album_id = if best.category == SearchCategory::Albums {
         best.id
@@ -595,7 +587,6 @@ fn best_match_row(best: Option<&SearchBestMatch>, favorite: bool) -> (SlintBestM
             title: best.title.as_str().into(),
             subtitle: best.subtitle.as_str().into(),
             cover: Image::default(),
-            initial: initial.into(),
             favorite,
         },
         best.image.clone(),
@@ -609,7 +600,6 @@ fn artist_compact_card(a: &ArtistItem) -> SearchCompactCard {
         subtitle: artist_subtitle(a).into(),
         meta: SharedString::new(),
         cover: Image::default(),
-        initial: initial_of(&a.name).into(),
         is_avatar: true,
         favorite: a.favorite,
     }
@@ -622,7 +612,6 @@ fn album_compact_card(a: &AlbumItem) -> SearchCompactCard {
         subtitle: a.artist.as_str().into(),
         meta: album_meta(a).into(),
         cover: Image::default(),
-        initial: "032".into(),
         is_avatar: false,
         favorite: a.favorite,
     }
@@ -635,7 +624,6 @@ fn composer_compact_card(a: &ArtistItem) -> SearchCompactCard {
         subtitle: composer_subtitle(a).into(),
         meta: SharedString::new(),
         cover: Image::default(),
-        initial: initial_of(&a.name).into(),
         is_avatar: true,
         favorite: a.favorite,
     }
