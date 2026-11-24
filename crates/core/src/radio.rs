@@ -98,15 +98,41 @@ pub struct RadioSnapshot {
     pub similar_reasons: HashMap<i64, Vec<String>>,
 }
 
-/// Maps raw 032 similarity reason codes to the highest-priority short Chinese label.
+fn is_structural_reason(reason: &str) -> bool {
+    matches!(
+        reason.trim(),
+        "sameWork" | "sharedCredit" | "coPlaylist" | "sameArtist"
+    )
+}
+
+fn has_structural_reason(reasons: &[String]) -> bool {
+    reasons.iter().any(|r| is_structural_reason(r))
+}
+
+fn is_acoustic_only_reason(reasons: &[String]) -> bool {
+    let mut has_acoustic = false;
+    for reason in reasons {
+        let trimmed = reason.trim();
+        if is_structural_reason(trimmed) {
+            return false;
+        }
+        if trimmed == "soundsSimilar" {
+            has_acoustic = true;
+        }
+    }
+    has_acoustic
+}
+
+/// Maps raw 032 similarity reason codes to the most informative short Chinese label.
+/// Specific structural relationships (`sameWork`, `sharedCredit`, `coPlaylist`, `sameArtist`)
+/// take precedence over `soundsSimilar` so hybrid matches do not collapse into "听感相似",
+/// while pure acoustic matches still display "听感相似" ahead of broad `genre`/`era` tags.
 pub fn primary_reason_label(reasons: &[String]) -> Option<&'static str> {
     if reasons.is_empty() {
         return None;
     }
     let has = |key: &str| reasons.iter().any(|r| r.trim() == key);
-    if has("soundsSimilar") {
-        Some("听感相似")
-    } else if has("sameWork") {
+    if has("sameWork") {
         Some("同作品")
     } else if has("sharedCredit") {
         Some("同作者")
@@ -114,6 +140,8 @@ pub fn primary_reason_label(reasons: &[String]) -> Option<&'static str> {
         Some("共现歌单")
     } else if has("sameArtist") {
         Some("同艺人")
+    } else if has("soundsSimilar") {
+        Some("听感相似")
     } else if has("genre") {
         Some("同曲风")
     } else if has("era") {
@@ -320,7 +348,22 @@ pub fn select_rolling_seed(tracks: &[Track], current_index: Option<usize>) -> Op
         .filter(|t| t.id > 0)
 }
 
-/// Client-side deduplication and two-pass artist diversification safeguard.
+fn artist_key_for(candidate: &SimilarTrack) -> String {
+    candidate
+        .track
+        .artists
+        .first()
+        .filter(|a| a.id > 0)
+        .map(|a| format!("id:{}", a.id))
+        .or_else(|| {
+            let name = candidate.track.artist.trim();
+            (!name.is_empty()).then(|| format!("name:{}", name.to_lowercase()))
+        })
+        .unwrap_or_else(|| format!("unknown:{}", candidate.track.id))
+}
+
+/// Client-side deduplication, two-pass artist cap, and acoustic/structural
+/// interleaving safeguard.
 pub fn filter_and_diversify(
     candidates: Vec<SimilarTrack>,
     excluded_ids: &HashSet<i64>,
@@ -337,37 +380,76 @@ pub fn filter_and_diversify(
             unique.push(candidate);
         }
     }
-    if max_per_artist == 0 {
+    if unique.is_empty() || max_per_artist == 0 {
         unique.truncate(limit);
         return unique;
     }
+
+    let top_score = unique.iter().map(|c| c.score).fold(0.0_f64, f64::max);
+    let min_structural_score = (top_score * 0.50).max(0.18);
+    let artist_keys: Vec<String> = unique.iter().map(artist_key_for).collect();
+    let mut slots: Vec<Option<SimilarTrack>> = unique.into_iter().map(Some).collect();
     let mut artist_counts: HashMap<String, usize> = HashMap::new();
-    let mut picked = Vec::with_capacity(limit.min(unique.len()));
-    let mut deferred = Vec::new();
-    for candidate in unique {
-        let artist_key = candidate
-            .track
-            .artists
-            .first()
-            .filter(|a| a.id > 0)
-            .map(|a| format!("id:{}", a.id))
-            .or_else(|| {
-                let name = candidate.track.artist.trim();
-                (!name.is_empty()).then(|| format!("name:{}", name.to_lowercase()))
-            })
-            .unwrap_or_else(|| format!("unknown:{}", candidate.track.id));
-        let count = artist_counts.get(&artist_key).copied().unwrap_or(0);
-        if count >= max_per_artist {
-            deferred.push(candidate);
-            continue;
+    let mut picked = Vec::with_capacity(limit.min(slots.len()));
+    let mut consecutive_acoustic_only = 0usize;
+    let mut next_general = 0usize;
+    let mut next_structural = 0usize;
+
+    while picked.len() < limit {
+        while next_general < slots.len() {
+            if slots[next_general].is_some()
+                && artist_counts
+                    .get(&artist_keys[next_general])
+                    .copied()
+                    .unwrap_or(0)
+                    < max_per_artist
+            {
+                break;
+            }
+            next_general += 1;
         }
-        artist_counts.insert(artist_key, count + 1);
-        picked.push(candidate);
-        if picked.len() >= limit {
-            return picked;
+        if next_general >= slots.len() {
+            break;
+        }
+
+        let mut chosen = next_general;
+        if consecutive_acoustic_only >= 2
+            && slots[next_general]
+                .as_ref()
+                .is_some_and(|c| is_acoustic_only_reason(&c.reasons))
+        {
+            while next_structural < slots.len() {
+                let eligible = slots[next_structural].as_ref().is_some_and(|c| {
+                    artist_counts
+                        .get(&artist_keys[next_structural])
+                        .copied()
+                        .unwrap_or(0)
+                        < max_per_artist
+                        && has_structural_reason(&c.reasons)
+                        && c.score >= min_structural_score
+                });
+                if eligible {
+                    chosen = next_structural;
+                    break;
+                }
+                next_structural += 1;
+            }
+        }
+
+        if let Some(candidate) = slots[chosen].take() {
+            *artist_counts
+                .entry(artist_keys[chosen].clone())
+                .or_insert(0) += 1;
+            if is_acoustic_only_reason(&candidate.reasons) {
+                consecutive_acoustic_only += 1;
+            } else {
+                consecutive_acoustic_only = 0;
+            }
+            picked.push(candidate);
         }
     }
-    for candidate in deferred {
+
+    for candidate in slots.into_iter().flatten() {
         if picked.len() >= limit {
             break;
         }
@@ -452,32 +534,67 @@ mod tests {
         }
     }
 
-    fn sim(id: i64, artist: &str, artist_id: i64) -> SimilarTrack {
+    fn sim_with(
+        id: i64,
+        artist: &str,
+        artist_id: i64,
+        score: f64,
+        reasons: &[&str],
+    ) -> SimilarTrack {
         SimilarTrack {
             track: track(id, &format!("t{id}"), artist, artist_id),
-            distance: 0.1,
-            score: 0.9,
-            reasons: vec!["soundsSimilar".into()],
+            distance: 1.0 - score,
+            score,
+            reasons: reasons.iter().map(|s| (*s).to_owned()).collect(),
         }
+    }
+
+    fn sim(id: i64, artist: &str, artist_id: i64) -> SimilarTrack {
+        sim_with(id, artist, artist_id, 0.9, &["soundsSimilar"])
     }
 
     #[test]
     fn reason_label_follows_priority() {
         assert_eq!(
-            primary_reason_label(&["sameArtist".into(), "soundsSimilar".into()]),
-            Some("听感相似")
-        );
-        assert_eq!(
-            primary_reason_label(&["genre".into(), "sameWork".into()]),
+            primary_reason_label(&[
+                "sameWork".into(),
+                "sharedCredit".into(),
+                "soundsSimilar".into()
+            ]),
             Some("同作品")
         );
         assert_eq!(
-            primary_reason_label(&["era".into(), "sharedCredit".into()]),
+            primary_reason_label(&[
+                "sharedCredit".into(),
+                "coPlaylist".into(),
+                "soundsSimilar".into()
+            ]),
             Some("同作者")
         );
         assert_eq!(
-            primary_reason_label(&["coPlaylist".into()]),
+            primary_reason_label(&[
+                "coPlaylist".into(),
+                "sameArtist".into(),
+                "soundsSimilar".into()
+            ]),
             Some("共现歌单")
+        );
+        assert_eq!(
+            primary_reason_label(&["sameArtist".into(), "soundsSimilar".into()]),
+            Some("同艺人")
+        );
+        assert_eq!(
+            primary_reason_label(&["genre".into(), "era".into(), "soundsSimilar".into()]),
+            Some("听感相似")
+        );
+        assert_eq!(
+            primary_reason_label(&["genre".into(), "era".into()]),
+            Some("同曲风")
+        );
+        assert_eq!(primary_reason_label(&["era".into()]), Some("同年代"));
+        assert_eq!(
+            primary_reason_label(&["sameAlbum".into(), "oftenSkipped".into()]),
+            None
         );
         assert_eq!(primary_reason_label(&["unknown".into()]), None);
     }
@@ -604,6 +721,23 @@ mod tests {
         // Pass 1 picks 2 (A), 4 (B), 5 (C); pass 2 backfills deferred 3 (A).
         let ids: Vec<i64> = picked.iter().map(|s| s.track.id).collect();
         assert_eq!(ids, [2, 4, 5, 3]);
+    }
+
+    #[test]
+    fn diversify_interleaves_structural_tracks_among_acoustic_neighbors() {
+        let candidates = vec![
+            sim_with(1, "A", 1, 0.44, &["genre", "soundsSimilar"]),
+            sim_with(2, "B", 2, 0.43, &["soundsSimilar"]),
+            sim_with(3, "C", 3, 0.42, &["soundsSimilar"]),
+            sim_with(4, "D", 4, 0.41, &["soundsSimilar"]),
+            sim_with(5, "E", 5, 0.40, &["soundsSimilar"]),
+            sim_with(6, "F", 6, 0.34, &["sameWork", "soundsSimilar"]),
+            sim_with(7, "G", 7, 0.32, &["sharedCredit", "era"]),
+            sim_with(8, "H", 8, 0.12, &["coPlaylist"]), // below quality floor -> stays behind
+        ];
+        let picked = filter_and_diversify(candidates, &HashSet::new(), 2, 6);
+        let ids: Vec<i64> = picked.iter().map(|s| s.track.id).collect();
+        assert_eq!(ids, [1, 2, 6, 3, 4, 7]);
     }
 
     #[test]
