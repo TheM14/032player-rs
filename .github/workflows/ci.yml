@@ -62,6 +62,10 @@ jobs:
             grep '^checksum = ' Cargo.lock || true
             grep -E '^(opt-level|debug|codegen-units|strip|\[profile\.)' Cargo.toml || true
           } | sha256sum | awk '{print "hash=" substr($1, 1, 16)}' >> "$GITHUB_OUTPUT"
+          {
+            grep '^checksum = ' Cargo.lock || true
+            grep '^checksum = ' tools/ui-snapshot/Cargo.lock || true
+          } | sha256sum | awk '{print "lock_hash=" substr($1, 1, 16)}' >> "$GITHUB_OUTPUT"
       - id: rust-cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -69,13 +73,19 @@ jobs:
           workspaces: |
             .
             tools/ui-snapshot
-      # Saved before Swatinem/rust-cache cleans workspace crates (Post runs in reverse order).
+      # Saved before Swatinem/rust-cache cleans workspace crates & registry index (Post runs in reverse order).
+      - name: Cache sparse crates.io index
+        id: index-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry/index
+          key: crates-index-linux-v1-${{ steps.rust-env.outputs.lock_hash }}
       - name: Cache compiled Slint UI (app-ui)
         id: app-ui-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/debug/build/app-ui
-          key: app-ui-linux-debug-v1-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
+          key: app-ui-linux-debug-v2-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
       - name: Normalize app-ui input mtimes
         run: |
           find crates/app-ui crates/app/ui -type f -exec touch -d '2020-01-01T00:00:00Z' {} +
@@ -84,17 +94,17 @@ jobs:
       - name: Clippy
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*" >/dev/null; then OFFLINE="--offline"; fi
-          cargo clippy --locked $OFFLINE --workspace --all-targets -- -D warnings
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
+          cargo clippy --locked $OFFLINE --workspace --exclude app-ui --all-targets -- -D warnings
       - name: Test
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*" >/dev/null; then OFFLINE="--offline"; fi
-          cargo test --locked $OFFLINE --workspace --lib --tests --bins
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
+          cargo test --locked $OFFLINE --workspace --exclude app-ui --lib --tests --bins
       - name: UI snapshot regression
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*" >/dev/null; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
           cargo run --locked $OFFLINE --manifest-path tools/ui-snapshot/Cargo.toml -- /tmp/ui-snapshot
 
   windows:
@@ -137,22 +147,30 @@ jobs:
         id: rust-env
         shell: pwsh
         run: |
+          $checksums = (Select-String -Path Cargo.lock -Pattern '^checksum = ' | ForEach-Object { $_.Line }) -join "`n"
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          $lockHex = ([System.BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($checksums))) -replace '-', '').ToLowerInvariant().Substring(0, 16)
           $parts = @(
             (rustc --version --verbose | Out-String),
             "RUSTFLAGS=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
             "LINKER=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER",
-            ((Select-String -Path Cargo.lock -Pattern '^checksum = ' | ForEach-Object { $_.Line }) -join "`n"),
+            $checksums,
             ((Get-Content Cargo.toml | Select-String -Pattern '^(opt-level|debug|codegen-units|strip|\[profile\.)' | ForEach-Object { $_.Line }) -join "`n")
           ) -join "`n---`n"
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($parts)
-          $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
-          $hex = ([System.BitConverter]::ToString($sha) -replace '-', '').ToLowerInvariant().Substring(0, 16)
+          $hex = ([System.BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($parts))) -replace '-', '').ToLowerInvariant().Substring(0, 16)
           "hash=$hex" >> $env:GITHUB_OUTPUT
+          "lock_hash=$lockHex" >> $env:GITHUB_OUTPUT
       - id: rust-cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows
-      # Saved before Swatinem/rust-cache cleans workspace crates (Post runs in reverse order).
+      # Saved before Swatinem/rust-cache cleans workspace crates & registry index (Post runs in reverse order).
+      - name: Cache sparse crates.io index
+        id: index-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry/index
+          key: crates-index-win-v1-${{ steps.rust-env.outputs.lock_hash }}
       - name: Cache compiled Slint UI (app-ui)
         id: app-ui-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -160,7 +178,7 @@ jobs:
           path: |
             target/debug/build/app-ui
             target/x86_64-pc-windows-msvc/debug/build/app-ui
-          key: app-ui-win-debug-v1-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
+          key: app-ui-win-debug-v2-${{ steps.rust-env.outputs.hash }}-${{ hashFiles('crates/app-ui/**', 'crates/app/ui/**', 'crates/app/assets/icon.png') }}
       - name: Normalize app-ui input mtimes
         shell: pwsh
         run: |
@@ -176,11 +194,11 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*")) { $flags += "--offline" }
-          cargo clippy @flags --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          cargo clippy @flags --workspace --exclude app-ui --all-targets --target x86_64-pc-windows-msvc -- -D warnings
       - name: Test
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*")) { $flags += "--offline" }
-          cargo test @flags --workspace --lib --tests --bins --target x86_64-pc-windows-msvc
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          cargo test @flags --workspace --exclude app-ui --lib --tests --bins --target x86_64-pc-windows-msvc

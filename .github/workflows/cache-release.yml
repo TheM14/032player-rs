@@ -75,22 +75,30 @@ jobs:
         id: rust-env
         shell: pwsh
         run: |
+          $checksums = (Select-String -Path Cargo.lock -Pattern '^checksum = ' | ForEach-Object { $_.Line }) -join "`n"
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          $lockHex = ([System.BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($checksums))) -replace '-', '').ToLowerInvariant().Substring(0, 16)
           $parts = @(
             (rustc --version --verbose | Out-String),
             "RUSTFLAGS=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
             "LINKER=$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER",
-            ((Select-String -Path Cargo.lock -Pattern '^checksum = ' | ForEach-Object { $_.Line }) -join "`n"),
+            $checksums,
             ((Get-Content Cargo.toml | Select-String -Pattern '^(opt-level|debug|codegen-units|strip|\[profile\.)' | ForEach-Object { $_.Line }) -join "`n")
           ) -join "`n---`n"
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($parts)
-          $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
-          $hex = ([System.BitConverter]::ToString($sha) -replace '-', '').ToLowerInvariant().Substring(0, 16)
+          $hex = ([System.BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($parts))) -replace '-', '').ToLowerInvariant().Substring(0, 16)
           "hash=$hex" >> $env:GITHUB_OUTPUT
+          "lock_hash=$lockHex" >> $env:GITHUB_OUTPUT
       - id: rust-cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Cache sparse crates.io index
+        id: index-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/registry/index
+          key: crates-index-win-v1-${{ steps.rust-env.outputs.lock_hash }}
       - name: Cache compiled Slint UI (app-ui release)
         id: app-ui-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -120,6 +128,6 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
           cargo build @flags -p app --release --target x86_64-pc-windows-msvc
           Get-Item "target/x86_64-pc-windows-msvc/release/032player.exe" | Select-Object Name, Length
