@@ -99,7 +99,7 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo build @flags -p app --release --target x86_64-pc-windows-msvc
 
       - name: Package

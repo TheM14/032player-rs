@@ -93,9 +93,9 @@ jobs:
         with:
           shared-key: windows-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Cache sparse crates.io index
+      - name: Restore sparse crates.io index
         id: index-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo/registry/index
           key: crates-index-win-v1-${{ steps.rust-env.outputs.lock_hash }}
@@ -128,6 +128,7 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo build @flags -p app --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Item "target/x86_64-pc-windows-msvc/release/032player.exe" | Select-Object Name, Length

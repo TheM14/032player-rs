@@ -94,17 +94,17 @@ jobs:
       - name: Clippy
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo clippy --locked $OFFLINE --workspace --exclude app-ui --all-targets -- -D warnings
       - name: Test
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo test --locked $OFFLINE --workspace --exclude app-ui --lib --tests --bins
       - name: UI snapshot regression
         run: |
           OFFLINE=""
-          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && [ "${{ steps.index-cache.outputs.cache-hit }}" = "true" ]; then OFFLINE="--offline"; fi
+          if [ "${{ steps.rust-cache.outputs.cache-hit }}" = "true" ] && compgen -G "${CARGO_HOME:-$HOME/.cargo}/registry/index/index.crates.io-*/.cache/re/qw/reqwest" >/dev/null; then OFFLINE="--offline"; fi
           cargo run --locked $OFFLINE --manifest-path tools/ui-snapshot/Cargo.toml -- /tmp/ui-snapshot
 
   windows:
@@ -194,11 +194,11 @@ jobs:
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo clippy @flags --workspace --exclude app-ui --all-targets --target x86_64-pc-windows-msvc -- -D warnings
       - name: Test
         shell: pwsh
         run: |
           $flags = @("--locked")
-          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and ("${{ steps.index-cache.outputs.cache-hit }}" -eq "true")) { $flags += "--offline" }
+          if (("${{ steps.rust-cache.outputs.cache-hit }}" -eq "true") -and (Test-Path "$env:CARGO_HOME\registry\index\index.crates.io-*\.cache\re\qw\reqwest")) { $flags += "--offline" }
           cargo test @flags --workspace --exclude app-ui --lib --tests --bins --target x86_64-pc-windows-msvc
