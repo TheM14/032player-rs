@@ -4,11 +4,11 @@
 
 给已经搭好 032 Music Server、想在桌面上浏览曲库并听歌的人。只连接这一套服务端。Jellyfin、Navidrome、Subsonic、Plex 不在范围内。界面是简体中文。
 
-当前版本 **0.2.32**。日常听歌可以用。代码签名、多语言和最小化到托盘等还没做完，所以没有标成 1.0。
+当前版本 **0.2.33**。日常听歌可以用。代码签名、多语言和最小化到托盘等还没做完，所以没有标成 1.0。
 
 ## 下载
 
-Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032player-rs/releases)。最新是 [v0.2.32](https://github.com/lux032/032player-rs/releases/tag/v0.2.32)。
+Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032player-rs/releases)。最新是 [v0.2.33](https://github.com/lux032/032player-rs/releases/tag/v0.2.33)。
 
 主力平台是 Windows。Linux 可以按下面的方式从源码构建。macOS 尽力而为，没有作为正式发布平台验证。
 
@@ -16,7 +16,7 @@ Windows 安装包和便携 zip 在 [Releases](https://github.com/lux032/032playe
 
 - 用服务器地址、API Token 和媒体凭据登录。正常使用时凭据写在操作系统凭据库里，下次启动自动登录。
 - 浏览专辑、曲目、艺人、歌单、收藏，以及搜索。
-- 播放：libmpv、队列、随机、循环、无缝切歌、睡眠定时、可选转码、独占输出、播放 / 暂停时的淡入淡出。
+- 播放：libmpv / Windows 原生 ASIO、队列、随机、循环、无缝切歌、睡眠定时、可选转码、独占输出、响度均衡（基于 032 服务端 EBU R128）、播放 / 暂停时的淡入淡出。
 - 歌词：同步滚动、翻译、搜索和纠正、偏移。
 - 032 专属页面：主页、作品、系列、每日推荐、播放记录。
 - 系统媒体控制（Windows SMTC、Linux MPRIS）和媒体键。
