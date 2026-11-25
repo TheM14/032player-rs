@@ -3,11 +3,13 @@
 mod asio_player;
 mod decoder;
 mod http_source;
+mod limiter;
 
 pub use asio::{AsioCapabilities, AsioChannelPair, AsioDriverInfo, AsioSampleType, AsioTarget};
 #[cfg(windows)]
 pub use asio_player::WindowsAsioSink;
 pub use asio_player::{AsioPlayer, AudioSink};
+pub use limiter::SoftPeakLimiter;
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -81,6 +83,68 @@ pub enum PlayerEvent {
     /// A seek finished and playback continues.
     PlaybackRestart,
     Shutdown,
+}
+
+/// Per-track loudness normalization parameters consumed by audio backends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoudnessParams {
+    pub enabled: bool,
+    pub gain_db: f64,
+    pub ceiling_db: f64,
+    pub use_limiter: bool,
+}
+
+impl Default for LoudnessParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gain_db: 0.0,
+            ceiling_db: -1.0,
+            use_limiter: false,
+        }
+    }
+}
+
+pub(crate) fn db_to_linear(db: f64) -> f64 {
+    if db.is_finite() {
+        10.0_f64.powf(db / 20.0)
+    } else {
+        1.0
+    }
+}
+
+/// Builds the mpv `af` filter chain for loudness normalization.
+///
+/// Always passes `level=disabled` to FFmpeg `alimiter` so it never applies
+/// automatic makeup gain on top of the planned loudness gain. Returns an empty
+/// string when disabled or when unity gain without limiting is requested.
+#[must_use]
+pub fn build_mpv_af(params: LoudnessParams) -> String {
+    if !params.enabled {
+        return String::new();
+    }
+    let gain_db = if params.gain_db.is_finite() {
+        params.gain_db.clamp(-24.0, 18.0)
+    } else {
+        0.0
+    };
+    if !params.use_limiter && gain_db.abs() < 0.05 {
+        return String::new();
+    }
+    if !params.use_limiter {
+        return format!("lavfi=[volume={gain_db:.2}dB:precision=float]");
+    }
+    let limit = db_to_linear(params.ceiling_db).clamp(0.0625, 1.0);
+    format!(
+        "lavfi=[volume={gain_db:.2}dB:precision=float,alimiter=limit={limit:.5}:attack=5:release=50:asc=0:level=disabled]"
+    )
+}
+
+/// Formats the per-file `options` argument passed to mpv's 4-arg `loadfile`.
+#[must_use]
+pub fn build_mpv_loadfile_af_option(params: LoudnessParams) -> String {
+    let af = build_mpv_af(params);
+    format!("af=\"{af}\"")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -231,6 +295,9 @@ pub struct Player {
     thread: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     output_change: Mutex<()>,
+    /// Fallback `af` applied on the next `FileLoaded` when an older libmpv
+    /// rejects 4-argument per-file `loadfile` options.
+    pending_fallback_af: Arc<Mutex<Option<String>>>,
 }
 
 impl Player {
@@ -285,12 +352,14 @@ impl Player {
 
         let mpv = Arc::new(mpv);
         let stop = Arc::new(AtomicBool::new(false));
+        let pending_fallback_af = Arc::new(Mutex::new(None));
         let thread = {
             let mpv = mpv.clone();
             let stop = stop.clone();
+            let pending_af = pending_fallback_af.clone();
             std::thread::Builder::new()
                 .name("mpv-events".into())
-                .spawn(move || event_loop(&mpv, &stop, log_file, &mut on_event))
+                .spawn(move || event_loop(&mpv, &stop, &pending_af, log_file, &mut on_event))
                 .map_err(|e| PlayerError::Mpv(e.to_string()))?
         };
         Ok(Self {
@@ -298,17 +367,55 @@ impl Player {
             thread: Some(thread),
             stop,
             output_change: Mutex::new(()),
+            pending_fallback_af,
         })
     }
 
     /// Replaces the playlist with `url` and starts it.
     pub fn load(&self, url: &str) -> Result<()> {
+        *self.pending_fallback_af.lock().expect("pending af lock") = None;
+        Ok(self.mpv.command("loadfile", &[url, "replace"])?)
+    }
+
+    /// Replaces the playlist with `url` and applies `params` via mpv `af`
+    /// (keeping `volume-gain` reserved for play/pause fades).
+    pub fn load_with_loudness(&self, url: &str, params: LoudnessParams) -> Result<()> {
+        *self.pending_fallback_af.lock().expect("pending af lock") = None;
+        self.set_loudness(params)?;
         Ok(self.mpv.command("loadfile", &[url, "replace"])?)
     }
 
     /// Appends `url` to the playlist (prefetched for gapless playback).
     pub fn append(&self, url: &str) -> Result<()> {
+        *self.pending_fallback_af.lock().expect("pending af lock") = None;
         Ok(self.mpv.command("loadfile", &[url, "append"])?)
+    }
+
+    /// Appends `url` with per-file loudness `af` options (mpv 0.38+), falling
+    /// back to 2-arg `loadfile` + `FileLoaded` `af` update on older libmpv.
+    pub fn append_with_loudness(&self, url: &str, params: LoudnessParams) -> Result<()> {
+        let opt = build_mpv_loadfile_af_option(params);
+        match self.mpv.command("loadfile", &[url, "append", "-1", &opt]) {
+            Ok(()) => {
+                *self.pending_fallback_af.lock().expect("pending af lock") = None;
+                Ok(())
+            }
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    "mpv rejected 4-arg loadfile per-file af; falling back to FileLoaded update"
+                );
+                *self.pending_fallback_af.lock().expect("pending af lock") =
+                    Some(build_mpv_af(params));
+                Ok(self.mpv.command("loadfile", &[url, "append"])?)
+            }
+        }
+    }
+
+    /// Updates loudness normalization live via mpv's `af` property.
+    pub fn set_loudness(&self, params: LoudnessParams) -> Result<()> {
+        let af = build_mpv_af(params);
+        Ok(self.mpv.set_property("af", af.as_str())?)
     }
 
     /// HTTP proxy (`http://host:port`) for streams opened from now on;
@@ -319,6 +426,7 @@ impl Player {
 
     /// Drops every playlist entry except the currently playing one.
     pub fn clear_upcoming(&self) -> Result<()> {
+        *self.pending_fallback_af.lock().expect("pending af lock") = None;
         Ok(self.mpv.command("playlist-clear", &[])?)
     }
 
@@ -327,6 +435,7 @@ impl Player {
     }
 
     pub fn stop(&self) -> Result<()> {
+        *self.pending_fallback_af.lock().expect("pending af lock") = None;
         Ok(self.mpv.command("stop", &[])?)
     }
 
@@ -468,6 +577,7 @@ fn property_event(name: &str, change: &PropertyData<'_>) -> Option<PlayerEvent> 
 fn event_loop(
     mpv: &Mpv,
     stop: &AtomicBool,
+    pending_fallback_af: &Mutex<Option<String>>,
     mut log_file: Option<File>,
     on_event: &mut impl FnMut(PlayerEvent),
 ) {
@@ -497,9 +607,14 @@ fn event_loop(
                 None
             }
             Ok(Event::PropertyChange { name, change, .. }) => property_event(name, &change),
-            Ok(Event::FileLoaded) => Some(PlayerEvent::FileLoaded {
-                path: mpv.get_property::<String>("path").ok(),
-            }),
+            Ok(Event::FileLoaded) => {
+                if let Some(af) = pending_fallback_af.lock().expect("pending af lock").take() {
+                    let _ = mpv.set_property("af", af.as_str());
+                }
+                Some(PlayerEvent::FileLoaded {
+                    path: mpv.get_property::<String>("path").ok(),
+                })
+            }
             Ok(Event::PlaybackRestart) => Some(PlayerEvent::PlaybackRestart),
             Ok(Event::EndFile(reason)) => Some(PlayerEvent::EndFile {
                 reason: end_reason(reason),
@@ -528,7 +643,7 @@ fn event_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::redact_log_text;
+    use super::{LoudnessParams, build_mpv_af, build_mpv_loadfile_af_option, redact_log_text};
 
     #[test]
     fn redacts_media_token_and_bearer_in_mpv_logs() {
@@ -545,6 +660,59 @@ mod tests {
         assert_eq!(
             redact_log_text("ao/wasapi: buffer underrun"),
             "ao/wasapi: buffer underrun"
+        );
+    }
+
+    #[test]
+    fn builds_mpv_loudness_af_strings_correctly() {
+        // Disabled -> empty string (complete bypass).
+        assert_eq!(build_mpv_af(LoudnessParams::default()), "");
+        assert_eq!(
+            build_mpv_loadfile_af_option(LoudnessParams::default()),
+            "af=\"\""
+        );
+
+        // Enabled at near-zero unity gain without limiter -> empty string.
+        assert_eq!(
+            build_mpv_af(LoudnessParams {
+                enabled: true,
+                gain_db: 0.02,
+                ceiling_db: -1.0,
+                use_limiter: false,
+            }),
+            ""
+        );
+
+        // Pure linear gain without limiter.
+        assert_eq!(
+            build_mpv_af(LoudnessParams {
+                enabled: true,
+                gain_db: -3.25,
+                ceiling_db: -1.0,
+                use_limiter: false,
+            }),
+            "lavfi=[volume=-3.25dB:precision=float]"
+        );
+
+        // Gain with soft limiter MUST include level=disabled to prevent auto-boost.
+        let with_lim = build_mpv_af(LoudnessParams {
+            enabled: true,
+            gain_db: 2.5,
+            ceiling_db: -1.0,
+            use_limiter: true,
+        });
+        assert_eq!(
+            with_lim,
+            "lavfi=[volume=2.50dB:precision=float,alimiter=limit=0.89125:attack=5:release=50:asc=0:level=disabled]"
+        );
+        assert_eq!(
+            build_mpv_loadfile_af_option(LoudnessParams {
+                enabled: true,
+                gain_db: 2.5,
+                ceiling_db: -1.0,
+                use_limiter: true,
+            }),
+            format!("af=\"{with_lim}\"")
         );
     }
 }

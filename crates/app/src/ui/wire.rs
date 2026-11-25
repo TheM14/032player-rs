@@ -56,6 +56,7 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.set_asio_error(false);
     window.set_close_to_tray(settings.close_to_tray);
     window.set_fade_on_pause(settings.fade_on_pause);
+    Ui::show_loudness_settings(window, &settings.loudness);
     window.set_theme_mode(match settings.theme {
         ThemeMode::System => 0,
         ThemeMode::Dark => 1,
@@ -485,6 +486,13 @@ pub fn install(window: &AppWindow, commander: Commander, settings: &Settings) {
     window.on_close_to_tray_toggled(move |on| c.send(Command::SetCloseToTray(on)));
     let c = commander.clone();
     window.on_fade_on_pause_toggled(move |on| c.send(Command::SetFadeOnPause(on)));
+    let c = commander.clone();
+    let weak = window.as_weak();
+    window.on_loudness_changed(move || {
+        if let Some(w) = weak.upgrade() {
+            c.send(Command::SetLoudness(Ui::loudness_settings(&w)));
+        }
+    });
     let c = commander.clone();
     window.on_theme_selected(move |i| {
         c.send(Command::SetTheme(match i {

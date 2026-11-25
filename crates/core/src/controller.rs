@@ -243,6 +243,8 @@ pub enum Command {
     SetCloseToTray(bool),
     /// Volume fade on play / pause.
     SetFadeOnPause(bool),
+    /// Loudness normalization settings.
+    SetLoudness(crate::settings::LoudnessSettings),
     SetTheme(crate::settings::ThemeMode),
     /// Looks for a newer GitHub release ([`Event::UpdateAvailable`]).
     CheckUpdate,
@@ -496,7 +498,7 @@ impl Intent {
 }
 
 /// Server abilities the UI adapts to.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServerFeatures {
     /// `/browse/*`: sort order, random, year ranges.
     pub browse: bool,
@@ -516,6 +518,14 @@ pub struct ServerFeatures {
     pub similar_tracks: bool,
     /// Advertised similarity method (`hybrid` vs `metadata`).
     pub similarity_method: crate::radio::SimilarityMethod,
+    /// Server provides EBU R128 loudness metadata (`features.loudness`).
+    pub loudness: bool,
+    /// Library median integrated loudness (LUFS), when available.
+    pub loudness_median_lufs: Option<f64>,
+    /// Number of tracks with valid EBU R128 loudness measurements.
+    pub loudness_analyzed: i64,
+    /// Total eligible library tracks for loudness measurement.
+    pub loudness_total: i64,
 }
 
 /// A queue row for the UI.
@@ -990,6 +1000,10 @@ enum Internal {
         limit: usize,
         seed: i64,
         result: Result<Vec<api::SimilarTrack>, api::ApiError>,
+    },
+    TrackLoudnessRefreshed {
+        generation: u64,
+        track: Box<Track>,
     },
 }
 
@@ -1682,6 +1696,7 @@ impl Core {
                 self.update_settings(|s| s.shuffle = shuffle);
                 self.emit(Event::Shuffle(shuffle));
                 self.queue_changed();
+                self.apply_live_loudness();
                 self.emit_radio_state();
             }
             Command::TogglePause => {
@@ -1721,8 +1736,14 @@ impl Core {
             Command::SetVolume(volume) => {
                 if self.casting() {
                     self.cast_volume(volume);
-                } else if let Err(e) = self.engine.set_volume(volume) {
-                    self.emit(Event::Notice(e));
+                } else {
+                    let clamped = volume.clamp(0.0, 100.0);
+                    if let Err(e) = self.engine.set_volume(clamped) {
+                        self.emit(Event::Notice(e));
+                    } else {
+                        self.update_settings(|s| s.volume = clamped);
+                        self.apply_live_loudness();
+                    }
                 }
             }
             Command::RefreshAudioDevices => self.refresh_audio_devices(false),
@@ -1775,6 +1796,13 @@ impl Core {
                     }
                 }
             }
+            Command::SetLoudness(loudness) => {
+                if self.settings.loudness != loudness {
+                    self.update_settings(|s| s.loudness = loudness);
+                    self.apply_live_loudness();
+                    self.sync_preload();
+                }
+            }
             Command::SetSleepTimer(timer) => self.set_sleep_timer(timer),
             Command::Stop => {
                 self.radio.pending_play_after_end = false;
@@ -1824,11 +1852,12 @@ impl Core {
                     .as_ref()
                     .and_then(|l| l.list(list).get(index))
                     .cloned();
-                self.emit_track_info(track.as_ref());
+                self.emit_track_info(track.as_ref(), None);
             }
             Command::NowTrackInfo => {
+                let pos = self.queue.position();
                 let track = self.queue.current().map(|i| i.track.clone());
-                self.emit_track_info(track.as_ref());
+                self.emit_track_info(track.as_ref(), pos);
             }
             Command::LoadImage {
                 key,
@@ -1861,11 +1890,14 @@ impl Core {
         }
     }
 
-    fn emit_track_info(&self, track: Option<&Track>) {
+    fn emit_track_info(&self, track: Option<&Track>, queue_pos: Option<usize>) {
         if let Some(track) = track {
+            let mut facts = crate::browse::track_facts(track);
+            let plan = (!self.casting()).then(|| self.loudness_plan_for(track, queue_pos));
+            facts.extend(crate::loudness::track_loudness_facts(track, plan.as_ref()));
             self.emit(Event::TrackInfo {
                 title: track.title.clone(),
-                facts: crate::browse::track_facts(track),
+                facts,
             });
         }
     }
@@ -2195,6 +2227,13 @@ impl Core {
                     self.emit(Event::MediaCover(Some(path)));
                 } else {
                     let _ = std::fs::remove_file(&path);
+                }
+            }
+            Internal::TrackLoudnessRefreshed { generation, track } => {
+                if generation == self.list_generation && self.queue.refresh_loudness(&[*track]) {
+                    self.apply_live_loudness();
+                    self.sync_preload();
+                    self.schedule_queue_save();
                 }
             }
         }

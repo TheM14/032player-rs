@@ -2139,6 +2139,16 @@ fn main() {
     );
     set(&inst, "lyrics-translation-available", Value::Bool(true));
     set(&inst, "fade-on-pause", Value::Bool(true));
+    set(&inst, "loudness-supported", Value::Bool(true));
+    set(
+        &inst,
+        "loudness-summary",
+        s("当前曲库中位数约 -10.4 LUFS（已分析 18,420 / 18,930 首）。"),
+    );
+    set(&inst, "loudness-enabled", Value::Bool(true));
+    set(&inst, "loudness-target", Value::Number(0.0));
+    set(&inst, "loudness-mode", Value::Number(0.0));
+    set(&inst, "loudness-peak-mode", Value::Number(0.0));
     set(&inst, "update-version", s("v0.1.7"));
     set(
         &inst,
@@ -2181,6 +2191,10 @@ fn main() {
                 ("作词", "Ayase"),
                 ("作曲", "Ayase"),
                 ("音质", "FLAC / 24bit / 48kHz"),
+                ("集成响度", "-8.4 LUFS"),
+                ("真峰值", "-0.2 dBTP"),
+                ("专辑响度", "-9.2 LUFS"),
+                ("响度补偿", "-1.8 dB（按专辑 · -11 LUFS）"),
                 ("文件大小", "31.2 MB"),
                 (
                     "路径",

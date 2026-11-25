@@ -6,9 +6,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use client_core::{
     AsioCapabilities, AsioChannelPair, AsioDriver, AsioTarget, AudioDevice, Engine, EngineEnd,
-    EngineEvent, ExclusiveMode,
+    EngineEvent, EngineLoudness, ExclusiveMode,
 };
-use player::{AsioPlayer, EndReason, Player, PlayerEvent};
+use player::{AsioPlayer, EndReason, LoudnessParams, Player, PlayerEvent};
+
+fn to_player_loudness(loudness: EngineLoudness) -> LoudnessParams {
+    LoudnessParams {
+        enabled: loudness.enabled,
+        gain_db: loudness.gain_db,
+        ceiling_db: loudness.ceiling_db,
+        use_limiter: loudness.use_limiter,
+    }
+}
 
 pub type Forward = Box<dyn Fn(EngineEvent) + Send + Sync>;
 
@@ -25,6 +34,7 @@ pub struct HybridEngine {
     exclusive: AtomicBool,
     volume: Mutex<f64>,
     fade_gain: Mutex<f64>,
+    loudness: Mutex<EngineLoudness>,
     #[cfg_attr(not(windows), allow(dead_code))]
     forward: Arc<OnceLock<Forward>>,
 }
@@ -46,6 +56,7 @@ impl HybridEngine {
             exclusive: AtomicBool::new(initial_exclusive),
             volume: Mutex::new(initial_volume.clamp(0.0, 100.0)),
             fade_gain: Mutex::new(1.0),
+            loudness: Mutex::new(EngineLoudness::default()),
             forward,
         }
     }
@@ -97,6 +108,9 @@ impl HybridEngine {
         asio.set_http_proxy(proxy.as_deref());
         asio.set_volume(*self.volume.lock().expect("volume lock"));
         asio.set_fade_gain(*self.fade_gain.lock().expect("fade lock"));
+        asio.set_loudness(to_player_loudness(
+            *self.loudness.lock().expect("loudness lock"),
+        ));
         Ok(asio)
     }
 
@@ -137,6 +151,18 @@ impl Engine for HybridEngine {
     }
 
     fn load_for(&self, url: &str, use_asio: bool) -> Result<(), String> {
+        let loudness = *self.loudness.lock().expect("loudness lock");
+        self.load_with_loudness(url, use_asio, loudness)
+    }
+
+    fn load_with_loudness(
+        &self,
+        url: &str,
+        use_asio: bool,
+        loudness: EngineLoudness,
+    ) -> Result<(), String> {
+        *self.loudness.lock().expect("loudness lock") = loudness;
+        let params = to_player_loudness(loudness);
         if use_asio {
             if self.active.load(Ordering::Acquire) == ACTIVE_MPV {
                 self.active.store(ACTIVE_NONE, Ordering::Release);
@@ -144,7 +170,8 @@ impl Engine for HybridEngine {
             }
             let asio = self.ensure_asio(url)?;
             self.active.store(ACTIVE_ASIO, Ordering::Release);
-            asio.load(url).map_err(|e| e.to_string())
+            asio.load_with_loudness(url, params)
+                .map_err(|e| e.to_string())
         } else {
             if self.active.load(Ordering::Acquire) == ACTIVE_ASIO
                 || self.asio.lock().expect("asio lock").is_some()
@@ -157,7 +184,9 @@ impl Engine for HybridEngine {
                 .set_exclusive(self.exclusive.load(Ordering::Acquire));
             self.apply_mpv_proxy(url)?;
             self.active.store(ACTIVE_MPV, Ordering::Release);
-            self.mpv.load(url).map_err(|e| e.to_string())
+            self.mpv
+                .load_with_loudness(url, params)
+                .map_err(|e| e.to_string())
         }
     }
 
@@ -166,6 +195,17 @@ impl Engine for HybridEngine {
     }
 
     fn append_for(&self, url: &str, use_asio: bool) -> Result<(), String> {
+        let loudness = *self.loudness.lock().expect("loudness lock");
+        self.append_with_loudness(url, use_asio, loudness)
+    }
+
+    fn append_with_loudness(
+        &self,
+        url: &str,
+        use_asio: bool,
+        loudness: EngineLoudness,
+    ) -> Result<(), String> {
+        let params = to_player_loudness(loudness);
         if use_asio {
             let proxy = os::proxy::http_proxy_for(url);
             let guard = self.asio.lock().expect("asio lock");
@@ -173,10 +213,25 @@ impl Engine for HybridEngine {
                 return Err("ASIO output is not active".into());
             };
             asio.set_http_proxy(proxy.as_deref());
-            asio.append(url).map_err(|e| e.to_string())
+            asio.append_with_loudness(url, params)
+                .map_err(|e| e.to_string())
         } else {
             self.apply_mpv_proxy(url)?;
-            self.mpv.append(url).map_err(|e| e.to_string())
+            self.mpv
+                .append_with_loudness(url, params)
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    fn set_loudness(&self, loudness: EngineLoudness) -> Result<(), String> {
+        *self.loudness.lock().expect("loudness lock") = loudness;
+        let params = to_player_loudness(loudness);
+        if let Some(asio) = self.asio.lock().expect("asio lock").as_ref() {
+            asio.set_loudness(params);
+        }
+        match self.active.load(Ordering::Acquire) {
+            ACTIVE_ASIO => Ok(()),
+            _ => self.mpv.set_loudness(params).map_err(|e| e.to_string()),
         }
     }
 

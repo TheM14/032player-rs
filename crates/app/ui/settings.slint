@@ -76,6 +76,16 @@ export component SettingsView inherits Rectangle {
     in-out property <bool> close-to-tray;
     callback close-to-tray-toggled(bool);
     in-out property <bool> fade-on-pause;
+    in property <bool> loudness-supported;
+    in property <string> loudness-summary;
+    in-out property <bool> loudness-enabled;
+    // 0 Loud (-11 LUFS), 1 Standard (-14 LUFS), 2 Dynamic (-18 LUFS).
+    in-out property <int> loudness-target;
+    // 0 Smart, 1 Track, 2 Album.
+    in-out property <int> loudness-mode;
+    // 0 SoftLimiter (max 3.5 dB), 1 StrictLinear.
+    in-out property <int> loudness-peak-mode;
+    callback loudness-changed();
     // 0 system, 1 dark, 2 light.
     in-out property <int> theme-mode;
     callback theme-selected(int);
@@ -297,6 +307,65 @@ export component SettingsView inherits Rectangle {
                     checked <=> root.fade-on-pause;
                     toggled => {
                         root.fade-on-pause-toggled(self.checked);
+                    }
+                }
+            }
+
+            SettingRow {
+                title: "响度均衡";
+                description: root.loudness-supported
+                    ? "按服务端 EBU R128 测量自动统一曲目响度，默认 -11 LUFS 饱满目标配合柔和限幅，避免切歌忽大忽小或整体变轻。仅作用于本机播放，不影响 Sonos 投放。"
+                    : "当前服务器未提供响度分析数据，升级并启用 032 服务端响度分析后即可开启。";
+                Switch {
+                    y: (parent.height - self.height) / 2;
+                    enabled: root.loudness-supported;
+                    checked <=> root.loudness-enabled;
+                    toggled => {
+                        root.loudness-changed();
+                    }
+                }
+            }
+
+            if root.loudness-supported && root.loudness-enabled: SettingRow {
+                title: "响度目标";
+                description: root.loudness-summary != ""
+                    ? "目标越接近曲库常态，外置 DAC / 功放越不需要调大旋钮。" + root.loudness-summary
+                    : "目标越接近曲库常态，外置 DAC / 功放越不需要调大旋钮。";
+                ComboBox {
+                    width: 240px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["饱满（-11 LUFS，推荐）", "标准（-14 LUFS）", "动态优先（-18 LUFS）"];
+                    current-index <=> root.loudness-target;
+                    selected => {
+                        root.loudness-changed();
+                    }
+                }
+            }
+
+            if root.loudness-supported && root.loudness-enabled: SettingRow {
+                title: "对齐方式";
+                description: "智能模式在连续听同一张专辑时保持专辑内强弱起伏，随机播放或跨专辑歌单自动按单曲对齐。";
+                ComboBox {
+                    width: 240px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["智能（推荐）", "按单曲", "按专辑"];
+                    current-index <=> root.loudness-mode;
+                    selected => {
+                        root.loudness-changed();
+                    }
+                }
+            }
+
+            if root.loudness-supported && root.loudness-enabled: SettingRow {
+                title: "峰值保护";
+                description: "柔和限幅允许瞬态峰值经最多 3.5 dB 柔和压限以维持饱满听感；严格防削波仅做纯线性增益，绝不压限瞬态。";
+                ComboBox {
+                    width: 260px;
+                    y: (parent.height - self.height) / 2;
+                    model: ["柔和限幅（最多 3.5 dB，推荐）", "严格防削波（纯线性）"];
+                    current-index <=> root.loudness-peak-mode;
+                    selected => {
+                        root.loudness-changed();
                     }
                 }
             }

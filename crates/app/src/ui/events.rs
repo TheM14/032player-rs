@@ -14,9 +14,9 @@ use super::{
     ALBUM_GRIDS, ARTIST_GRIDS, GRID_ALBUMS, GRID_ARTISTS, GRID_FAV_ALBUMS, GRID_FAV_ARTISTS,
     GRID_PLAYLISTS, NP_COVER, PAGE_ALBUMS, PAGE_PLAYLISTS, QUEUE_COVER, RELEASE_GRID_IDS,
     RELEASE_GRIDS, Route, Ui, album_sorts, artist_alias, artist_fact_rows, artist_refs,
-    artist_sorts, cards, exclusive_mode_index, int, login_message, playlist_sorts, query,
-    repeat_index, row_index, server_host, to_image, track_row, track_rows, track_sorts,
-    transcode_options, with_ui,
+    artist_sorts, cards, exclusive_mode_index, format_loudness_summary, int, login_message,
+    playlist_sorts, query, repeat_index, row_index, server_host, to_image, track_row, track_rows,
+    track_sorts, transcode_options, with_ui,
 };
 use crate::cards::{Card, image_key, key_path, physical_box};
 use crate::{
@@ -32,6 +32,8 @@ impl Ui {
         home.set_unavailable(false);
         w.set_has_home(features.home);
         w.set_lyrics_translation_available(features.lyrics_translation);
+        w.set_loudness_supported(features.loudness);
+        w.set_loudness_summary(format_loudness_summary(features).into());
         let lib = w.global::<Lib032>();
         lib.set_series_supported(features.series);
         for model in [&self.played, &self.pane_tracks] {
@@ -938,6 +940,8 @@ pub fn apply(event: Event) {
             *ui.artist_dir_role.borrow_mut() = None;
             w.set_artist_dir_role(SharedString::new());
             w.set_artist_credit_roles_supported(false);
+            w.set_loudness_supported(false);
+            w.set_loudness_summary(SharedString::new());
             ui.reset_m032_detail(w);
             ui.reset_search(w, true);
             {

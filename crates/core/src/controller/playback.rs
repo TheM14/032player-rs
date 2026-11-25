@@ -11,8 +11,9 @@ use super::{
     Core, Event, Internal, POSITION_KEY, POSITION_SAVE_STEP_MS, POSITION_STEP_MS, QUEUE_FILE,
     QUEUE_SAVE_DELAY, QueueEntry, QueuePosition, SavedQueue,
 };
-use crate::engine::{EngineEnd, EngineEvent};
+use crate::engine::{EngineEnd, EngineEvent, EngineLoudness};
 use crate::format;
+use crate::loudness::{LoudnessPlan, compute_loudness_plan, smart_use_album};
 use crate::queue::Step;
 use crate::settings::ExclusiveMode;
 
@@ -52,6 +53,10 @@ pub(super) struct PlaybackState {
     pub(super) saved_position_step: i64,
     /// Monotonic counter for play intents; supersedes older in-flight async play fetches.
     pub(super) play_intent_seq: u64,
+    /// Last loudness normalization config applied to the local engine.
+    pub(super) applied_loudness: Option<EngineLoudness>,
+    /// Loudness config attached to `preloaded` upcoming track.
+    pub(super) preloaded_loudness: Option<EngineLoudness>,
     pub(super) fade: fade::Fader,
 }
 
@@ -76,6 +81,8 @@ impl Default for PlaybackState {
             report_seek_ms: None,
             saved_position_step: -1,
             play_intent_seq: 0,
+            applied_loudness: None,
+            preloaded_loudness: None,
             fade: fade::Fader::default(),
         }
     }
@@ -148,6 +155,8 @@ impl Core {
         self.pb.preloaded = None;
         self.pb.current_transcode = None;
         self.pb.preloaded_transcode = None;
+        self.pb.applied_loudness = None;
+        self.pb.preloaded_loudness = None;
         self.pb.expected_path = None;
         self.pb.pending_seek_ms = None;
         self.pb.report_seek_ms = None;
@@ -340,27 +349,121 @@ impl Core {
 
     /// Restarts the current lossy transcode at `position_ms`.
     fn reload_at(&mut self, position_ms: i64) -> bool {
-        let Some(id) = self.queue.current().map(|i| i.track.id) else {
+        let Some(item) = self.queue.current().cloned() else {
             return false;
         };
-        let Some(url) = self.track_url_for(id, self.pb.current_transcode, position_ms) else {
+        let Some(url) = self.track_url_for(item.track.id, self.pb.current_transcode, position_ms)
+        else {
             return false;
         };
-        if let Err(e) = self.engine.load_for(&url, self.output.asio_active) {
+        let loudness = self
+            .loudness_plan_for(&item.track, self.queue.position())
+            .to_engine();
+        if let Err(e) = self
+            .engine
+            .load_with_loudness(&url, self.output.asio_active, loudness)
+        {
             self.emit(Event::Notice(e));
             return false;
         }
+        self.pb.applied_loudness = Some(loudness);
         if self.pb.paused {
             let _ = self.engine.set_paused(true);
         }
         self.pb.loading = true;
         self.pb.preloaded = None;
         self.pb.preloaded_transcode = None;
+        self.pb.preloaded_loudness = None;
         self.pb.pending_seek_ms = None;
         self.pb.report_seek_ms = None;
         self.pb.expected_path = Some(url);
         self.pb.stream_offset_ms = position_ms;
         true
+    }
+
+    pub(super) fn loudness_supported(&self) -> bool {
+        self.library.as_ref().is_some_and(|l| {
+            l.capabilities.has(api::Feature::Loudness)
+                || l.capabilities
+                    .loudness
+                    .as_ref()
+                    .is_some_and(|ln| ln.available)
+        })
+    }
+
+    pub(super) fn loudness_median_lufs(&self) -> Option<f64> {
+        self.library
+            .as_ref()
+            .and_then(|l| l.capabilities.loudness.as_ref())
+            .and_then(|ln| ln.library_median_lufs)
+    }
+
+    pub(super) fn loudness_plan_for(
+        &self,
+        track: &Track,
+        queue_pos: Option<usize>,
+    ) -> LoudnessPlan {
+        let use_album = queue_pos
+            .is_some_and(|pos| smart_use_album(&self.queue, pos, self.radio.manual_queue_count));
+        compute_loudness_plan(
+            track,
+            &self.settings.loudness,
+            use_album,
+            self.settings.volume,
+            self.loudness_median_lufs(),
+            self.loudness_supported(),
+        )
+    }
+
+    /// Pushes the active track's loudness plan to the local engine when it changed.
+    /// Never affects Sonos casting.
+    pub(super) fn apply_live_loudness(&mut self) {
+        if self.pb.idle || self.casting() {
+            return;
+        }
+        let Some(item) = self.queue.current() else {
+            return;
+        };
+        let desired = self
+            .loudness_plan_for(&item.track, self.queue.position())
+            .to_engine();
+        if self.pb.applied_loudness == Some(desired) {
+            return;
+        }
+        if let Err(e) = self.engine.set_loudness(desired) {
+            tracing::warn!("updating loudness normalization: {e}");
+            return;
+        }
+        self.pb.applied_loudness = Some(desired);
+    }
+
+    /// Backfills loudness metadata for a restored `queue.json` current entry that
+    /// pre-dated server loudness analysis.
+    fn refresh_restored_track_loudness(&self) {
+        if !self.loudness_supported() {
+            return;
+        }
+        let Some(library) = &self.library else {
+            return;
+        };
+        let Some(item) = self.queue.current() else {
+            return;
+        };
+        if item.track.loudness_lufs.is_some() {
+            return;
+        }
+        let client = library.client.clone();
+        let tx = self.internal.clone();
+        let generation = self.list_generation;
+        let track_id = item.track.id;
+        tokio::spawn(async move {
+            if let Ok(track) = client.track(track_id).await {
+                let _ = tx.send(Internal::TrackLoudnessRefreshed {
+                    generation,
+                    track: Box::new(track),
+                });
+            }
+        });
     }
 
     pub(super) fn enqueue(&mut self, tracks: Vec<Track>, at: QueuePosition) {
@@ -449,6 +552,7 @@ impl Core {
             items: self.queue_entries(),
             current: self.queue.position(),
         });
+        self.apply_live_loudness();
         self.sync_preload();
         self.cast_queue_changed();
         self.schedule_queue_save();
@@ -531,6 +635,7 @@ impl Core {
         self.emit_position();
         self.load_lyrics(item.track.id);
         self.update_playing_sources();
+        self.refresh_restored_track_loudness();
     }
 
     /// Keeps the engine's next file equal to the queue's automatic next
@@ -546,32 +651,42 @@ impl Core {
         let next = match self.queue.auto_next(self.settings.repeat) {
             // The sleep timer stops after this file: the engine must not go on.
             _ if self.pause_at_end() => None,
-            Some(Step::Play(pos)) => self.queue.at(pos),
+            Some(Step::Play(pos)) => self.queue.at(pos).map(|item| (pos, item)),
             _ => None,
         };
         let next_transcode = self.transcode();
         let want = next
-            .filter(|item| {
+            .filter(|(_, item)| {
                 let need_asio = self.want_asio_for(&item.track).0;
                 need_asio == self.output.asio_active
                     && (!need_asio || self.selected_asio_target() == self.output.active_asio_target)
             })
-            .map(|item| (item.uid, item.track.id))
-            .and_then(|(uid, id)| Some((uid, self.track_url_for(id, next_transcode, 0)?)));
-        if want == self.pb.preloaded {
+            .and_then(|(pos, item)| {
+                let url = self.track_url_for(item.track.id, next_transcode, 0)?;
+                let loudness = self.loudness_plan_for(&item.track, Some(pos)).to_engine();
+                Some(((item.uid, url), loudness))
+            });
+        let want_key = want.as_ref().map(|(k, _)| k.clone());
+        let want_loudness = want.as_ref().map(|(_, l)| *l);
+        if want_key == self.pb.preloaded && want_loudness == self.pb.preloaded_loudness {
             return;
         }
         self.pb.preloaded = None;
         self.pb.preloaded_transcode = None;
+        self.pb.preloaded_loudness = None;
         if let Err(e) = self.engine.clear_upcoming() {
             tracing::warn!("clearing the preloaded file: {e}");
             return;
         }
-        if let Some((uid, url)) = want {
-            match self.engine.append_for(&url, self.output.asio_active) {
+        if let Some(((uid, url), loudness)) = want {
+            match self
+                .engine
+                .append_with_loudness(&url, self.output.asio_active, loudness)
+            {
                 Ok(()) => {
                     self.pb.preloaded = Some((uid, url));
                     self.pb.preloaded_transcode = next_transcode;
+                    self.pb.preloaded_loudness = Some(loudness);
                 }
                 Err(e) => tracing::warn!("preloading the next file: {e}"),
             }
@@ -632,6 +747,12 @@ impl Core {
             Some(url)
         };
         let from_silence = self.pb.idle || self.pb.paused;
+        let current_loudness = if casting {
+            EngineLoudness::default()
+        } else {
+            self.loudness_plan_for(&item.track, self.queue.position())
+                .to_engine()
+        };
         // Sonos: the live stream offset of the started entry.
         let mut cast_offset = 0;
         if load {
@@ -641,7 +762,7 @@ impl Core {
             let result = match &url {
                 Some(url) => self
                     .engine
-                    .load_for(url, use_asio)
+                    .load_with_loudness(url, use_asio, current_loudness)
                     .and_then(|()| self.unpause_engine(from_silence)),
                 None => self
                     .cast_start(resume_ms.unwrap_or(0))
@@ -650,6 +771,9 @@ impl Core {
             if let Err(e) = result {
                 self.emit(Event::Notice(e));
                 return;
+            }
+            if !casting {
+                self.pb.applied_loudness = Some(current_loudness);
             }
             self.output.asio_active = use_asio;
             self.output.active_asio_target = if use_asio {
@@ -668,6 +792,10 @@ impl Core {
             // Gapless advance stayed on the engine's existing backend.
             self.output.asio_fallback =
                 !self.output.asio_active && self.effective_exclusive_mode() == ExclusiveMode::Asio;
+            if self.pb.preloaded_loudness != Some(current_loudness) {
+                let _ = self.engine.set_loudness(current_loudness);
+            }
+            self.pb.applied_loudness = Some(current_loudness);
         }
         self.emit_output_mode();
         self.pb.resume_at = None;
@@ -678,6 +806,7 @@ impl Core {
         self.pb.preloaded = None;
         self.pb.current_transcode = stream_transcode;
         self.pb.preloaded_transcode = None;
+        self.pb.preloaded_loudness = None;
         self.pb.expected_path = url;
         self.pb.stream_offset_ms = if casting { cast_offset } else { offset_ms };
         self.pb.pending_seek_ms = resume_ms.filter(|_| !casting && offset_ms == 0);
@@ -900,6 +1029,7 @@ impl Core {
             EngineEvent::Volume(volume) => {
                 self.update_settings(|s| s.volume = volume.clamp(0.0, 100.0));
                 self.emit(Event::Volume(volume));
+                self.apply_live_loudness();
             }
             EngineEvent::FileLoaded { path } => {
                 if !self.pb.loading {
@@ -915,12 +1045,30 @@ impl Core {
                         expected = %api::redact_media_token(expected),
                         "unexpected file, reloading"
                     );
-                    if let Err(e) = self.engine.load_for(expected, self.output.asio_active) {
+                    let loudness = self
+                        .queue
+                        .current()
+                        .map(|i| {
+                            self.loudness_plan_for(&i.track, self.queue.position())
+                                .to_engine()
+                        })
+                        .unwrap_or_default();
+                    if let Err(e) =
+                        self.engine
+                            .load_with_loudness(expected, self.output.asio_active, loudness)
+                    {
                         self.emit(Event::Notice(e));
+                    } else {
+                        self.pb.applied_loudness = Some(loudness);
                     }
                     return;
                 }
                 self.pb.loading = false;
+                // Re-apply loudness on FileLoaded in case the backend (e.g. older libmpv)
+                // did not apply per-file options on gapless transitions.
+                if let Some(desired) = self.pb.applied_loudness {
+                    let _ = self.engine.set_loudness(desired);
+                }
                 if let Some(ms) = self.pb.pending_seek_ms.take() {
                     #[allow(clippy::cast_precision_loss)]
                     if let Err(e) = self.engine.seek(ms as f64 / 1000.0) {

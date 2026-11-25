@@ -17,7 +17,7 @@
 | 401 触发重新登录（保留媒体凭据，只需重填 API Token） | 同上、`renderer/store/auth.store.ts` | M1 | [x] |
 | 登录态持久化：两个凭据存系统凭据库，启动自动登录；表单留空沿用已保存值；退出登录清空两者 | `auth.store.ts` `logout`、`edit-server-form.tsx` | M1 | [x] |
 | 媒体 URL 统一追加 `mediaToken` 查询参数 | `shared/api/music032/music032-normalize.ts` `m032MediaUrl` | M0 | [x] |
-| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / `artistCreditRoles` / `similarTracks` / series，`similarity.method`，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [x] |
+| 能力位：`features.browse` / `lyrics` / `lyricsOnline` / `lyricsTranslation` / `playlistArtwork` / `trackWorks` / `dailyMixes` / `playbackContext` / `artistCreditRoles` / `similarTracks` / `loudness` / series，`similarity.method`，`loudness` 统计与曲库中位数，`playback.clientKinds`，`limits.maxPageSize`（500） | `shared/api/music032/music032-types.ts` `M032Capabilities` | M0 | [x] |
 
 ## 播放
 
@@ -37,7 +37,8 @@
 | 睡眠定时 | `features/player/components/sleep-timer-button.tsx` | M1 | [x] |
 | 随机播放全部 | `features/player/components/shuffle-all-modal.tsx`、`ctrl` `getRandomSongList` | M2 | [x] 100 首 |
 | Auto DJ | `features/player/auto-dj/` | - | - 不做 |
-| 均衡器 / 压缩器、ReplayGain | `settings/components/playback/eq-settings.tsx`、`mpv-settings.tsx` | - | - 不做（2026-11-06） |
+| 响度均衡（基于 032 服务端 EBU R128 单曲 / 专辑元数据，默认 -11 LUFS 饱满目标 + 智能对齐 + 3.5 dB 有界柔和限幅，支持 libmpv / ASIO，不影响 Sonos 投放） | 032 服务端 `capabilities.loudness` + `TrackExtras` | M4 | [x] 设置页 + 曲目「查看信息」 |
+| 均衡器 / 压缩器 | `settings/components/playback/eq-settings.tsx`、`mpv-settings.tsx` | - | - 不做（2026-11-06） |
 | 播放条：封面、标题、艺人、专辑、音质（`FLAC / 24bit / 48kHz`）、进度、音量、收藏 | `features/player/components/playerbar.tsx`、`renderer/utils/audio-quality.ts` | M0 / M4 | [x] |
 | 全屏播放器（原图封面不带 `size`，`size=0` 会被拒；宽屏三栏显示封面、歌词和队列，窄屏在接下来播放 / 歌词之间切换，不做可视化和配置弹窗） | `features/player/components/full-screen-player.tsx`、`ctrl` `getImageUrl` | M4 | [x] |
 

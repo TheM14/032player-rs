@@ -821,14 +821,22 @@ impl Core {
     }
 
     fn refresh_queue_artists(&mut self, tracks: &[Track]) {
-        if self.queue.refresh_artists(tracks) {
+        let artists_changed = self.queue.refresh_artists(tracks);
+        let loudness_changed = self.queue.refresh_loudness(tracks);
+        if artists_changed {
             let current = self.queue.current().map(|i| i.track.clone());
             self.emit_now_playing(current.as_ref());
             self.emit(Event::Queue {
                 items: self.queue_entries(),
                 current: self.queue.position(),
             });
-            // Do not call queue_changed: it touches the engine preload and Sonos.
+        }
+        if loudness_changed {
+            self.apply_live_loudness();
+            self.sync_preload();
+        }
+        if artists_changed || loudness_changed {
+            // Do not call queue_changed: it touches Sonos.
             self.schedule_queue_save();
         }
     }

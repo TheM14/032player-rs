@@ -35,6 +35,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 300 ms volume fade on play / pause (`audioFadeOnStatusChange`).
     pub fade_on_pause: bool,
+    /// Client-side loudness normalization backed by server EBU R128 metadata.
+    pub loudness: LoudnessSettings,
     /// Auto-append 032 similar tracks when approaching the end of the queue.
     pub auto_play_similar: bool,
     /// 032 Dark / Light or the system's choice.
@@ -295,6 +297,63 @@ impl Default for LyricsSettings {
     }
 }
 
+/// Reference loudness target preset (LUFS).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoudnessTarget {
+    /// -11 LUFS: close to modern pop / ACG masters so toggling feels natural.
+    #[default]
+    Loud,
+    /// -14 LUFS: streaming standard balance between loudness and headroom.
+    Standard,
+    /// -18 LUFS: dynamic-first reference for wide-DR orchestral / OST libraries.
+    Dynamic,
+}
+
+impl LoudnessTarget {
+    #[must_use]
+    pub const fn lufs(self) -> f64 {
+        match self {
+            Self::Loud => -11.0,
+            Self::Standard => -14.0,
+            Self::Dynamic => -18.0,
+        }
+    }
+}
+
+/// How loudness metadata is chosen per track.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoudnessMode {
+    /// Album loudness for sequential same-album playback; track loudness otherwise.
+    #[default]
+    Smart,
+    /// Always normalize per track.
+    Track,
+    /// Prefer album loudness (falling back to track loudness when absent).
+    Album,
+}
+
+/// How positive gain approaching 0 dBFS is protected from clipping.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PeakProtection {
+    /// Allow up to 3.5 dB of transient lookahead soft-knee limiting at -1 dBTP.
+    #[default]
+    SoftLimiter,
+    /// Strictly linear scaling with zero limiting (never exceeds -1 dBTP).
+    StrictLinear,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LoudnessSettings {
+    pub enabled: bool,
+    pub target: LoudnessTarget,
+    pub mode: LoudnessMode,
+    pub peak_mode: PeakProtection,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -311,6 +370,7 @@ impl Default for Settings {
             shuffle: false,
             close_to_tray: false,
             fade_on_pause: true,
+            loudness: LoudnessSettings::default(),
             auto_play_similar: true,
             theme: ThemeMode::Dark,
             transcode: None,
@@ -517,6 +577,12 @@ mod tests {
             shuffle: true,
             close_to_tray: true,
             fade_on_pause: false,
+            loudness: LoudnessSettings {
+                enabled: true,
+                target: LoudnessTarget::Standard,
+                mode: LoudnessMode::Album,
+                peak_mode: PeakProtection::StrictLinear,
+            },
             auto_play_similar: false,
             theme: ThemeMode::Light,
             shortcuts: crate::shortcuts::Shortcuts::default(),

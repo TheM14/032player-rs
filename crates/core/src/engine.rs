@@ -1,6 +1,30 @@
 //! Audio engine seen from core. `app` implements it on top of `player`
 //! (libmpv), so core and its tests never link libmpv.
 
+/// Per-track loudness normalization instructions sent to audio backends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineLoudness {
+    /// Whether loudness normalization is active at all.
+    pub enabled: bool,
+    /// Linear gain in dB applied before peak limiting (`0.0` = unity).
+    pub gain_db: f64,
+    /// True-peak ceiling in dBTP (typically `-1.0`).
+    pub ceiling_db: f64,
+    /// Engage soft-knee lookahead peak limiter on transients exceeding `ceiling_db`.
+    pub use_limiter: bool,
+}
+
+impl Default for EngineLoudness {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gain_db: 0.0,
+            ceiling_db: -1.0,
+            use_limiter: false,
+        }
+    }
+}
+
 /// Commands core sends to the engine. Errors are human-readable strings.
 pub trait Engine: Send + Sync + 'static {
     /// Replaces whatever plays (and anything queued) with `url` and starts it.
@@ -38,6 +62,32 @@ pub trait Engine: Send + Sync + 'static {
     /// Appends `url` for gapless playback, preferring ASIO when `use_asio` is true.
     fn append_for(&self, url: &str, _use_asio: bool) -> Result<(), String> {
         self.append(url)
+    }
+
+    /// Updates loudness normalization applied to the currently playing track.
+    fn set_loudness(&self, _loudness: EngineLoudness) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Loads `url` with an initial loudness configuration, preferring ASIO when `use_asio` is true.
+    fn load_with_loudness(
+        &self,
+        url: &str,
+        use_asio: bool,
+        loudness: EngineLoudness,
+    ) -> Result<(), String> {
+        let _ = self.set_loudness(loudness);
+        self.load_for(url, use_asio)
+    }
+
+    /// Appends `url` for gapless playback with its own loudness configuration.
+    fn append_with_loudness(
+        &self,
+        url: &str,
+        use_asio: bool,
+        _loudness: EngineLoudness,
+    ) -> Result<(), String> {
+        self.append_for(url, use_asio)
     }
 
     /// Enumerates installed ASIO drivers without opening hardware.

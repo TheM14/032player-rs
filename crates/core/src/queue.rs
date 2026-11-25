@@ -498,6 +498,52 @@ impl Queue {
         changed
     }
 
+    /// Refreshes loudness metadata on matching queue entries without touching
+    /// transport state, UIDs, or playback contexts.
+    pub fn refresh_loudness(&mut self, tracks: &[Track]) -> bool {
+        if self.items.is_empty() || tracks.is_empty() {
+            return false;
+        }
+        let by_id: std::collections::HashMap<_, _> = tracks.iter().map(|t| (t.id, t)).collect();
+        let mut changed = false;
+        for item in &mut self.items {
+            if let Some(fresh) = by_id.get(&item.track.id) {
+                let mut updated = false;
+                if fresh.loudness_lufs.is_some() && item.track.loudness_lufs != fresh.loudness_lufs
+                {
+                    item.track.loudness_lufs = fresh.loudness_lufs;
+                    updated = true;
+                }
+                if fresh.true_peak_db.is_some() && item.track.true_peak_db != fresh.true_peak_db {
+                    item.track.true_peak_db = fresh.true_peak_db;
+                    updated = true;
+                }
+                if fresh.loudness_range.is_some()
+                    && item.track.loudness_range != fresh.loudness_range
+                {
+                    item.track.loudness_range = fresh.loudness_range;
+                    updated = true;
+                }
+                if fresh.album_loudness_lufs.is_some()
+                    && item.track.album_loudness_lufs != fresh.album_loudness_lufs
+                {
+                    item.track.album_loudness_lufs = fresh.album_loudness_lufs;
+                    updated = true;
+                }
+                if fresh.album_true_peak_db.is_some()
+                    && item.track.album_true_peak_db != fresh.album_true_peak_db
+                {
+                    item.track.album_true_peak_db = fresh.album_true_peak_db;
+                    updated = true;
+                }
+                if updated {
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     /// Updates the favorite flag of every entry of `track_id`.
     pub fn set_favorite(&mut self, track_id: i64, favorite: bool) {
         for item in &mut self.items {

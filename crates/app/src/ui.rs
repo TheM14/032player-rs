@@ -19,8 +19,9 @@ use std::time::Duration;
 use client_core::m032::SpotlightTab;
 use client_core::{
     AlbumSort, ArtistSort, AsioStateView, AudioDevice, Command, Commander, DetailView,
-    LoginFailure, NowPlaying, PlaylistSort, Repeat, Rgba, ServerFeatures, SortOrder, TrackItem,
-    TrackList, TrackSort, TrackSource, Transcode,
+    LoginFailure, LoudnessMode, LoudnessSettings, LoudnessTarget, NowPlaying, PeakProtection,
+    PlaylistSort, Repeat, Rgba, ServerFeatures, SortOrder, TrackItem, TrackList, TrackSort,
+    TrackSource, Transcode,
 };
 use slint::{
     ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
@@ -565,6 +566,44 @@ impl Ui {
         w.set_asio_channel_pair_index(pair_index);
     }
 
+    fn show_loudness_settings(w: &AppWindow, s: &LoudnessSettings) {
+        w.set_loudness_enabled(s.enabled);
+        w.set_loudness_target(match s.target {
+            LoudnessTarget::Loud => 0,
+            LoudnessTarget::Standard => 1,
+            LoudnessTarget::Dynamic => 2,
+        });
+        w.set_loudness_mode(match s.mode {
+            LoudnessMode::Smart => 0,
+            LoudnessMode::Track => 1,
+            LoudnessMode::Album => 2,
+        });
+        w.set_loudness_peak_mode(match s.peak_mode {
+            PeakProtection::SoftLimiter => 0,
+            PeakProtection::StrictLinear => 1,
+        });
+    }
+
+    fn loudness_settings(w: &AppWindow) -> LoudnessSettings {
+        LoudnessSettings {
+            enabled: w.get_loudness_enabled(),
+            target: match w.get_loudness_target() {
+                1 => LoudnessTarget::Standard,
+                2 => LoudnessTarget::Dynamic,
+                _ => LoudnessTarget::Loud,
+            },
+            mode: match w.get_loudness_mode() {
+                1 => LoudnessMode::Track,
+                2 => LoudnessMode::Album,
+                _ => LoudnessMode::Smart,
+            },
+            peak_mode: match w.get_loudness_peak_mode() {
+                1 => PeakProtection::StrictLinear,
+                _ => PeakProtection::SoftLimiter,
+            },
+        }
+    }
+
     fn send(&self, command: Command) {
         self.commander.send(command);
     }
@@ -852,6 +891,28 @@ fn track_rows(items: Vec<TrackItem>, offset: usize) -> Vec<TrackRow> {
 
 fn cards<T: Into<Card>>(items: Vec<T>) -> Vec<Card> {
     items.into_iter().map(Into::into).collect()
+}
+
+fn format_loudness_summary(features: &ServerFeatures) -> String {
+    if let Some(median) = features.loudness_median_lufs {
+        if features.loudness_total > 0 {
+            format!(
+                "当前曲库中位数约 {median:.1} LUFS（已分析 {} / {} 首）。",
+                thousands(features.loudness_analyzed),
+                thousands(features.loudness_total),
+            )
+        } else {
+            format!("当前曲库中位数约 {median:.1} LUFS。")
+        }
+    } else if features.loudness && features.loudness_total > 0 {
+        format!(
+            "服务端正在后台分析响度（已完成 {} / {} 首）。",
+            thousands(features.loudness_analyzed),
+            thousands(features.loudness_total),
+        )
+    } else {
+        String::new()
+    }
 }
 
 const fn exclusive_mode_index(mode: client_core::ExclusiveMode) -> i32 {

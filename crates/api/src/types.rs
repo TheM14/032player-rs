@@ -106,6 +106,21 @@ pub struct Track {
     pub bit_depth: Option<i32>,
     pub bitrate_kbps: Option<i32>,
     pub channels: Option<i32>,
+    /// EBU R128 integrated loudness (LUFS). Omitted when unmeasured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loudness_lufs: Option<f64>,
+    /// 4x oversampled true peak (dBTP). Omitted when unmeasured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub true_peak_db: Option<f64>,
+    /// EBU R128 loudness range (LRA, LU).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loudness_range: Option<f64>,
+    /// Album duration-weighted integrated loudness (LUFS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_loudness_lufs: Option<f64>,
+    /// Maximum true peak across measured tracks in the album (dBTP).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_true_peak_db: Option<f64>,
 }
 
 /// Answer of `GET /tracks/{id}/versions`.
@@ -393,6 +408,8 @@ pub enum Feature {
     ArtistCreditRoles,
     /// `GET /tracks/{id}/similar` similarity recommendations.
     SimilarTracks,
+    /// EBU R128 loudness metadata on tracks and capabilities.
+    Loudness,
 }
 
 impl Feature {
@@ -415,8 +432,18 @@ impl Feature {
             Self::UnifiedSearch => "unifiedSearch",
             Self::ArtistCreditRoles => "artistCreditRoles",
             Self::SimilarTracks => "similarTracks",
+            Self::Loudness => "loudness",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LoudnessCapabilities {
+    pub available: bool,
+    pub analyzed_tracks: i64,
+    pub total_tracks: i64,
+    pub library_median_lufs: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +463,7 @@ pub struct Capabilities {
     pub playback: PlaybackCapabilities,
     pub transcode: Option<TranscodeCapabilities>,
     pub similarity: Option<SimilarityCapabilities>,
+    pub loudness: Option<LoudnessCapabilities>,
     pub limits: Limits,
 }
 
@@ -512,4 +540,68 @@ pub(crate) struct ErrorDetail {
     pub code: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_loudness_capabilities_and_legacy_fallback() {
+        let legacy: Capabilities = serde_json::from_str(
+            r#"{"apiVersion":"v1","apiRevision":3,"features":{"browse":true}}"#,
+        )
+        .unwrap();
+        assert!(!legacy.has(Feature::Loudness));
+        assert!(legacy.loudness.is_none());
+
+        let modern: Capabilities = serde_json::from_str(
+            r#"{
+                "apiVersion": "v1",
+                "apiRevision": 3,
+                "features": {"browse": true, "loudness": true},
+                "loudness": {
+                    "available": true,
+                    "analyzedTracks": 4120,
+                    "totalTracks": 4300,
+                    "libraryMedianLufs": -10.4
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(modern.has(Feature::Loudness));
+        let ln = modern.loudness.as_ref().unwrap();
+        assert!(ln.available);
+        assert_eq!(ln.analyzed_tracks, 4120);
+        assert_eq!(ln.total_tracks, 4300);
+        assert_eq!(ln.library_median_lufs, Some(-10.4));
+    }
+
+    #[test]
+    fn deserializes_track_loudness_with_explicit_zero_true_peak_and_omitted_fields() {
+        let measured: Track = serde_json::from_str(
+            r#"{
+                "id": 42,
+                "title": "Song",
+                "loudnessLufs": -8.4,
+                "truePeakDb": 0.0,
+                "loudnessRange": 6.8,
+                "albumLoudnessLufs": -9.1,
+                "albumTruePeakDb": 0.0
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(measured.loudness_lufs, Some(-8.4));
+        assert_eq!(measured.true_peak_db, Some(0.0));
+        assert_eq!(measured.loudness_range, Some(6.8));
+        assert_eq!(measured.album_loudness_lufs, Some(-9.1));
+        assert_eq!(measured.album_true_peak_db, Some(0.0));
+
+        let unmeasured: Track = serde_json::from_str(r#"{"id": 43, "title": "Raw"}"#).unwrap();
+        assert_eq!(unmeasured.loudness_lufs, None);
+        assert_eq!(unmeasured.true_peak_db, None);
+        assert_eq!(unmeasured.loudness_range, None);
+        assert_eq!(unmeasured.album_loudness_lufs, None);
+        assert_eq!(unmeasured.album_true_peak_db, None);
+    }
 }

@@ -7,6 +7,7 @@ mod controller;
 mod engine;
 pub mod format;
 mod images;
+pub mod loudness;
 pub mod m032;
 mod queue;
 pub mod radio;
@@ -32,16 +33,18 @@ pub use controller::{
 };
 pub use engine::{
     AsioCapabilities, AsioChannelPair, AsioDriver, AsioTarget, AudioDevice, Engine, EngineEnd,
-    EngineEvent,
+    EngineEvent, EngineLoudness,
 };
 pub use images::{ArtworkFit, Rgba, decode, decode_fit, fitted_size, server_size};
+pub use loudness::{LoudnessPlan, LoudnessSource};
 pub use queue::{Queue, QueueItem, Repeat, Step};
 pub use radio::{
     RadioErrorKind, RadioPauseReason, RadioSeed, RadioSnapshot, RadioStatus, SimilarityMethod,
 };
 pub use secrets::{MemorySecrets, SecretStore};
 pub use settings::{
-    AsioProfile, CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LyricsSettings,
-    RightPanel, Settings, ThemeMode, TranslationMode, WindowState,
+    AsioProfile, CastHiRes, CastOpus, CastRoomSetting, CastSettings, ExclusiveMode, LoudnessMode,
+    LoudnessSettings, LoudnessTarget, LyricsSettings, PeakProtection, RightPanel, Settings,
+    ThemeMode, TranslationMode, WindowState,
 };
 pub use storage::FileStorage;

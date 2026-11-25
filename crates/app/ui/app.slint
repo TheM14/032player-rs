@@ -712,6 +712,13 @@ export component AppWindow inherits Window {
     callback close-to-tray-toggled(bool);
     in-out property <bool> fade-on-pause;
     callback fade-on-pause-toggled(bool);
+    in property <bool> loudness-supported;
+    in property <string> loudness-summary;
+    in-out property <bool> loudness-enabled;
+    in-out property <int> loudness-target;
+    in-out property <int> loudness-mode;
+    in-out property <int> loudness-peak-mode;
+    callback loudness-changed();
     // 0 follow the system, 1 032 Dark, 2 032 Light (settings `theme`).
     in-out property <int> theme-mode: 1;
     callback theme-selected(int);
@@ -2274,6 +2281,15 @@ export component AppWindow inherits Window {
                     fade-on-pause <=> root.fade-on-pause;
                     fade-on-pause-toggled(on) => {
                         root.fade-on-pause-toggled(on);
+                    }
+                    loudness-supported: root.loudness-supported;
+                    loudness-summary: root.loudness-summary;
+                    loudness-enabled <=> root.loudness-enabled;
+                    loudness-target <=> root.loudness-target;
+                    loudness-mode <=> root.loudness-mode;
+                    loudness-peak-mode <=> root.loudness-peak-mode;
+                    loudness-changed => {
+                        root.loudness-changed();
                     }
                     transcode-options: root.transcode-options;
                     transcode-index <=> root.transcode-index;

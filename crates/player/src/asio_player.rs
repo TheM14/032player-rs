@@ -4,7 +4,7 @@
 //! software volume + fade gain, HTTP proxy, reconnect, seek, buffering).
 
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -13,7 +13,8 @@ use asio::{SpscConsumer, SpscProducer, spsc_ring};
 
 use crate::decoder::{DecodeError, TrackDecoder};
 use crate::http_source::{CancelToken, HttpMediaSource, build_http_client};
-use crate::{EndReason, PlayerError, PlayerEvent, Result};
+use crate::limiter::SoftPeakLimiter;
+use crate::{EndReason, LoudnessParams, PlayerError, PlayerEvent, Result, db_to_linear};
 
 /// Ring capacity in stereo `f32` samples (524,288 frames ≈ 11.8 s @ 44.1 kHz).
 const RING_SAMPLES: usize = 1_048_576;
@@ -159,6 +160,66 @@ impl AudioSink for WindowsAsioSink {
     }
 }
 
+const LOUDNESS_FLAG_ENABLED: u64 = 1 << 48;
+const LOUDNESS_FLAG_LIMITER: u64 = 1 << 49;
+const MAX_ASIO_SAMPLE_RATE: u32 = 768_000;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct UnpackedLoudness {
+    enabled: bool,
+    use_limiter: bool,
+    gain_linear: f32,
+    ceiling_linear: f32,
+}
+
+fn pack_loudness(params: LoudnessParams) -> u64 {
+    if !params.enabled {
+        let gain_bits = u64::from(1.0_f32.to_bits());
+        let ceil_q16 = u64::from(58_408_u16); // -1.0 dBTP
+        return gain_bits | (ceil_q16 << 32);
+    }
+    let gain_db = if params.gain_db.is_finite() {
+        params.gain_db.clamp(-24.0, 18.0)
+    } else {
+        0.0
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let gain_linear = db_to_linear(gain_db) as f32;
+    let ceiling_lin = db_to_linear(params.ceiling_db).clamp(0.0625, 1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let ceil_q16 = (ceiling_lin * 65_535.0).round().clamp(1.0, 65_535.0) as u16;
+    let mut packed = u64::from(gain_linear.to_bits()) | (u64::from(ceil_q16) << 32);
+    packed |= LOUDNESS_FLAG_ENABLED;
+    if params.use_limiter {
+        packed |= LOUDNESS_FLAG_LIMITER;
+    }
+    packed
+}
+
+fn unpack_loudness(bits: u64) -> UnpackedLoudness {
+    #[allow(clippy::cast_possible_truncation)]
+    let gain_linear = f32::from_bits(bits as u32);
+    #[allow(clippy::cast_possible_truncation)]
+    let ceil_q16 = ((bits >> 32) & 0xFFFF) as u16;
+    let ceiling_linear = f32::from(ceil_q16) / 65_535.0;
+    let enabled = (bits & LOUDNESS_FLAG_ENABLED) != 0;
+    let use_limiter = enabled && (bits & LOUDNESS_FLAG_LIMITER) != 0;
+    UnpackedLoudness {
+        enabled,
+        use_limiter,
+        gain_linear: if enabled && gain_linear.is_finite() {
+            gain_linear
+        } else {
+            1.0
+        },
+        ceiling_linear: if ceiling_linear > 0.0 {
+            ceiling_linear
+        } else {
+            0.891_25
+        },
+    }
+}
+
 struct SharedState {
     paused: AtomicBool,
     muted: AtomicBool,
@@ -178,6 +239,12 @@ struct SharedState {
     underrun: AtomicBool,
     volume_bits: AtomicU64,
     fade_bits: AtomicU64,
+    /// Active hardware sample rate in Hz (used to reconfigure the pre-allocated limiter).
+    sample_rate: AtomicU32,
+    /// Packed `LoudnessParams` for the active track (atomic, zero torn reads).
+    loudness_current: AtomicU64,
+    /// Packed `LoudnessParams` swapped into `loudness_current` at `next_boundary_frame`.
+    loudness_next: AtomicU64,
     /// Total stereo frames popped from the ring and handed to hardware.
     consumed_frames: AtomicU64,
     /// Cumulative consumed frame index at which the current track started.
@@ -189,6 +256,7 @@ struct SharedState {
 
 impl SharedState {
     fn new(volume: f64) -> Self {
+        let bypass = pack_loudness(LoudnessParams::default());
         Self {
             paused: AtomicBool::new(false),
             muted: AtomicBool::new(false),
@@ -200,6 +268,9 @@ impl SharedState {
             underrun: AtomicBool::new(false),
             volume_bits: AtomicU64::new(volume.clamp(0.0, 100.0).to_bits()),
             fade_bits: AtomicU64::new(1.0_f64.to_bits()),
+            sample_rate: AtomicU32::new(44_100),
+            loudness_current: AtomicU64::new(bypass),
+            loudness_next: AtomicU64::new(bypass),
             consumed_frames: AtomicU64::new(0),
             track_start_consumed: AtomicU64::new(0),
             next_boundary_frame: AtomicU64::new(u64::MAX),
@@ -222,8 +293,8 @@ impl SharedState {
 }
 
 enum Cmd {
-    Load(String, u64),
-    Append(String),
+    Load(String, u64, Option<LoudnessParams>),
+    Append(String, Option<LoudnessParams>),
     ClearUpcoming,
     Stop,
     SetPaused(bool),
@@ -239,12 +310,12 @@ fn coalesce_commands(cmds: Vec<Cmd>) -> Vec<Cmd> {
     let mut out = Vec::with_capacity(cmds.len());
     for cmd in cmds {
         match cmd {
-            Cmd::Load(_, _) | Cmd::Stop => {
+            Cmd::Load(_, _, _) | Cmd::Stop => {
                 out.retain(|prev| matches!(prev, Cmd::OpenControlPanel(_)));
                 out.push(cmd);
             }
-            Cmd::Append(_) | Cmd::ClearUpcoming => {
-                out.retain(|prev| !matches!(prev, Cmd::Append(_) | Cmd::ClearUpcoming));
+            Cmd::Append(_, _) | Cmd::ClearUpcoming => {
+                out.retain(|prev| !matches!(prev, Cmd::Append(_, _) | Cmd::ClearUpcoming));
                 out.push(cmd);
             }
             Cmd::Seek(_) => {
@@ -315,14 +386,34 @@ impl AsioPlayer {
         let generation = self.load_gen.fetch_add(1, Ordering::AcqRel) + 1;
         self.abort_active_io();
         self.cmd_tx
-            .send(Cmd::Load(url.to_owned(), generation))
+            .send(Cmd::Load(url.to_owned(), generation, None))
+            .map_err(|_| PlayerError::Mpv("ASIO worker stopped".into()))
+    }
+
+    pub fn load_with_loudness(&self, url: &str, loudness: LoudnessParams) -> Result<()> {
+        let generation = self.load_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        self.abort_active_io();
+        self.cmd_tx
+            .send(Cmd::Load(url.to_owned(), generation, Some(loudness)))
             .map_err(|_| PlayerError::Mpv("ASIO worker stopped".into()))
     }
 
     pub fn append(&self, url: &str) -> Result<()> {
         self.cmd_tx
-            .send(Cmd::Append(url.to_owned()))
+            .send(Cmd::Append(url.to_owned(), None))
             .map_err(|_| PlayerError::Mpv("ASIO worker stopped".into()))
+    }
+
+    pub fn append_with_loudness(&self, url: &str, loudness: LoudnessParams) -> Result<()> {
+        self.cmd_tx
+            .send(Cmd::Append(url.to_owned(), Some(loudness)))
+            .map_err(|_| PlayerError::Mpv("ASIO worker stopped".into()))
+    }
+
+    pub fn set_loudness(&self, loudness: LoudnessParams) {
+        self.shared
+            .loudness_current
+            .store(pack_loudness(loudness), Ordering::Release);
     }
 
     pub fn clear_upcoming(&self) -> Result<()> {
@@ -404,6 +495,7 @@ struct PrefetchedTrack {
     eof_in_predecode: bool,
     sample_rate: u32,
     duration_secs: Option<f64>,
+    loudness: Option<LoudnessParams>,
 }
 
 struct PrefetchHandle {
@@ -425,6 +517,7 @@ struct ActiveTrack {
 
 fn spawn_prefetch(
     url: String,
+    loudness: Option<LoudnessParams>,
     client: reqwest::Client,
     rt: tokio::runtime::Handle,
 ) -> PrefetchHandle {
@@ -434,7 +527,7 @@ fn spawn_prefetch(
     thread::Builder::new()
         .name("asio-prefetch".into())
         .spawn(move || {
-            let res = open_and_predecode(&url, client, rt, cancel_w);
+            let res = open_and_predecode(&url, loudness, client, rt, cancel_w);
             let _ = tx.send(res);
         })
         .ok();
@@ -443,6 +536,7 @@ fn spawn_prefetch(
 
 fn open_and_predecode(
     url: &str,
+    loudness: Option<LoudnessParams>,
     client: reqwest::Client,
     rt: tokio::runtime::Handle,
     cancel: CancelToken,
@@ -484,22 +578,98 @@ fn open_and_predecode(
         eof_in_predecode,
         sample_rate,
         duration_secs,
+        loudness,
     })
 }
 
 const RAMP_FRAMES: usize = 64;
 
-fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> RenderFn {
+#[allow(clippy::too_many_arguments)]
+fn process_audio_segment(
+    slice: &mut [f32],
+    seg_frames: usize,
+    user_amp: f32,
+    loudness: UnpackedLoudness,
+    current_gain: &mut Option<f32>,
+    was_silenced: &mut bool,
+    limiter: &mut SoftPeakLimiter,
+    limiter_was_enabled: &mut bool,
+) {
+    if seg_frames == 0 {
+        return;
+    }
+    let samples = seg_frames * 2;
+    let target_amp = user_amp * loudness.gain_linear;
+    let prev = if *was_silenced {
+        0.0
+    } else {
+        current_gain.unwrap_or(target_amp)
+    };
+    let ramp_frames = seg_frames.min(RAMP_FRAMES);
+    if (prev - target_amp).abs() > 1e-6 && ramp_frames > 0 {
+        // Step per stereo frame so L and R receive identical gain.
+        let denom = ramp_frames as f32;
+        for f in 0..seg_frames {
+            let gain = if f < ramp_frames {
+                prev + (target_amp - prev) * ((f + 1) as f32 / denom)
+            } else {
+                target_amp
+            };
+            slice[f * 2] *= gain;
+            slice[f * 2 + 1] *= gain;
+        }
+    } else if (target_amp - 1.0).abs() > 1e-6 {
+        for sample in &mut slice[..samples] {
+            *sample *= target_amp;
+        }
+    }
+    *was_silenced = false;
+    *current_gain = Some(target_amp);
+
+    if loudness.enabled {
+        if !*limiter_was_enabled {
+            limiter.reset();
+            *limiter_was_enabled = true;
+        }
+        limiter.process_in_place(
+            seg_frames,
+            &mut slice[..samples],
+            loudness.ceiling_linear,
+            loudness.use_limiter,
+        );
+    } else if *limiter_was_enabled {
+        limiter.reset();
+        *limiter_was_enabled = false;
+    }
+}
+
+fn make_render_fn(
+    shared: Arc<SharedState>,
+    mut consumer: SpscConsumer,
+    initial_rate: u32,
+) -> RenderFn {
     let mut current_gain: Option<f32> = None;
     let mut was_silenced = false;
+    let mut limiter = SoftPeakLimiter::with_max_rate(initial_rate, MAX_ASIO_SAMPLE_RATE);
+    let mut limiter_rate = initial_rate;
+    let mut limiter_was_enabled = false;
+    let mut last_swapped_boundary = u64::MAX;
+
     Box::new(move |frames: usize, out_lr: &mut [f32]| {
         let needed = frames * 2;
         let req = shared.reset_requested.load(Ordering::Acquire);
         if req != shared.reset_acked.load(Ordering::Relaxed) {
             consumer.clear();
+            limiter.reset();
+            last_swapped_boundary = u64::MAX;
             shared.reset_acked.store(req, Ordering::Release);
             was_silenced = true;
             current_gain = Some(0.0);
+        }
+        let target_rate = shared.sample_rate.load(Ordering::Acquire);
+        if target_rate != limiter_rate && target_rate > 0 {
+            limiter.reconfigure(target_rate);
+            limiter_rate = target_rate;
         }
         let seeking = shared.seeking.load(Ordering::Acquire);
         let paused = shared.paused.load(Ordering::Acquire);
@@ -520,17 +690,37 @@ fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> Rende
                         out_lr[f * 2] *= g;
                         out_lr[f * 2 + 1] *= g;
                     }
+                    if limiter_was_enabled {
+                        let cur_l =
+                            unpack_loudness(shared.loudness_current.load(Ordering::Acquire));
+                        limiter.process_in_place(
+                            got_frames,
+                            &mut out_lr[..got],
+                            cur_l.ceiling_linear,
+                            cur_l.use_limiter,
+                        );
+                        limiter.reset();
+                    }
                     let new_consumed = shared
                         .consumed_frames
                         .fetch_add(got_frames as u64, Ordering::AcqRel)
                         + got_frames as u64;
                     let boundary = shared.next_boundary_frame.load(Ordering::Acquire);
-                    if new_consumed >= boundary {
+                    if boundary != u64::MAX
+                        && boundary != last_swapped_boundary
+                        && new_consumed >= boundary
+                    {
+                        let next_bits = shared.loudness_next.load(Ordering::Acquire);
+                        shared.loudness_current.store(next_bits, Ordering::Release);
+                        last_swapped_boundary = boundary;
                         shared.boundary_crossed.store(true, Ordering::Release);
                     }
                 }
                 out_lr[got..needed].fill(0.0);
             } else {
+                if limiter_was_enabled && (!was_silenced || seeking) {
+                    limiter.reset();
+                }
                 out_lr[..needed].fill(0.0);
             }
             current_gain = Some(0.0);
@@ -540,33 +730,60 @@ fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> Rende
 
         let got = consumer.pop(&mut out_lr[..needed]);
         let got_frames = got / 2;
-        let target_amp = shared.target_amp();
-        let prev = if was_silenced {
-            0.0
-        } else {
-            current_gain.unwrap_or(target_amp)
-        };
-        let ramp_frames = got_frames.min(RAMP_FRAMES);
-        if (prev - target_amp).abs() > 1e-6 && ramp_frames > 0 {
-            // Step per stereo frame so L and R receive identical gain.
-            let denom = ramp_frames as f32;
-            for f in 0..got_frames {
-                let gain = if f < ramp_frames {
-                    prev + (target_amp - prev) * ((f + 1) as f32 / denom)
-                } else {
-                    target_amp
-                };
-                out_lr[f * 2] *= gain;
-                out_lr[f * 2 + 1] *= gain;
+        let user_amp = shared.target_amp();
+        let start_consumed = shared.consumed_frames.load(Ordering::Relaxed);
+        let boundary = shared.next_boundary_frame.load(Ordering::Acquire);
+        let cur_loudness = unpack_loudness(shared.loudness_current.load(Ordering::Acquire));
+        let crosses_boundary = boundary != u64::MAX
+            && boundary != last_swapped_boundary
+            && got_frames > 0
+            && start_consumed.saturating_add(got_frames as u64) >= boundary;
+
+        if crosses_boundary {
+            let split = usize::try_from(boundary.saturating_sub(start_consumed))
+                .unwrap_or(0)
+                .min(got_frames);
+            if split > 0 {
+                process_audio_segment(
+                    &mut out_lr[..(split * 2)],
+                    split,
+                    user_amp,
+                    cur_loudness,
+                    &mut current_gain,
+                    &mut was_silenced,
+                    &mut limiter,
+                    &mut limiter_was_enabled,
+                );
             }
-        } else if (target_amp - 1.0).abs() > 1e-6 {
-            for sample in &mut out_lr[..got] {
-                *sample *= target_amp;
+            let next_bits = shared.loudness_next.load(Ordering::Acquire);
+            shared.loudness_current.store(next_bits, Ordering::Release);
+            last_swapped_boundary = boundary;
+            shared.boundary_crossed.store(true, Ordering::Release);
+            let next_loudness = unpack_loudness(next_bits);
+            let tail_frames = got_frames - split;
+            if tail_frames > 0 {
+                process_audio_segment(
+                    &mut out_lr[(split * 2)..got],
+                    tail_frames,
+                    user_amp,
+                    next_loudness,
+                    &mut current_gain,
+                    &mut was_silenced,
+                    &mut limiter,
+                    &mut limiter_was_enabled,
+                );
             }
-        }
-        if got_frames > 0 {
-            was_silenced = false;
-            current_gain = Some(target_amp);
+        } else if got_frames > 0 {
+            process_audio_segment(
+                &mut out_lr[..got],
+                got_frames,
+                user_amp,
+                cur_loudness,
+                &mut current_gain,
+                &mut was_silenced,
+                &mut limiter,
+                &mut limiter_was_enabled,
+            );
         }
 
         if got < needed {
@@ -586,8 +803,14 @@ fn make_render_fn(shared: Arc<SharedState>, mut consumer: SpscConsumer) -> Rende
                 .consumed_frames
                 .fetch_add(got_frames as u64, Ordering::AcqRel)
                 + got_frames as u64;
-            let boundary = shared.next_boundary_frame.load(Ordering::Acquire);
-            if new_consumed >= boundary {
+            if !crosses_boundary
+                && boundary != u64::MAX
+                && boundary != last_swapped_boundary
+                && new_consumed >= boundary
+            {
+                let next_bits = shared.loudness_next.load(Ordering::Acquire);
+                shared.loudness_current.store(next_bits, Ordering::Release);
+                last_swapped_boundary = boundary;
                 shared.boundary_crossed.store(true, Ordering::Release);
             }
         }
@@ -717,7 +940,7 @@ fn worker_loop<S: AudioSink>(
                         &mut prefetch_error,
                     );
                 }
-                Cmd::Append(url) => {
+                Cmd::Append(url, loudness) => {
                     clear_upcoming(
                         &mut upcoming_url,
                         &mut prefetch,
@@ -728,7 +951,8 @@ fn worker_loop<S: AudioSink>(
                     let p = proxy.lock().expect("proxy lock").clone();
                     match get_http_client(&p) {
                         Ok(client) => {
-                            prefetch = Some(spawn_prefetch(url, client, rt.handle().clone()));
+                            prefetch =
+                                Some(spawn_prefetch(url, loudness, client, rt.handle().clone()));
                         }
                         Err(e) => {
                             tracing::warn!("ASIO prefetch client error: {e}");
@@ -801,7 +1025,7 @@ fn worker_loop<S: AudioSink>(
                         }
                     }
                 }
-                Cmd::Load(url, generation) => {
+                Cmd::Load(url, generation, loudness) => {
                     if load_gen.load(Ordering::Acquire) != generation {
                         continue 'worker;
                     }
@@ -841,7 +1065,9 @@ fn worker_loop<S: AudioSink>(
                     buffering_reported = true;
 
                     let open_res = match get_http_client(&p) {
-                        Ok(client) => open_and_predecode(&url, client, rt.handle().clone(), cancel),
+                        Ok(client) => {
+                            open_and_predecode(&url, loudness, client, rt.handle().clone(), cancel)
+                        }
                         Err(e) => Err(e),
                     };
                     match open_res {
@@ -907,6 +1133,12 @@ fn worker_loop<S: AudioSink>(
                                 continue;
                             }
                             sink_rate = Some(target_rate);
+                            shared.sample_rate.store(target_rate, Ordering::Release);
+                            if let Some(params) = opened.loudness {
+                                shared
+                                    .loudness_current
+                                    .store(pack_loudness(params), Ordering::Release);
+                            }
 
                             let mut track = ActiveTrack {
                                 url: opened.url,
@@ -1089,6 +1321,11 @@ fn worker_loop<S: AudioSink>(
                             if to_push > 0 || next.predecoded.is_empty() {
                                 let boundary = shared.track_start_consumed.load(Ordering::Acquire)
                                     + track.pushed_frames;
+                                let next_bits = next.loudness.map_or_else(
+                                    || shared.loudness_current.load(Ordering::Acquire),
+                                    pack_loudness,
+                                );
+                                shared.loudness_next.store(next_bits, Ordering::Release);
                                 shared
                                     .next_boundary_frame
                                     .store(boundary, Ordering::Release);
@@ -1148,6 +1385,12 @@ fn worker_loop<S: AudioSink>(
                         });
                     } else {
                         sink_rate = Some(target_rate);
+                        shared.sample_rate.store(target_rate, Ordering::Release);
+                        if let Some(params) = next.loudness {
+                            shared
+                                .loudness_current
+                                .store(pack_loudness(params), Ordering::Release);
+                        }
                         let mut next_active = ActiveTrack {
                             url: next.url,
                             decoder: next.decoder,
@@ -1329,10 +1572,11 @@ fn start_fresh_sink<S: AudioSink>(
     *producer = None;
     shared.reset_requested.store(0, Ordering::Release);
     shared.reset_acked.store(0, Ordering::Release);
+    shared.sample_rate.store(target_rate, Ordering::Release);
     let (new_prod, new_cons) = spsc_ring(RING_SAMPLES);
     sink.start(
         f64::from(target_rate),
-        make_render_fn(shared.clone(), new_cons),
+        make_render_fn(shared.clone(), new_cons, target_rate),
     )?;
     *producer = Some(new_prod);
     Ok(())
@@ -1654,13 +1898,13 @@ mod tests {
     fn coalesce_commands_drops_superseded_loads_and_preserves_control_panel() {
         let (tx, _rx) = mpsc::sync_channel(1);
         let cmds = vec![
-            Cmd::Load("http://example/1.flac".into(), 1),
+            Cmd::Load("http://example/1.flac".into(), 1, None),
             Cmd::Seek(10.0),
-            Cmd::Append("http://example/next.flac".into()),
+            Cmd::Append("http://example/next.flac".into(), None),
             Cmd::SetPaused(true),
             Cmd::OpenControlPanel(tx),
-            Cmd::Load("http://example/2.flac".into(), 2),
-            Cmd::Load("http://example/3.flac".into(), 3),
+            Cmd::Load("http://example/2.flac".into(), 2, None),
+            Cmd::Load("http://example/3.flac".into(), 3, None),
             Cmd::Seek(20.0),
             Cmd::Seek(30.0),
             Cmd::SetPaused(false),
@@ -1668,13 +1912,13 @@ mod tests {
         let out = coalesce_commands(cmds);
         assert_eq!(out.len(), 4);
         assert!(matches!(out[0], Cmd::OpenControlPanel(_)));
-        assert!(matches!(&out[1], Cmd::Load(u, 3) if u == "http://example/3.flac"));
+        assert!(matches!(&out[1], Cmd::Load(u, 3, None) if u == "http://example/3.flac"));
         assert!(matches!(out[2], Cmd::Seek(s) if (s - 30.0).abs() < f64::EPSILON));
         assert!(matches!(out[3], Cmd::SetPaused(false)));
 
         let (tx2, _rx2) = mpsc::sync_channel(1);
         let stopped = coalesce_commands(vec![
-            Cmd::Load("http://example/1.flac".into(), 1),
+            Cmd::Load("http://example/1.flac".into(), 1, None),
             Cmd::OpenControlPanel(tx2),
             Cmd::Stop,
         ]);
@@ -1815,7 +2059,7 @@ mod tests {
         let input = vec![1.0f32; 2048];
         assert_eq!(prod.push(&input), 2048);
 
-        let mut render = super::make_render_fn(shared.clone(), cons);
+        let mut render = super::make_render_fn(shared.clone(), cons, 44_100);
         let mut out = vec![0.0f32; 256];
 
         // Start steady at 1.0.
@@ -1849,5 +2093,179 @@ mod tests {
         assert!(out[0] > 0.0 && out[0] < 0.1);
         assert!((out[0] - out[1]).abs() < 1e-6);
         assert!((out[super::RAMP_FRAMES * 2] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn loudness_boundary_swap_live_toggle_and_soft_limiter_clamping() {
+        let sr = 48_000_u32;
+        let shared = Arc::new(super::SharedState::new(100.0));
+        shared.sample_rate.store(sr, Ordering::Release);
+        let (mut prod, cons) = asio::spsc_ring(16_384);
+        let input = vec![0.8_f32; 8_192]; // 4,096 stereo frames
+        assert_eq!(prod.push(&input), 8_192);
+
+        let mut render = super::make_render_fn(shared.clone(), cons, sr);
+        let mut out = vec![0.0_f32; 1024]; // 512 stereo frames
+
+        // 1. Disabled -> bit-identical passthrough with zero delay.
+        render(512, &mut out);
+        assert_eq!(out[0], 0.8);
+        assert_eq!(out[1023], 0.8);
+
+        // 2. Enable Track A (-6 dB linear, no limiter) and stage Track B (+4 dB + soft limiter)
+        //    at a mid-buffer boundary (consumed is 512, put boundary at 512 + 300 = 812).
+        let track_a = crate::LoudnessParams {
+            enabled: true,
+            gain_db: -6.0,
+            ceiling_db: -1.0,
+            use_limiter: false,
+        };
+        let track_b = crate::LoudnessParams {
+            enabled: true,
+            gain_db: 4.0,
+            ceiling_db: -1.0,
+            use_limiter: true,
+        };
+        shared
+            .loudness_current
+            .store(super::pack_loudness(track_a), Ordering::Release);
+        shared
+            .loudness_next
+            .store(super::pack_loudness(track_b), Ordering::Release);
+        shared.next_boundary_frame.store(812, Ordering::Release);
+
+        // Render 3 buffers (1536 frames) to cross boundary and flush 5 ms (240 frames) delay line.
+        let mut collected = Vec::new();
+        for _ in 0..3 {
+            render(512, &mut out);
+            collected.extend_from_slice(&out);
+        }
+        assert!(shared.boundary_crossed.load(Ordering::Acquire));
+        let swapped = super::unpack_loudness(shared.loudness_current.load(Ordering::Acquire));
+        assert!(swapped.enabled && swapped.use_limiter);
+
+        let ceiling = crate::db_to_linear(-1.0) as f32;
+        // Track B raw output would be 0.8 * 10^(4/20) ~= 1.268, well above ceiling (~0.89125).
+        // Every frame must stay <= ceiling.
+        for (i, sample) in collected.iter().enumerate() {
+            assert!(
+                sample.abs() <= ceiling + 1e-4,
+                "sample {i} clipped above -1 dBTP ceiling: {sample} > {ceiling}"
+            );
+        }
+        // Final steady samples from Track B should sit cleanly near ceiling (limited, not silenced).
+        let tail = collected[collected.len() - 2];
+        assert!(
+            (tail - ceiling).abs() < 0.02,
+            "expected Track B to be limited near ceiling {ceiling}, got {tail}"
+        );
+
+        // 3. Live toggle back to disabled bypasses the delay line and restores exact 0.8 after ramp.
+        shared.loudness_current.store(
+            super::pack_loudness(crate::LoudnessParams::default()),
+            Ordering::Release,
+        );
+        render(512, &mut out);
+        assert!((out[1022] - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gapless_tracks_apply_per_track_loudness_at_boundary() {
+        let wav_a = make_wav(44_100, 8_192, 16_384); // ~0.5 amplitude
+        let wav_b = make_wav(44_100, 8_192, 24_576); // ~0.75 amplitude
+        let files = HashMap::from([("/a.wav", wav_a), ("/b.wav", wav_b)]);
+        let (_release, wait) = mpsc::channel();
+        let (base, shutdown) = spawn_http_files(files, wait);
+
+        let log = Arc::new(FakeSinkLog::default());
+        let sink = FakeSink(log.clone());
+        let (tx, rx) = mpsc::channel();
+        let player = AsioPlayer::new(sink, 100.0, move |ev| {
+            let _ = tx.send(ev);
+        })
+        .unwrap();
+
+        let url_a = format!("{base}/a.wav");
+        let url_b = format!("{base}/b.wav");
+        let wait_for = |pred: &dyn Fn(&PlayerEvent) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(!remaining.is_zero(), "timed out waiting for event");
+                match rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                    Ok(ev) if pred(&ev) => return ev,
+                    Ok(_) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => log.render_buffer(),
+                    Err(e) => panic!("channel closed: {e}"),
+                }
+            }
+        };
+
+        // Track A attenuated -6 dB, Track B boosted +4 dB with -1 dBTP limiter.
+        player
+            .load_with_loudness(
+                &url_a,
+                crate::LoudnessParams {
+                    enabled: true,
+                    gain_db: -6.0,
+                    ceiling_db: -1.0,
+                    use_limiter: false,
+                },
+            )
+            .unwrap();
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_a));
+        player
+            .append_with_loudness(
+                &url_b,
+                crate::LoudnessParams {
+                    enabled: true,
+                    gain_db: 4.0,
+                    ceiling_db: -1.0,
+                    use_limiter: true,
+                },
+            )
+            .unwrap();
+        wait_for(&|e| {
+            matches!(
+                e,
+                PlayerEvent::EndFile {
+                    reason: EndReason::Eof,
+                    ..
+                }
+            )
+        });
+        wait_for(&|e| matches!(e, PlayerEvent::FileLoaded { path: Some(p) } if p == &url_b));
+        wait_for(&|e| {
+            matches!(
+                e,
+                PlayerEvent::EndFile {
+                    reason: EndReason::Eof,
+                    ..
+                }
+            )
+        });
+        player.stop().unwrap();
+        shutdown.store(true, Ordering::Release);
+
+        let ceiling = crate::db_to_linear(-1.0) as f32;
+        let samples = log.rendered_samples.lock().unwrap();
+        assert!(!samples.is_empty());
+        // No sample may exceed the -1 dBTP ceiling despite Track B's 0.75 * +4 dB (~1.19) drive.
+        assert!(
+            samples.iter().all(|s| s.abs() <= ceiling + 1e-4),
+            "found clipped sample above ceiling"
+        );
+        // Track A steady region (around frame 2000) is attenuated near 0.5 * 0.5 = 0.25.
+        let sample_a = samples[4000];
+        assert!(
+            (sample_a - 0.25).abs() < 0.03,
+            "expected Track A ~0.25, got {sample_a}"
+        );
+        // Track B steady region (near end) is limited near ceiling (~0.891).
+        let sample_b = samples[samples.len() - 400];
+        assert!(
+            (sample_b - ceiling).abs() < 0.03,
+            "expected Track B near ceiling {ceiling}, got {sample_b}"
+        );
     }
 }

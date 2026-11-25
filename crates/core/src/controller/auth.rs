@@ -367,6 +367,17 @@ impl Core {
             similarity_method: crate::radio::SimilarityMethod::from_capability(
                 capabilities.similarity_method(),
             ),
+            loudness: capabilities.has(Feature::Loudness)
+                || capabilities.loudness.as_ref().is_some_and(|l| l.available),
+            loudness_median_lufs: capabilities
+                .loudness
+                .as_ref()
+                .and_then(|l| l.library_median_lufs),
+            loudness_analyzed: capabilities
+                .loudness
+                .as_ref()
+                .map_or(0, |l| l.analyzed_tracks),
+            loudness_total: capabilities.loudness.as_ref().map_or(0, |l| l.total_tracks),
         };
         self.library = Some(Library {
             images: Arc::new(Images::new(client.clone())),
