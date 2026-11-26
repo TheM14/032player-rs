@@ -569,9 +569,10 @@ impl Ui {
     fn show_loudness_settings(w: &AppWindow, s: &LoudnessSettings) {
         w.set_loudness_enabled(s.enabled);
         w.set_loudness_target(match s.target {
-            LoudnessTarget::Loud => 0,
-            LoudnessTarget::Standard => 1,
-            LoudnessTarget::Dynamic => 2,
+            LoudnessTarget::LibraryMedian => 0,
+            LoudnessTarget::Loud => 1,
+            LoudnessTarget::Standard => 2,
+            LoudnessTarget::Dynamic => 3,
         });
         w.set_loudness_mode(match s.mode {
             LoudnessMode::Smart => 0,
@@ -580,7 +581,8 @@ impl Ui {
         });
         w.set_loudness_peak_mode(match s.peak_mode {
             PeakProtection::SoftLimiter => 0,
-            PeakProtection::StrictLinear => 1,
+            PeakProtection::StrongLimiter => 1,
+            PeakProtection::StrictLinear => 2,
         });
     }
 
@@ -588,9 +590,10 @@ impl Ui {
         LoudnessSettings {
             enabled: w.get_loudness_enabled(),
             target: match w.get_loudness_target() {
-                1 => LoudnessTarget::Standard,
-                2 => LoudnessTarget::Dynamic,
-                _ => LoudnessTarget::Loud,
+                1 => LoudnessTarget::Loud,
+                2 => LoudnessTarget::Standard,
+                3 => LoudnessTarget::Dynamic,
+                _ => LoudnessTarget::LibraryMedian,
             },
             mode: match w.get_loudness_mode() {
                 1 => LoudnessMode::Track,
@@ -598,7 +601,8 @@ impl Ui {
                 _ => LoudnessMode::Smart,
             },
             peak_mode: match w.get_loudness_peak_mode() {
-                1 => PeakProtection::StrictLinear,
+                1 => PeakProtection::StrongLimiter,
+                2 => PeakProtection::StrictLinear,
                 _ => PeakProtection::SoftLimiter,
             },
         }

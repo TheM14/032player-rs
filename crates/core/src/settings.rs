@@ -301,8 +301,11 @@ impl Default for LyricsSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LoudnessTarget {
-    /// -11 LUFS: close to modern pop / ACG masters so toggling feels natural.
+    /// Automatically follow the server's library median LUFS (clamped to [-16, -8],
+    /// falling back to -11 LUFS when unavailable) so median tracks stay near 0 dB.
     #[default]
+    LibraryMedian,
+    /// -11 LUFS: high fixed target close to modern pop / ACG masters.
     Loud,
     /// -14 LUFS: streaming standard balance between loudness and headroom.
     Standard,
@@ -310,10 +313,30 @@ pub enum LoudnessTarget {
     Dynamic,
 }
 
+/// Safe clamp range for [`LoudnessTarget::LibraryMedian`] (LUFS).
+pub const LIBRARY_MEDIAN_MIN_LUFS: f64 = -16.0;
+pub const LIBRARY_MEDIAN_MAX_LUFS: f64 = -8.0;
+
 impl LoudnessTarget {
+    /// Fixed fallback target in LUFS (or the preset's fixed value).
     #[must_use]
     pub const fn lufs(self) -> f64 {
         match self {
+            Self::LibraryMedian | Self::Loud => -11.0,
+            Self::Standard => -14.0,
+            Self::Dynamic => -18.0,
+        }
+    }
+
+    /// Effective target in LUFS given the server's optional library median.
+    #[must_use]
+    pub fn effective_lufs(self, library_median_lufs: Option<f64>) -> f64 {
+        match self {
+            Self::LibraryMedian => library_median_lufs
+                .filter(|v| v.is_finite())
+                .map_or(-11.0, |m| {
+                    m.clamp(LIBRARY_MEDIAN_MIN_LUFS, LIBRARY_MEDIAN_MAX_LUFS)
+                }),
             Self::Loud => -11.0,
             Self::Standard => -14.0,
             Self::Dynamic => -18.0,
@@ -341,8 +364,29 @@ pub enum PeakProtection {
     /// Allow up to 3.5 dB of transient lookahead soft-knee limiting at -1 dBTP.
     #[default]
     SoftLimiter,
+    /// Allow up to 6.0 dB of lookahead limiting at -1 dBTP so quieter tracks
+    /// stay closer to hot-library targets without turning up hardware gain.
+    StrongLimiter,
     /// Strictly linear scaling with zero limiting (never exceeds -1 dBTP).
     StrictLinear,
+}
+
+impl PeakProtection {
+    /// Maximum allowed transient gain reduction in dB.
+    #[must_use]
+    pub const fn max_gr_db(self) -> f64 {
+        match self {
+            Self::SoftLimiter => 3.5,
+            Self::StrongLimiter => 6.0,
+            Self::StrictLinear => 0.0,
+        }
+    }
+
+    /// Whether lookahead peak limiting may engage when peaks exceed the ceiling.
+    #[must_use]
+    pub const fn uses_limiter(self) -> bool {
+        !matches!(self, Self::StrictLinear)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

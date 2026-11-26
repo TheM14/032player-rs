@@ -35,9 +35,9 @@
 ```rust
 pub struct LoudnessSettings {
     pub enabled: bool,              // default: false
-    pub target: LoudnessTarget,     // Loud(-11.0, default) | Standard(-14.0) | Dynamic(-18.0)
+    pub target: LoudnessTarget,     // LibraryMedian(default, clamp [-16, -8], fallback -11) | Loud(-11) | Standard(-14) | Dynamic(-18)
     pub mode: LoudnessMode,         // Smart(default) | Track | Album
-    pub peak_mode: PeakProtection,  // SoftLimiter(default, max_gr=3.5 dB) | StrictLinear(0.0 dB)
+    pub peak_mode: PeakProtection,  // SoftLimiter(default, max_gr=3.5 dB) | StrongLimiter(6.0 dB) | StrictLinear(0.0 dB)
 }
 ```
 
@@ -47,24 +47,26 @@ pub struct LoudnessSettings {
 pub struct LoudnessPlan {
     pub gain_db: f64,           // applied linear gain before limiter
     pub ceiling_db: f64,        // -1.0 dBTP
-    pub use_limiter: bool,      // true only when SoftLimiter and peak after gain+vol exceeds ceiling
+    pub use_limiter: bool,      // true when limiter mode enabled and peak after gain+vol exceeds ceiling
     pub source: LoudnessSource, // Track | Album | Fallback | Bypass
+    pub target_lufs: f64,       // effective target LUFS after resolving LibraryMedian
     pub peak_reduction_db: f64, // estimated max transient GR (for TrackInfo display)
 }
 ```
 
 核心公式：
 - `ceiling_db = -1.0`（为外置 DAC 升频滤波器留出 1 dB 采样间峰值余量）
+- `target_lufs`：`LibraryMedian` 时取 `library_median_lufs.clamp(-16.0, -8.0)`（未知时 `-11.0`）；其余取固定档位值
 - `user_vol_db`：音量 `v` 在 `0..=100` 下遵循立方曲线 `20 * log10((v / 100)^3)`（`v = 100` 时为 `0.0 dB`；`v <= 0` 时无需限幅）
 - `raw_gain = target_lufs - measured_lufs`
 - `linear_headroom = (ceiling_db - true_peak_db) - user_vol_db`
-- `max_gr = match peak_mode { SoftLimiter => 3.5, StrictLinear => 0.0 }`
+- `max_gr = match peak_mode { SoftLimiter => 3.5, StrongLimiter => 6.0, StrictLinear => 0.0 }`
 - `applied_gain = raw_gain.min(linear_headroom + max_gr).clamp(-24.0, 18.0)`
 - `peak_after_all = true_peak_db + applied_gain + user_vol_db`
-- `use_limiter = peak_mode == SoftLimiter && peak_after_all > ceiling_db + 0.05`
+- `use_limiter = peak_mode != StrictLinear && applied_gain > 0.05 && peak_after_all > ceiling_db + 0.05`（未推升的 0 dB / 衰减曲目不强行介入限幅，保持纯线性或零滤镜直通）
 - 缺失测量值时：`fallback = library_median_lufs.map_or(0.0, |m| (target_lufs - m).clamp(-6.0, 0.0))`，`use_limiter = false`。
 
-**理由**：单套统一公式同时覆盖 100% 外置 DAC 场景与软件低音量场景；将 `SoftLimiter` 上限锁定在 `3.5 dB` 既能在 `-11 LUFS` 档位把绝大多数流行/老歌完整对齐，又避免把 `-22 LUFS` 交响高潮暴力压毁。
+**理由**：实测偏热曲库（如日系流行 / ACG 中位数 `-9.0 LUFS`）下固定 `-11 LUFS` 仍会把一半以上曲目压低 2+ dB；引入「跟随曲库中位数」后常态曲目接近 `0 dB` 不掉音量，同时提供 `3.5 dB` 柔和限幅与 `6.0 dB` 强力限幅供用户实时 A/B 权衡轻歌拉齐幅度与瞬态动态。
 
 ### 决策 2：Smart 智能对齐判定采用无状态队列邻接规则
 

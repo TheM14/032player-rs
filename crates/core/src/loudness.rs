@@ -15,6 +15,8 @@ use crate::settings::{LoudnessMode, LoudnessSettings, PeakProtection};
 pub const CEILING_DB: f64 = -1.0;
 /// Maximum transient gain reduction allowed in `SoftLimiter` mode.
 pub const SOFT_LIMITER_MAX_GR_DB: f64 = 3.5;
+/// Maximum transient gain reduction allowed in `StrongLimiter` mode.
+pub const STRONG_LIMITER_MAX_GR_DB: f64 = 6.0;
 /// Hard safety bounds on applied per-track gain.
 pub const MIN_GAIN_DB: f64 = -24.0;
 pub const MAX_GAIN_DB: f64 = 18.0;
@@ -39,6 +41,8 @@ pub struct LoudnessPlan {
     pub ceiling_db: f64,
     pub use_limiter: bool,
     pub source: LoudnessSource,
+    /// Effective target reference used to compute `gain_db` (LUFS).
+    pub target_lufs: f64,
     /// Estimated peak transient reduction when `use_limiter` is true (dB >= 0).
     pub peak_reduction_db: f64,
 }
@@ -58,6 +62,7 @@ impl LoudnessPlan {
             ceiling_db: CEILING_DB,
             use_limiter: false,
             source: LoudnessSource::Bypass,
+            target_lufs: -11.0,
             peak_reduction_db: 0.0,
         }
     }
@@ -131,7 +136,7 @@ pub fn compute_loudness_plan(
         return LoudnessPlan::bypass();
     }
 
-    let target = settings.target.lufs();
+    let target = settings.target.effective_lufs(library_median_lufs);
     let track_pair = match (finite(track.loudness_lufs), finite(track.true_peak_db)) {
         (Some(lufs), Some(peak)) => Some((lufs, peak)),
         _ => None,
@@ -167,6 +172,7 @@ pub fn compute_loudness_plan(
             ceiling_db: CEILING_DB,
             use_limiter: false,
             source: LoudnessSource::Fallback,
+            target_lufs: target,
             peak_reduction_db: 0.0,
         };
     };
@@ -178,6 +184,7 @@ pub fn compute_loudness_plan(
     let linear_headroom = (CEILING_DB - true_peak_db) - vol_db;
     let max_gr = match settings.peak_mode {
         PeakProtection::SoftLimiter => SOFT_LIMITER_MAX_GR_DB,
+        PeakProtection::StrongLimiter => STRONG_LIMITER_MAX_GR_DB,
         PeakProtection::StrictLinear => 0.0,
     };
     let applied_gain = raw_gain
@@ -185,8 +192,11 @@ pub fn compute_loudness_plan(
         .clamp(MIN_GAIN_DB, MAX_GAIN_DB);
     let peak_after_all = true_peak_db + applied_gain + vol_db;
     let overshoot = (peak_after_all - CEILING_DB).max(0.0);
-    let use_limiter =
-        settings.peak_mode == PeakProtection::SoftLimiter && overshoot > LIMITER_ENGAGE_MARGIN_DB;
+    // Only engage the limiter when actually boosting the track; unboosted
+    // (0 dB or attenuated) tracks stay pure linear / transparent bypass.
+    let use_limiter = settings.peak_mode.uses_limiter()
+        && applied_gain > LIMITER_ENGAGE_MARGIN_DB
+        && overshoot > LIMITER_ENGAGE_MARGIN_DB;
 
     LoudnessPlan {
         active: true,
@@ -194,6 +204,7 @@ pub fn compute_loudness_plan(
         ceiling_db: CEILING_DB,
         use_limiter,
         source,
+        target_lufs: target,
         peak_reduction_db: if use_limiter { overshoot } else { 0.0 },
     }
 }
@@ -230,13 +241,21 @@ pub fn track_loudness_facts(track: &Track, plan: Option<&LoudnessPlan>) -> Vec<(
             LoudnessSource::Bypass => "直通",
         };
         let protection = if plan.use_limiter {
-            format!("柔和限幅，瞬态上限 -{:.1} dB", plan.peak_reduction_db)
+            let kind = if plan.peak_reduction_db > SOFT_LIMITER_MAX_GR_DB + 0.05 {
+                "强力限幅"
+            } else {
+                "柔和限幅"
+            };
+            format!("{kind}，瞬态上限 -{:.1} dB", plan.peak_reduction_db)
         } else {
             "纯线性".to_owned()
         };
         rows.push((
             "响度补偿".to_owned(),
-            format!("{:+.1} dB（{src} · {protection}）", plan.gain_db),
+            format!(
+                "{:+.1} dB（{src} · 目标 {:.1} LUFS · {protection}）",
+                plan.gain_db, plan.target_lufs
+            ),
         ));
     }
     rows
@@ -422,6 +441,68 @@ mod tests {
         assert_eq!(facts[1].0, "专辑响度");
         assert_eq!(facts[2].0, "响度补偿");
         assert!(facts[2].1.contains("-2.6 dB"));
+        assert!(facts[2].1.contains("-11.0 LUFS"));
         assert!(facts[2].1.contains("纯线性"));
+    }
+
+    #[test]
+    fn library_median_target_and_strong_limiter_track_hot_library() {
+        let median = Some(-9.0);
+        let soft = LoudnessSettings {
+            enabled: true,
+            target: LoudnessTarget::LibraryMedian,
+            mode: LoudnessMode::Track,
+            peak_mode: PeakProtection::SoftLimiter,
+        };
+        let strong = LoudnessSettings {
+            peak_mode: PeakProtection::StrongLimiter,
+            ..soft
+        };
+
+        // Median track (-9.0 LUFS): 0 dB gain, untouched!
+        let mid = sample_track(10, 1, Some(-9.0), Some(-0.2));
+        let p_mid = compute_loudness_plan(&mid, &soft, false, 100.0, median, true);
+        assert!((p_mid.target_lufs - (-9.0)).abs() < 1e-6);
+        assert!((p_mid.gain_db - 0.0).abs() < 1e-6);
+        assert!(!p_mid.use_limiter);
+
+        // Hot J-Pop track (-7.5 LUFS): gentle -1.5 dB linear trim.
+        let hot = sample_track(11, 1, Some(-7.5), Some(0.0));
+        let p_hot = compute_loudness_plan(&hot, &soft, false, 100.0, median, true);
+        assert!((p_hot.gain_db - (-1.5)).abs() < 1e-6);
+        assert!(!p_hot.use_limiter);
+
+        // Quiet OST (-15.0 LUFS / -0.5 dBTP):
+        // SoftLimiter caps at (-1.0 - -0.5) + 3.5 = +3.0 dB (-12.0 LUFS).
+        // StrongLimiter caps at (-1.0 - -0.5) + 6.0 = +5.5 dB (-9.5 LUFS).
+        let ost = sample_track(12, 1, Some(-15.0), Some(-0.5));
+        let p_soft = compute_loudness_plan(&ost, &soft, false, 100.0, median, true);
+        assert!((p_soft.gain_db - 3.0).abs() < 1e-6);
+        assert!(p_soft.use_limiter);
+        assert!((p_soft.peak_reduction_db - 3.5).abs() < 1e-6);
+
+        let p_strong = compute_loudness_plan(&ost, &strong, false, 100.0, median, true);
+        assert!((p_strong.gain_db - 5.5).abs() < 1e-6);
+        assert!(p_strong.use_limiter);
+        assert!((p_strong.peak_reduction_db - 6.0).abs() < 1e-6);
+        let strong_facts = track_loudness_facts(&ost, Some(&p_strong));
+        assert!(strong_facts.iter().any(|(_, v)| v.contains("强力限幅")));
+
+        // Extreme medians clamp cleanly to [-16.0, -8.0], and missing median falls back to -11.0.
+        assert_eq!(
+            LoudnessTarget::LibraryMedian.effective_lufs(Some(-6.0)),
+            -8.0
+        );
+        assert_eq!(
+            LoudnessTarget::LibraryMedian.effective_lufs(Some(-20.0)),
+            -16.0
+        );
+        assert_eq!(LoudnessTarget::LibraryMedian.effective_lufs(None), -11.0);
+
+        // Unmeasured fallback under LibraryMedian (-9.0 -> -9.0) yields 0.0 dB (no drop).
+        let unmeasured = sample_track(13, 1, None, None);
+        let p_fb = compute_loudness_plan(&unmeasured, &soft, false, 100.0, median, true);
+        assert_eq!(p_fb.source, LoudnessSource::Fallback);
+        assert_eq!(p_fb.gain_db, 0.0);
     }
 }

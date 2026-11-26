@@ -3,11 +3,11 @@
 ## 1. API 协议类型与设置持久化
 
 - [x] 1.1 在 `crates/api/src/types.rs` 新增 `Feature::Loudness`、`LoudnessCapabilities`（`available`、`analyzed_tracks`、`total_tracks`、`library_median_lufs`）以及 `Track` 的 5 个可选响度字段（`loudness_lufs`、`true_peak_db`、`loudness_range`、`album_loudness_lufs`、`album_true_peak_db`），并补齐兼容新旧服务端 JSON 与 `0.0` 真峰值的反序列化测试（`cargo test -p api`）。
-- [x] 1.2 在 `crates/core/src/settings.rs` 新增 `LoudnessSettings`、`LoudnessTarget`（默认 `Loud` -11 LUFS）、`LoudnessMode`（默认 `Smart`）与 `PeakProtection`（默认 `SoftLimiter`），接入 `Settings` 持久化并补齐旧配置迁移与往返序列化单元测试（`cargo test -p client-core settings`）。
+- [x] 1.2 在 `crates/core/src/settings.rs` 新增 `LoudnessSettings`、`LoudnessTarget`（含默认 `LibraryMedian` 跟随曲库中位数、固定 `Loud` -11 / `Standard` -14 / `Dynamic` -18 LUFS）、`LoudnessMode`（默认 `Smart`）与 `PeakProtection`（默认 `SoftLimiter` 3.5 dB、`StrongLimiter` 6.0 dB、`StrictLinear` 0 dB），接入 `Settings` 持久化并补齐旧配置迁移与往返序列化单元测试（`cargo test -p client-core settings`）。
 
 ## 2. 核心响度规划模块（`client-core`）
 
-- [x] 2.1 新增 `crates/core/src/loudness.rs`，实现纯函数 `compute_loudness_plan`（涵盖三档目标、Smart 队列邻接专辑/单曲判定、余量感知增益合并、`3.5 dB` 有界软限幅 vs `0 dB` 纯线性防削波、基于曲库中位数的保守回退），并补齐覆盖现代热歌、老歌、轻 OST、大动态古典、低软件音量余量、缺失数据与 Smart 边界的单元测试（`cargo test -p client-core loudness`）。
+- [x] 2.1 新增 `crates/core/src/loudness.rs`，实现纯函数 `compute_loudness_plan`（涵盖跟随曲库中位数与固定三档目标、Smart 队列邻接专辑/单曲判定、余量感知增益合并、`3.5 dB` 柔和限幅 / `6.0 dB` 强力限幅 / `0 dB` 纯线性防削波、基于曲库中位数的保守回退），并补齐覆盖热曲库中位数、现代热歌、老歌、轻 OST、大动态古典、低软件音量余量、缺失数据与 Smart 边界的单元测试（`cargo test -p client-core loudness`）。
 - [x] 2.2 扩展 `crates/core/src/engine.rs`（`Engine` trait 新增响度计划更新及加载/预加载参数传递，提供默认空实现保持既有假引擎兼容），并在 `crates/core/src/queue.rs` 与 `crates/core/src/controller/` 接入：切歌/预加载同步应用响度计划、播放中切换设置或跨越音量限幅阈值实时更新、与 300 ms 暂停淡化零冲突、Sonos 投放时自动不应用，以及队列曲目响度刷新与旧 `queue.json` 恢复按需补全，补齐 `client-core` 控制器回归测试（`cargo test -p client-core`）。
 - [x] 2.3 扩展 `crates/core/src/browse.rs` 的曲目信息项与 `Core::emit_track_info`，为含响度数据的曲目附加集成响度、真峰值、专辑响度及当前生效补偿/限幅状态，并补齐单元测试验证格式化输出（`cargo test -p client-core`）。
 

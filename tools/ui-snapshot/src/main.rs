@@ -2143,7 +2143,7 @@ fn main() {
     set(
         &inst,
         "loudness-summary",
-        s("当前曲库中位数约 -10.4 LUFS（已分析 18,420 / 18,930 首）。"),
+        s("当前曲库中位数约 -9.0 LUFS（已分析 18,125 / 18,126 首）。"),
     );
     set(&inst, "loudness-enabled", Value::Bool(true));
     set(&inst, "loudness-target", Value::Number(0.0));
@@ -2194,7 +2194,7 @@ fn main() {
                 ("集成响度", "-8.4 LUFS"),
                 ("真峰值", "-0.2 dBTP"),
                 ("专辑响度", "-9.2 LUFS"),
-                ("响度补偿", "-1.8 dB（按专辑 · -11 LUFS）"),
+                ("响度补偿", "+0.2 dB（按专辑 · 目标 -9.0 LUFS · 纯线性）"),
                 ("文件大小", "31.2 MB"),
                 (
                     "路径",
