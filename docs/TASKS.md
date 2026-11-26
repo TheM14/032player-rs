@@ -3,7 +3,13 @@
 当前里程碑的细粒度任务。完成打勾；需要在 Windows 上验证的标 **[Win]**。
 里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
 
-## 当前状态（2026-11-25）
+## 当前状态（2026-11-26）
+
+- **v0.2.34 正式版构建已安排**：优化偏热曲库（如日系流行 / ACG 中位数 `-9 LUFS` 左右）的响度均衡听感，避免开启后整体变小。新增「跟随曲库中位数（推荐）」响度目标（自动对齐服务端下发的曲库中位数，安全钳制在 `[-16, -8] LUFS`，未推升的 0 dB / 衰减曲目保持零限幅直通）与「强力限幅（最多 6.0 dB）」峰值保护档位，并在曲目「查看信息」的响度补偿行显示当前生效的目标 LUFS 与柔和/强力限幅状态。正式安装包由 `v0.2.34` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.34 。
+- [x] 跟随曲库中位数目标与 6 dB 强力限幅档位 [core / app]：`LoudnessTarget::LibraryMedian` 设为默认并按 `[-16.0, -8.0] LUFS` 钳制服务端 `libraryMedianLufs`；`PeakProtection::StrongLimiter` 放宽瞬态上限至 `6.0 dB`；未推升曲目（`applied_gain <= 0.05`）不触发限幅器以保持常态曲目零滤镜直通；同步更新 `settings.slint`、`ui.rs`、`ui-snapshot` 与 OpenSpec 规范。
+- [ ] **[Win]** 实机对比测试「跟随曲库中位数（约 `-9.0 LUFS`）」下的「柔和限幅（3.5 dB）」与「强力限幅（6.0 dB）」在热歌 / 常态歌 / 轻 OST 上的响度一致性与瞬态动态表现。
+
+### 2026-11-25
 
 - **v0.2.33 正式版构建已安排**：新增基于 032 服务端 EBU R128 测量的响度均衡功能。默认采用 `-11 LUFS` 饱满目标（另提供 `-14 LUFS` 标准与 `-18 LUFS` 动态优先）、`Smart` 智能对齐（连续专辑保动态、随机/跨专辑按单曲对齐）以及余量感知增益合并与 `3.5 dB` 有界柔和限幅（可选纯线性严格防削波），兼顾外置 DAC 100% 软件音量场景的饱满听感与无削波保护。完整支持 `libmpv`（每曲 `af` 滤镜，保持 `volume-gain` 专用于暂停淡化）与原生 `AsioPlayer`（零分配 5 ms Lookahead 立体声链接软限幅、帧精确无缝边界切换、关闭时完全旁路直通），仅作用于本机播放且不影响 Sonos 投放；设置页「播放」分区与曲目「查看信息」弹窗提供配置与响度诊断展示。正式安装包由 `v0.2.33` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.33 。
 - [x] 响度均衡协议、核心规划、双后端执行与设置页 UI [api / core / player / app]：`api` 新增 `Feature::Loudness`、`LoudnessCapabilities` 与 `Track` 5 个可选响度字段；`client-core` 新增 `LoudnessSettings`、`compute_loudness_plan`、`Engine` 响度接口、热切换 / 预加载刷新 / 旧队列按需补全与 `TrackInfo` 响度诊断行；`player` 新增 `SoftPeakLimiter`、`AsioPlayer` 原子边界切换与 `Player` `af` 滤镜构造（含 `alimiter` `level=disabled`）；`app` 接入 `HybridEngine` 透传、设置页控件与 `ui-snapshot` 回归截图。
