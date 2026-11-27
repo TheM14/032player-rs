@@ -3,7 +3,12 @@
 当前里程碑的细粒度任务。完成打勾；需要在 Windows 上验证的标 **[Win]**。
 里程碑定义见 `PLAN.md`，功能条目见 `FEATURES.md`。
 
-## 当前状态（2026-11-26）
+## 当前状态（2026-11-27）
+
+- **v0.2.35 正式版构建已安排**：修复宽屏全屏播放器顶部歌词栏中工具胶囊（放大镜搜索等按钮）向右偏移、悬停态与外框圆角错位的问题，并在无可用歌词工具时隐藏空容器。正式安装包由 `v0.2.35` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.35 。
+- [x] 修复宽屏全屏歌词工具栏对齐 [app]：在 `crates/app/ui/app.slint` 中为 `full-tools := LyricsTools` 显式指定 `width: self.preferred-width` 以消除默认撑满父宽叠加 `alignment: center` 带来的 4px 右移，并在无可用工具项时隐藏外层胶囊容器。
+
+### 2026-11-26
 
 - **v0.2.34 正式版构建已安排**：优化偏热曲库（如日系流行 / ACG 中位数 `-9 LUFS` 左右）的响度均衡听感，避免开启后整体变小。新增「跟随曲库中位数（推荐）」响度目标（自动对齐服务端下发的曲库中位数，安全钳制在 `[-16, -8] LUFS`，未推升的 0 dB / 衰减曲目保持零限幅直通）与「强力限幅（最多 6.0 dB）」峰值保护档位，并在曲目「查看信息」的响度补偿行显示当前生效的目标 LUFS 与柔和/强力限幅状态。正式安装包由 `v0.2.34` 标签触发 Release 工作流生成，发布地址：https://github.com/lux032/032player-rs/releases/tag/v0.2.34 。
 - [x] 跟随曲库中位数目标与 6 dB 强力限幅档位 [core / app]：`LoudnessTarget::LibraryMedian` 设为默认并按 `[-16.0, -8.0] LUFS` 钳制服务端 `libraryMedianLufs`；`PeakProtection::StrongLimiter` 放宽瞬态上限至 `6.0 dB`；未推升曲目（`applied_gain <= 0.05`）不触发限幅器以保持常态曲目零滤镜直通；同步更新 `settings.slint`、`ui.rs`、`ui-snapshot` 与 OpenSpec 规范。
