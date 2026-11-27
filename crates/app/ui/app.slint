@@ -2708,7 +2708,7 @@ export component AppWindow inherits Window {
                 root.lyrics-offset-changed(ms);
             }
         }
-        if full.wide && root.has-track: Rectangle {
+        if full.wide && root.has-track && (root.lyrics-can-search || root.lyrics-synced || root.lyrics-can-translate): Rectangle {
             x: full.tools-x;
             y: full.tools-y;
             width: full-tools.preferred-width + 8px;
@@ -2718,6 +2718,7 @@ export component AppWindow inherits Window {
             full-tools := LyricsTools {
                 x: 4px;
                 y: 4px;
+                width: self.preferred-width;
                 synced: root.lyrics-synced;
                 has-lines: root.lyrics.length > 0;
                 can-search: root.lyrics-can-search;
